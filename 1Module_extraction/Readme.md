@@ -6,5 +6,8 @@ This module is responsible for extracting documented architectural modules from 
 
 This folder contains the following:
 
-- **XXX.py**: Scripts for invoking LLMs to extract module information from input documentation.
-- XXX.py: Scripts for evaluating extracted module information.
+- **extract.py**: Scripts for invoking LLMs to extract module information from input documentation.
+- evaluation.py: Scripts for evaluating extracted module information.
+
+he output of extracted modules for each individual project is organized under the dataset/ directory, following the structure:
+dataset/<project_name>/Extracted_Module
