@@ -4,7 +4,7 @@ import os
 
 client = OpenAI(
     base_url="https://api.chatanywhere.tech/v1",
-    api_key="sk-39X6rU2Auzqqtzxj0BCxV2b7lZeeILmreNBcAv7VUwHVd88A"
+    api_key="Your-API-Key"
 )
 
 
