@@ -14,8 +14,11 @@ The objective of this project is to generate missing documentation for project m
 ---
 
 ## Project Structure
-├── evaluate/ # 评估模块：用于执行 consistency、relevance、coherence、fluency 的自动化评估
-├── generate/ # 生成模块：代码摘要生成与文档生成逻辑
-├── Result/ # 生成结果保存路径（中间结果、评估输出等）
-├── README.md # 项目说明文档
-└── requirements.txt # Python 依赖文件（如有）
+├── evaluate/           # Evaluation module: performs automated assessment of consistency, relevance, coherence, and fluency  
+├── generate/           # Generation module: handles code summarization and documentation generation logic  
+├── Result/             # Output directory: stores generated results, including intermediate outputs and evaluation reports  
+├── README.md           # Documentation  
+
+
+
+
