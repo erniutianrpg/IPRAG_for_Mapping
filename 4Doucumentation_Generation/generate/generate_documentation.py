@@ -151,6 +151,11 @@ def analyze_project(project_name, project_root, json_file_path, json_folder_name
         print(f"❌ 分析中断：{project_name} / {json_folder_name}，原因：{e}")
 # ==== 要分析的项目名列表 ====
 projects_to_process = [
+    "bigbluebutton",
+    "teammates",
+    "teastore",
+    "mediastore",
+    "jabref",
     "hadoop"
 ]
 
