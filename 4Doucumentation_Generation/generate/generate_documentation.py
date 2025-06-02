@@ -5,8 +5,6 @@ from openai import OpenAI
 from concurrent.futures import ThreadPoolExecutor
 import time
 
-
-# 初始化 OpenAI 客户端（DeepSeek API）
 client = OpenAI(
     base_url="https://api.deepseek.com",
     api_key="your-private-key"
@@ -47,12 +45,11 @@ def summarize_code(code, max_retries=5):
             return response.choices[0].message.content.strip()
         except Exception as e:
             if "429" in str(e):
-                print(f"⚠️ 第 {attempt+1} 次请求触发限流，等待重试中...")
-                #time.sleep(1)  # 延长等待时间
+                print("Request has triggered rate limiting, waiting to retry.")
             else:
-                print(f"⚠️ summarize_code 异常：{e}")
+                print(f"summarize_code Error：{e}")
                 break
-    raise RuntimeError("summarize_code 重试失败")
+    raise RuntimeError("summarize_code Retry failed")
 
 
 def generate_module_description(summaries):
@@ -90,21 +87,17 @@ def save_summary_output(project_name, json_folder_name, summaries, module_descri
     for summary in summaries:
         header, content = summary.split(":\n", 1)
 
-        # 只保留从 "src" 开始的路径部分（不包括前面的模块路径）
         src_index = header.lower().find("src")
         if src_index != -1:
             trimmed_path = header[src_index:]
         else:
-            trimmed_path = Path(header).name  # fallback: 只保留文件名
+            trimmed_path = Path(header).name  
 
-        # 替换路径分隔符，生成可用文件名
         sanitized_name = trimmed_path.replace("/", "_").replace("\\", "_")
         file_path = output_dir / f"{sanitized_name}.txt"
 
-        # 写入文件内容
         file_path.write_text(content, encoding="utf-8")
 
-    # 写入模块描述
     module_file = output_dir / "module_description.txt"
     module_file.write_text(module_description, encoding="utf-8")
 
@@ -114,7 +107,7 @@ def analyze_project(project_name, project_root, json_file_path, json_folder_name
             with open(json_file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
         except Exception as e:
-            print(f"❌ 无法读取 JSON 文件 {json_file_path}: {e}")
+            print(f"can't read JSON file {json_file_path}: {e}")
             return
         MAX_SUMMARIES = 350
         random.seed(42)
@@ -122,34 +115,28 @@ def analyze_project(project_name, project_root, json_file_path, json_folder_name
         total = len(paths)
         summaries = []
 
-        print(f"\n🟩 正在分析项目：{project_name} / {json_folder_name}（共 {total} 个 None 文件）")
+        print(f"\n Analyzing the project：{project_name} / {json_folder_name}（{total} None files）")
 
         for idx, path in enumerate(paths, 1):
             code = read_file_content(path, project_root)
             if code:
-                # 截断过长代码
                 if len(code) > max_code_length:
                     code = code[:max_code_length]
-                    code += "\n// ⚠️ 代码已截断，仅保留前 {max_code_length} 个字符。"
                 summary = summarize_code(code)
                 if summary:
                     summaries.append(f"{path}:\n{summary}")
             print(f"{project_name}/{json_folder_name}：{idx}/{total}")
 
         if not summaries:
-            print(f"⚠️ 没有可用的代码进行摘要：{project_name} / {json_folder_name}")
+            print(f"No available code for summarization：{project_name} / {json_folder_name}")
             return
-
-        # MAX_SUMMARIES = 450
-        # random.seed(42)
-        # sampled_summaries = random.sample(summaries, min(MAX_SUMMARIES, len(summaries)))
         module_description = generate_module_description(summaries)
 
         save_summary_output(project_name, json_folder_name, summaries, module_description)
-        print(f"✅ 分析完成：{project_name} / {json_folder_name}\n")
+        print(f"Analysis completed：{project_name} / {json_folder_name}\n")
     except Exception as e:\
-        print(f"❌ 分析中断：{project_name} / {json_folder_name}，原因：{e}")
-# ==== 要分析的项目名列表 ====
+        print(f"Analysis interrupted：{project_name} / {json_folder_name}，原因：{e}")
+
 projects_to_process = [
     "bigbluebutton",
     "teammates",
@@ -159,18 +146,16 @@ projects_to_process = [
     "hadoop"
 ]
 
-# ==== 基础路径设置 ====
 parent_dir = Path(__file__).parent.parent.parent
 BASE_JSON_PATH = parent_dir / 'dataset' 
 BASE_PROJECT_PATH = parent_dir / 'datase' 
 
-# ==== 主逻辑 ====
 for project in projects_to_process:
     project_json_dir = BASE_JSON_PATH / project
     project_code_root = BASE_PROJECT_PATH / project
 
     if not project_json_dir.exists():
-        print(f"❌ 项目 JSON 路径不存在：{project_json_dir}")
+        print(f"project's JSON path doesn't exit：{project_json_dir}")
         continue
 
     json_jobs = []
@@ -185,7 +170,6 @@ for project in projects_to_process:
                     "json_folder_name": json_subdir.name
                 })
 
-    # 用线程池并发处理当前项目的多个 JSON 文件夹
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
             executor.submit(
