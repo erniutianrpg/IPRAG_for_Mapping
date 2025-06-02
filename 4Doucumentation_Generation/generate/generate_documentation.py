@@ -9,7 +9,7 @@ import time
 # 初始化 OpenAI 客户端（DeepSeek API）
 client = OpenAI(
     base_url="https://api.deepseek.com",
-    api_key="sk-742fae6ebace4e29abe324cd5d3cb752"
+    api_key="your-private-key"
 )
 
 def extract_file_paths(data):
