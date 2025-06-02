@@ -32,7 +32,7 @@ def refine_description(description):
         return description  # 出错时使用原始描述
 
 # 加载 JSON 输入
-with open('input.json', 'r', encoding='utf-8') as f:
+with open('input_data.json', 'r', encoding='utf-8') as f:
     module_data = json.load(f)
 
 # 构造输入列表
@@ -61,12 +61,3 @@ evaluator = get_evaluator(task)
 
 # 评估（默认所有四个维度，含 overall）
 eval_scores = evaluator.evaluate(data, print_result=False)
-
-# 写入结果
-with open('evaluation_results.txt', 'w', encoding='utf-8') as f:
-    for module_name, score_dict in zip(module_names, eval_scores):
-        f.write(f'Module: {module_name}\n')
-        for dim in ['coherence', 'consistency', 'fluency', 'relevance', 'overall']:
-            if dim in score_dict:
-                f.write(f'{dim.capitalize()}: {round(score_dict[dim], 6)}\n')
-        f.write('\n')
