@@ -1,6 +1,7 @@
 from openai import OpenAI
 import httpx
 import os
+from pathlib import Path
 
 client = OpenAI(
     base_url="https://api.chatanywhere.tech/v1",
@@ -62,9 +63,8 @@ number_of_iterations = 10  # Change this number as needed
 model_version='gpt-4o'
 for project in projects:
     folder_name = 'LLM_responses/'+model_version+'/'+project
-    # Directory containing the sentences
-    directory_path = 'data/ftlr-texts/'+project
-
+    parent_dir = Path(__file__).parent.parent
+    directory_path = parent_dir / 'dataset' / project / 'documentation.txt'
     # 读取架构文档Concatenate sentences from all files
     user_input = concatenate_sentences(directory_path)
     user_input = "Here is a description of a software architecture document: ["+user_input+"]. Please extract all the architecture modules with their types and descriptions. And be sure not to repeat, cluster together modules with similar functional representations. Ensure that modules with similar functional representations are clustered together, and avoid repetitions. You must pay attention to the output format. The format of the output example is as follows: module name: , module description: .(Make sure the output form begins with module name: or module description:). In addition, keep the module name to one word in length."
