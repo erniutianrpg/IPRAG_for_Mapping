@@ -10,7 +10,6 @@ client = OpenAI(
 
 
 def get_gpt_response( user_input):
-    # 初始请求
     completion = client.chat.completions.create(
         model=model_version,
         messages=[
@@ -18,18 +17,11 @@ def get_gpt_response( user_input):
         ],
     )
 
-    # 打印初始AI回答
     initial_response = completion.choices[0].message.content
     print(initial_response)
     return initial_response
 
-# 流式调用
 def gpt_35_api_stream(messages: list):
-    """为提供的对话消息创建新的回答 (流式传输)
-
-    Args:
-        messages (list): 完整的对话消息
-    """
     stream = client.chat.completions.create(
         model=model_version,
         messages=messages,
@@ -65,7 +57,6 @@ for project in projects:
     folder_name = 'LLM_responses/'+model_version+'/'+project
     parent_dir = Path(__file__).parent.parent
     directory_path = parent_dir / 'dataset' / project / 'documentation.txt'
-    # 读取架构文档Concatenate sentences from all files
     user_input = concatenate_sentences(directory_path)
     user_input = "Here is a description of a software architecture document: ["+user_input+"]. Please extract all the architecture modules with their types and descriptions. And be sure not to repeat, cluster together modules with similar functional representations. Ensure that modules with similar functional representations are clustered together, and avoid repetitions. You must pay attention to the output format. The format of the output example is as follows: module name: , module description: .(Make sure the output form begins with module name: or module description:). In addition, keep the module name to one word in length."
     initial_prompt = "You are a skilled software architect. Your task is to analyze architecture documents and extract module names and descriptions from them.  Please try to give high-level abstract modules. "
