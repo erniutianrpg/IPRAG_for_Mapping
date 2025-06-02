@@ -108,8 +108,6 @@ def print_scores(scores):
     print('\nEvaluation scores are shown below:')
     dims = list(scores[0].keys())
     for dim in dims:
-        # if dim in ['coherence', 'consistency', 'overall']:
-        #     continue  # 跳过这两个维度
         cur_score = 0
         for i in range(len(scores)):
             cur_score += scores[i][dim]
