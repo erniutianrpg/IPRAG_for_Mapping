@@ -155,8 +155,9 @@ projects_to_process = [
 ]
 
 # ==== 基础路径设置 ====
-BASE_JSON_PATH = Path("./AST_fewCOT_deepseek")
-BASE_PROJECT_PATH = Path("./project")
+parent_dir = Path(__file__).parent.parent.parent
+BASE_JSON_PATH = parent_dir / 'dataset' 
+BASE_PROJECT_PATH = parent_dir / 'datase' 
 
 # ==== 主逻辑 ====
 for project in projects_to_process:
@@ -169,8 +170,8 @@ for project in projects_to_process:
 
     json_jobs = []
     for json_subdir in project_json_dir.iterdir():
-        if json_subdir.is_dir() and json_subdir.name not in {"removed_cli", "removed_model", "removed_preferences"}:
-            json_file_path = json_subdir / "clustering_before_feedback.json"
+        if json_subdir.is_dir():
+            json_file_path = json_subdir / "groundtruth.json"
             if json_file_path.exists():
                 json_jobs.append({
                     "project_name": project,
