@@ -12,7 +12,7 @@ To address the challenge of establishing precise mappings between source code fi
 The implementation scripts and outputs of each method are organized under the following folders:
 
 ```
-BM25/          → BM25-based retrieval scripts and results  
+BM25/          → BM25-based retrieval method  
 LLM-S/         → LLM-based Scoring method (semantic similarity)  
 LLM-A/         → LLM-based Assignment method  
 IP-RAG-A/      → IP-RAG-based Assignment method  
