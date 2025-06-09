@@ -20,7 +20,7 @@ Software architecture documentation is often outdated or incomplete, posing chal
 ```bash
 Repository Structure
 ├── 1Module_extraction/          # LLM-driven scripts to extract documented modules (DMs).
-├── 2Mapping_generation/         # Code and results of DM/UM mappings.
+├── 2Mapping_generation/         # Scripts and results of DM/UM mappings.
 ├── 3Mapping_Fusion/             # Mixture-of-Experts scripts for fusing multiple mappings.
 ├── 4Documentation_Generation/   # Generates and integrates documentation for UMs.
 ├── dataset/                     # Benchmark code snapshots and ground-truth labels.
@@ -32,5 +32,5 @@ Repository Structure
 
 | File                           | Contents                                                     |
 | ------------------------------ | ------------------------------------------------------------ |
-| **Supplementary Material.pdf** | 1. *Documented Module Extraction*: GPT-4o, Deepseek-V3, and others on four open-source projects.  <br />2. *Mapping Generation*: precision/recall for different methods. |
+| **Supplementary Material.pdf** | 1. *Documented Module Extraction*: GPT-4o, Deepseek-V3, and others on open-source projects.  <br />2. *Mapping Generation*: precision and recall for different methods in generating DM and UM mappings. |
 
