@@ -18,6 +18,17 @@ LLM-A/         → LLM-based Assignment method
 IP-RAG-A/      → IP-RAG-based Assignment method  
 ```
 
+### Script Execution
+
+Each method is executed independently using a script named `run_projects.sh` located in its corresponding directory. The typical usage is as follows:
+
+```bash
+cd BM25/
+bash run_projects.sh
+```
+
+Each script will automatically perform the mapping process for that method and generate the corresponding output JSON file in the same directory.
+
 ### Output Format
 
 Each method produces its mapping results in a standardized JSON file named `{method}_mapping.json`. For example:
@@ -27,4 +38,4 @@ Each method produces its mapping results in a standardized JSON file named `{met
 - `LLM-A_mapping.json`
 - `IP-RAG-A_mapping.json`
 
-These files record the predicted mappings between source code files and architectural modules and serve as input to the downstream fusion and documentation generation steps.
+These files are located in the deepest-level subdirectory of each method's folder, where the final outputs are generated. These files record the predicted mappings between source code files and architectural modules and serve as input to the downstream fusion and documentation generation steps.
