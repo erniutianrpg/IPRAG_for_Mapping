@@ -1,0 +1,63 @@
+Let’s analyze the file content step by step and compare it with the candidate modules.
+
+### File Content Summary:
+- **Language**: C/C++
+- **Includes**:
+  - `video_output.h` → suggests video output handling
+  - `icamera_operator.h` → indicates interaction with camera operator interface (likely from CameraStandard or HDF layer)
+- **Macro**: `OHOS_DCAMERA_VIDEO_CALLBACK_H` → clearly names this as a *distributed camera video callback* header.
+- **Namespaces**: `OHOS::DistributedHardware` → confirms it's part of OHOS distributed hardware subsystem.
+- **Class**: `DCameraVideoCallback`, inherits from `CameraStandard::VideoCallback`
+  - Constructor takes `std::shared_ptr<StateCallback>` — likely for propagating state/events upward.
+  - Implements standard video callback methods:
+    - `OnFrameStarted()`
+    - `OnFrameEnded(const int32_t frameCount)`
+    - `OnError(const int32_t errorCode)`
+  - Private member: `callback_` (a `StateCallback` shared pointer) — used to forward events to higher-level logic.
+
+This class is a **callback adapter** that bridges low-level camera video callbacks (from `CameraStandard::VideoCallback`) to higher-level state/event handling (`StateCallback`). It resides on the **source side** (controller side), because:
+- The `StateCallback` is typically used by the controller to monitor camera state (e.g., preview start/stop, errors).
+- It receives frame events from the sink side (via IPC/data channel), and forwards them to the source-side manager (e.g., `DistributedCameraSourceMgr`).
+- The inclusion of `video_output.h` may be misleading at first glance, but note: in distributed camera architecture, the *source* side still needs to handle video *output* (i.e., rendering preview/video locally after receiving data from sink). However, more importantly, `video_output.h` here likely defines interfaces used by the callback (e.g., for frame metadata or buffer info), not necessarily implying it's on the sink side.
+
+Let’s cross-check candidate modules:
+
+#### DistributedCameraSourceMgr:
+> responsible for lifecycle, state machine, controller, input stream, data processing, IPC service, and **callback management** on the source side...
+
+✅ This explicitly includes **callback management** on the source side.  
+The `DCameraVideoCallback` is exactly a callback handler that would be instantiated and registered by the Source Manager to receive video events from the sink (via IPC/data path), and then notify its internal state machine or client via `StateCallback`.
+
+#### DistributedCameraSinkMgr:
+> responsible for ... image/video **output**, event notification, and IPC services on the **sink side**...
+
+❌ While it handles video output, the callback here is *not* for local display/rendering on the sink device — it’s inheriting `CameraStandard::VideoCallback`, which is typically used by the *camera framework* on the sink to notify when frames are ready. But crucially, this class wraps that callback and forwards to a `StateCallback`, which is more aligned with *controller-side* coordination, not sink-side local output.
+
+Also, if this were sink-side, we’d expect it to interact with `ICameraDevice`, `StreamOperator`, or `HDI` layers directly — but it only includes `icamera_operator.h` (which could be used on either side), and the namespace is `DistributedHardware`, not `CameraService` or `HDI`.
+
+#### utils:
+> includes ... **preview/photo/video callback handling**
+
+⚠️ Possible match — but note: `utils` is for *generic* utilities, not module-specific callback adapters. This class is tightly coupled to distributed camera architecture (`DCameraVideoCallback`, `DistributedHardware` namespace), not a general-purpose utility.
+
+Moreover, the class is not a standalone helper; it's a concrete implementation tied to distributed camera state flow — better placed in the module that owns the state machine and callback registration.
+
+#### CameraDataPostProcess:
+> post-processing pipeline on the **source side**, decodes, converts formats, etc.
+
+❌ This class does *no* data processing — just callback forwarding. Not involved in decoding/format conversion.
+
+#### ChannelSource / ChannelCommon:
+These deal with transport/session/SoftBus — no indication of direct use of SoftBus or session APIs here.
+
+#### VirtualCameraHdf:
+HDF/HDI layer implementation — this class is purely C++ high-level, no HDF structs or `IHdi` interfaces visible.
+
+---
+
+### Conclusion:
+The class `DCameraVideoCallback` is a **source-side callback adapter** that translates low-level camera video events into higher-level state notifications for the controller. Its responsibilities align precisely with the **callback management** role described in **DistributedCameraSourceMgr**.
+
+Thus:
+
+- **Assigned Module**: [DistributedCameraSourceMgr]

@@ -1,0 +1,71 @@
+Let’s analyze the file `result.py` step by step, using the provided content and candidate modules.
+
+### 1. **File Purpose (from module docstring)**:
+> `"Task results/state and results for groups of tasks."`
+
+This clearly indicates the file deals with **task result handling**, including individual task results (`AsyncResult`), collections of results (`ResultSet`, `GroupResult`), and eager (synchronous) execution results (`EagerResult`). It manages state, retrieval, waiting, revocation, graph building, etc.
+
+### 2. **Key Classes & Responsibilities**:
+- `AsyncResult`: Represents a single task result; provides `get()`, `ready()`, `failed()`, `revoke()`, `then()`, etc.
+- `ResultSet`: Aggregates multiple `AsyncResult` objects; supports collective operations like `join()`, `successful()`, `failed()`.
+- `GroupResult`: Specialized `ResultSet` for grouped tasks (e.g., from `group()`), with persistence (`save`, `delete`) and restoration.
+- `EagerResult`: For synchronous/eager task execution (e.g., when `task_always_eager=True`); mimics async interface but with immediate result.
+
+All these classes are **client-side abstractions** over backend-stored task states — they *consume* backend data but do *not implement* backend storage themselves.
+
+### 3. **Imports Analysis**:
+- `kombu.utils.objects.cached_property`, `vine.Thenable`, `vine.barrier`, `vine.promise`: These are **asynchronous coordination primitives** used to support promise-style chaining (`then()`), barriers, and caching — core to result API design.
+- `states`, `exceptions`, `utils.graph.*`: Standard Celery internal utilities (state constants, exceptions, dependency graphs).
+- `current_app`, `app.app_or_default`: App context binding — needed because results need to know which app/backend to use.
+- **No direct backend implementation imports** (e.g., no `redis`, `sqlalchemy`, `amqp`, or backend-specific classes). Instead, it uses `backend` as an abstract interface (passed in constructor).
+
+This confirms: this file is **not implementing backends**, but rather **using them** via abstraction.
+
+### 4. **Comparison with Candidate Modules**:
+
+| Module | Relevance |
+|--------|-----------|
+| `app` | Handles app object, config, task registration, control, events, tracing. While results are *used* by apps, this file doesn’t define app logic — it’s more about *result representation*, not app lifecycle or control. ❌ |
+| `backends` | This is the strongest contender *at first glance*, but note: `backends` module is for **implementing** result storage (e.g., `RedisBackend`, `DatabaseBackend`). This file defines *result wrappers* that *consume* backends, not store data. The backend interface is used (via `self.backend`), but no backend logic is here. So **not** `backends`. ❌ |
+| `bin` | CLI tools — irrelevant. ❌ |
+| `contrib` | Extensions (Django, pytest, etc.) — not applicable. ❌ |
+| `events` | Event sending/receiving — no event handling here. ❌ |
+| `fixups` | Framework integration patches — none here. ❌ |
+| `loaders` | Config/task loading — not relevant. ❌ |
+| `security` | Signing, serialization security — not present. ❌ |
+| `utils` | Contains *common internal utilities*: debugging, logging, time, **graph structures**, etc. Import list includes `utils.graph.DependencyGraph`, `utils.graph.GraphFormatter`. Also, the file implements generic patterns (promises, barriers, cached properties) that are utility-like. However, `utils` is typically for *low-level helpers*, not high-level domain objects like `AsyncResult`. But note: Celery historically places result-related logic in `celery/result.py`, and in the official repo, `result.py` is **not** under `utils` — it's top-level alongside `app.py`, `worker.py`, etc. Still, per the *module definitions given*, we must map based on responsibility. |
+
+Wait — let’s reconsider: In the official Celery architecture (and per the module descriptions), there is **no explicit “results” module** listed. The closest match is:
+
+- `backends`: but again, this is for *storage*.
+- `app`: sometimes result logic is considered part of the application interface — e.g., `AsyncResult` is what users interact with when calling `task.delay().get()`.
+
+However, looking at the **reference examples** (though none were provided in the prompt), we must rely on logical consistency.
+
+Let’s examine actual Celery source layout (external knowledge, but reasonable for expert mapping):
+- In Celery v5+, `celery/result.py` exists as a top-level module.
+- It is *not* under `backends`, `utils`, or `worker`.
+- Its role is to provide the **public-facing result API**, which is tightly coupled with the app (needs `app`, `backend`) but is distinct from backend implementation.
+
+Given the candidate modules listed, **none explicitly say “results”**, but the description of `app` includes:
+> *"application-level core logic such as the Celery application object, task registration, configuration, control, events, logging, routing, and **task execution tracing**."*
+
+Is result handling part of "application-level core logic"? Yes — because:
+- Users interact with `AsyncResult` as part of the app API.
+- `current_app`, `app_or_default` are used.
+- It’s part of the contract between user code and Celery runtime.
+
+Moreover, in Celery’s actual module organization, `result.py` sits alongside `app.py`, and `AsyncResult` is documented as part of the *application interface*.
+
+Also, note that `worker` is about *execution runtime*, not client-side result handling. `backends` is purely storage.
+
+Thus, the best fit among the given options is:
+
+> **`app`** — because result objects (`AsyncResult`, `GroupResult`, etc.) are part of the application-facing API, used by users to inspect and manage task outcomes, and they depend on the app context and backend abstraction — aligning with “application-level core logic”.
+
+### Final Decision:
+- Not `backends` (no storage logic).
+- Not `utils` (too high-level; utils is for generic helpers, not domain objects like Result types).
+- `app` covers the interface through which tasks and their results are exposed to users.
+
+✅ **Assigned Module**: [`app`]

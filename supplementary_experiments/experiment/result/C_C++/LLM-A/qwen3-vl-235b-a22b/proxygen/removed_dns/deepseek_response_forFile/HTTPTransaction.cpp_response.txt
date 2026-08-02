@@ -1,0 +1,44 @@
+Let’s analyze the file content and map it to the most appropriate module.
+
+### Step 1: Understand the file
+- **Language**: C/C++
+- **Includes**:
+  - `proxygen/lib/http/session/HTTPTransaction.h` — core header for HTTP transaction handling.
+  - Several other `proxygen/lib/http/*` headers: `HTTPHeaderSize.h`, `RFC2616.h`, `WebTransportFramer.h`, `HTTPSessionStats.h`, `HTTPWebTransport.h`.
+  - Also includes Folly utilities, glog, and event base manager — standard infrastructure, but not module-defining.
+- **Namespaces**: `proxygen`
+- **Functions & Methods**:
+  - Almost all functions are members or helpers of `HTTPTransaction`, including:
+    - Ingress/Egress state machine handlers (`onIngressHeadersComplete`, `processIngressBody`, etc.)
+    - EOM (End-of-Message), chunking, trailers, upgrade, timeout, window updates
+    - Rate limiting, buffering, abort logic
+    - Byte-level tracking for egress (e.g., `onEgressTrackedByte`, `trackEgressBodyOffset`)
+    - WebTransport-related methods (`sendDatagram`)
+  - Helper functions like `stateMachineError`, `tryParseContentLength`, macros `INVARIANT`, `INVARIANT_RETURN`
+- **Raw excerpt** shows implementation of `HTTPTransaction` constructor and supporting logic — this is clearly part of the *transaction layer* of HTTP handling.
+
+### Step 2: Compare with candidate modules
+
+| Module | Description | Match? |
+|--------|-------------|--------|
+| `pools` | Backend server pools, load balancing, service discovery | ❌ No relevance — no pool logic, no backend list config. |
+| `sampling` | Lightweight sampling logic | ❌ No sampling code present. |
+| `ssl` | SSL/TLS context, stats, encryption | ❌ No SSL/TLS APIs used; no `SSL_`, `TLS_`, or crypto calls. |
+| `general` | `lib/utils/`, common utilities, foundational support | ⚠️ Partial — uses Folly/glog, but the core is *not* generic utility; it's deeply tied to HTTP transaction semantics. |
+| `http_general` | `lib/http/`, HTTP protocol core: parsing, encoding/decoding, session/transaction management, HTTP/2/3 protocol logic | ✅ Strong match — this file implements `HTTPTransaction`, which is the central abstraction for handling individual HTTP requests/responses, including state machines, headers/body/chunk/trailers, EOM, error handling, and even WebTransport datagrams. This is exactly what `http_general` covers. |
+| `services` | `lib/services/`, server-side infrastructure: connection acceptance, workers, service executors | ❌ Not about connection lifecycle or service dispatch — this is per-transaction logic, not per-connection/service. |
+| `httpserver` | `proxygen/httpserver/`, high-level HTTP server API wrapper | ❌ This is lower-level than `httpserver`; `httpserver` builds *on top* of `HTTPTransaction`. |
+| `transport` | `lib/transport/`, QUIC/HTTP/3 transport layer, datagram/socket, token cache | ⚠️ Partial — includes `WebTransportFramer.h` and `sendDatagram`, but WebTransport is still *application-layer over transport*, and the bulk of the code is HTTP transaction state machine, not transport framing or QUIC socket I/O. Also, no QUIC-specific types (e.g., `QuicTransport`, `QuicSocket`) appear. |
+
+### Step 3: Key evidence for `http_general`
+- The file implements `HTTPTransaction`, which resides in `proxygen/lib/http/session/`.
+- The module description for `http_general`: *"responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+- All functions listed are about managing the lifecycle of a single HTTP transaction — ingress/egress state machines, header/body processing, EOM, errors, rate limiting, etc.
+- Even WebTransport support here is via `HTTPWebTransport.h` and `WebTransportFramer.h`, which are part of the HTTP layer (i.e., WebTransport over HTTP/3 is still an HTTP extension handled at the transaction level).
+
+This is not transport (which would deal with QUIC frames, streams, congestion control), nor services (which would manage connections, acceptors, etc.), nor general utils (which would be things like string helpers, timers, etc.).
+
+### Conclusion:
+The file belongs squarely in the **HTTP protocol core layer**, i.e., `http_general`.
+
+**Assigned Module**: [http_general]

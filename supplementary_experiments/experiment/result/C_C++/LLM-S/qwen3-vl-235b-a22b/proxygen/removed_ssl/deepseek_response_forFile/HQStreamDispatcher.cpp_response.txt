@@ -1,0 +1,73 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File metadata**
+- **Language**: C/C++
+- **Includes**:
+  - `#include <proxygen/lib/http/session/HQStreamDispatcher.h>`
+    - This is a *header* under `proxygen/lib/http/session/`, specifically for **HQ** (HTTP/3 over QUIC) stream dispatching.
+- **Namespaces**: `proxygen`
+- **Functions**:
+  - `cursor(dataBuf)` — helper (likely inline or local)
+  - `HQUniStreamDispatcher::handleStream(...)`
+  - `HQBidiStreamDispatcher::handleStream(...)`
+- **Raw excerpt** shows:
+  - Implementation of `HQStreamDispatcherBase`, which handles:
+    - Stream error peeking (`peekError`)
+    - Data availability handling (`onDataAvailable`)
+    - Preface decoding (QUIC integer decoding)
+    - Dispatching unidirectional streams based on HTTP/3 stream types (CONTROL, QPACK_ENCODER, QPACK_DECODER)
+  - Uses:
+    - `quic::StreamId`, `quic::QuicError`, `quic::follyutils::decodeQuicInteger` → QUIC transport layer
+    - `HTTP3::ErrorCode`, `hq::UnidirectionalStreamType` → HTTP/3 protocol semantics
+    - `CallbackBase`, `TransportDirection`, `releaseOwnership`, `dispatchControlStream`, `parseUniStreamPreface` → internal HTTP session callbacks and stream lifecycle management
+
+---
+
+### **2. Key observations**
+- The file implements **stream dispatch logic for HTTP/3 (HQ)** — i.e., how incoming QUIC streams are identified (via preface), classified (e.g., control, QPACK), and routed to appropriate handlers.
+- It lives in the **`http/session/`** directory (inferred from include path).
+- It sits *between*:
+  - **Transport layer** (QUIC streams, data buffers, cursor, error codes) — but does *not* implement QUIC itself.
+  - **HTTP protocol layer** — it interprets HTTP/3-specific stream types and delegates to higher-level callbacks (e.g., `dispatchControlStream`, `parseUniStreamPreface`).
+- It is *not*:
+  - DNS resolution (`dns`)
+  - Pool configuration (`pools`)
+  - Sampling logic (`sampling`)
+  - Generic utilities (`general`) — though it uses `folly::io::Cursor`, that’s standard I/O, not utility abstraction.
+  - Server infrastructure (`services`, `httpserver`) — no connection acceptance, worker threads, or high-level server APIs.
+  - Pure transport (`transport`) — it *uses* QUIC primitives but doesn’t implement QUIC transport (e.g., congestion control, packetization, crypto handshake). Instead, it consumes QUIC stream events.
+
+---
+
+### **3. Module mapping**
+Let’s evaluate each candidate:
+
+| Module | Relevance |
+|--------|-----------|
+| **dns** | ❌ No DNS-related code. |
+| **pools** | ❌ No backend pool logic. |
+| **sampling** | ❌ No sampling logic. |
+| **general** | ⚠️ Partial: uses `folly::io::Cursor`, `VLOG`, guards — but those are ubiquitous; core logic is *HTTP/3-specific*, not generic utils. Not the best fit. |
+| **http_general** | ✅ **Strong match**: This module is defined as “common HTTP implementation under `proxygen/lib/http/`”, responsible for “HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3”. The file implements **HTTP/3 stream dispatching**, which is exactly session-level protocol handling for HTTP/3. The path `proxygen/lib/http/session/` aligns with this module’s scope. |
+| **services** | ❌ This is about server-side infrastructure (e.g., `ServiceHandler`, `AcceptLoop`), not per-stream dispatch logic. |
+| **httpserver** | ❌ High-level server API wrapper (e.g., `HTTPServer`, `RequestHandler`), not low-level session dispatch. |
+| **transport** | ⚠️ Close, but *not quite*: While it uses QUIC types, it does *not* implement transport-layer functionality (e.g., `QuicSocket`, `QuicConnection`, `CongestionController`). It’s a *consumer* of transport events, not part of the transport stack itself. The `transport` module is defined as “lower-level transport capabilities… especially transport support related to QUIC / HTTP/3” — but this file is *above* that, in the HTTP session layer. |
+
+> Crucially, the include path `proxygen/lib/http/session/HQStreamDispatcher.h` places this squarely in the **HTTP layer**, specifically session management for HTTP/3 — matching the definition of **`http_general`**.
+
+---
+
+### **4. Final judgment**
+The file implements HTTP/3 stream dispatching logic as part of the HTTP session layer, using QUIC primitives but not implementing transport itself. It belongs to the core HTTP protocol handling in `proxygen/lib/http/`, which is precisely what `http_general` covers.
+
+**Probability**:
+- `http_general`: **95%**
+- `transport`: 5% (due to QUIC usage, but misaligned scope)
+- All others: ≤1%
+
+---
+
+**Answer**:  
+The probability that this file belongs to module 'http_general' is 95%.

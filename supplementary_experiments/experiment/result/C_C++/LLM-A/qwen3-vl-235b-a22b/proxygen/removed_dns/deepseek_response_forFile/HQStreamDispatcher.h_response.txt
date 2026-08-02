@@ -1,0 +1,54 @@
+Let’s analyze the file content step by step to determine the most appropriate module.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `quic/api/QuicSocket.h` → QUIC transport layer (low-level)
+  - `proxygen/lib/http/codec/HQFramer.h`, `HQUnidirectionalCodec.h` → HTTP/3 (HTTP over QUIC) framing and unidirectional stream handling
+  - `folly/io/async/EventBase.h` → Folly event loop, used for async I/O and timers
+
+- Namespace: `proxygen`
+- Types:
+  - `HQStreamDispatcherBase`: Base class for dispatching HTTP/3 (HQ = HTTP/3 over QUIC) streams.
+  - `HQUniStreamDispatcher`, `HQBidiStreamDispatcher`: Concrete dispatchers for unidirectional and bidirectional streams.
+  - `DispatchTimeout`: Timer callback for stream dispatch timeout.
+  - `CallbackBase`, `Callback`: Interface for stream dispatch callbacks.
+
+- Functions:
+  - Stream ownership management (`takeTemporaryOwnership`, `hasOwnership`, `releaseOwnership`)
+  - Timeout handling (`dispatchTimeoutExpired`)
+  - Stream parsing/dispatch logic: `parseUniStreamPreface`, `parseBidiStreamPreface`, `dispatchControlStream`, `dispatchPushStream`, `dispatchRequestStream`, etc.
+  - Implements `quic::QuicSocket::PeekCallback` → integrates with QUIC socket peek API to inspect incoming data before full read.
+
+### 2. **Key Observations**
+- The class `HQStreamDispatcherBase` is a *stream dispatcher* for HTTP/3 (HQ), i.e., it handles how incoming QUIC streams are interpreted and dispatched to appropriate handlers (control, request, push, etc.).
+- It directly uses QUIC socket peeking (`QuicSocket::PeekCallback`) — this is a low-level transport interaction.
+- It depends on `HQFramer.h` and `HQUnidirectionalCodec.h`, which are part of Proxygen’s HTTP/3 codec layer.
+- It manages stream lifetimes, timeouts, and ownership — typical responsibilities in the *transport-to-application boundary* for HTTP/3.
+- This is not:
+  - A high-level HTTP server (`httpserver`) — no request/response handling or routing.
+  - A service infrastructure module (`services`) — no connection acceptance, worker threads, etc.
+  - A general utility (`general`) — too protocol-specific.
+  - An SSL module — no TLS context or crypto.
+  - A pool/sampling module.
+
+### 3. **Module Comparison**
+Let’s map to candidate modules:
+
+- **pools**: ❌ No backend pool or configuration logic.
+- **sampling**: ❌ No sampling logic.
+- **ssl**: ❌ No SSL/TLS code; QUIC handles encryption separately.
+- **general**: ❌ Too generic; this is HTTP/3-specific and tightly coupled to QUIC and HQ codecs.
+- **http_general**: Possibly? But `http_general` is described as “common HTTP implementation under proxygen/lib/http/”, covering HTTP/2 and HTTP/3 *protocol* core (parsing, encoding, session). However, this file is specifically about *stream dispatching from QUIC transport*, not pure HTTP message framing — it sits *between* QUIC transport and HTTP codec.
+- **services**: ❌ Not server-side infrastructure; no connection management or service execution.
+- **transport**: ✅ Matches description:  
+  > *"This module mainly corresponds to lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3. It is Proxygen's transport-layer support module for HTTP/3/QUIC scenarios, responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."*
+
+The file implements stream dispatching *on top of QUIC sockets*, using peek callbacks, managing stream ownership/timing — exactly the kind of glue logic needed to bridge QUIC transport to HTTP/3 codec layers. This is classic *transport-layer adaptation* for HTTP/3.
+
+Also note: In Proxygen, `HQStreamDispatcher` classes are typically located under `proxygen/lib/transport/` or closely associated with transport-level HTTP/3 support.
+
+### 4. **Conclusion**
+The file is clearly part of the **transport** module — specifically, the HTTP/3 (HQ) stream dispatching layer that interfaces QUIC sockets with HTTP/3 codecs.
+
+**Assigned Module**: [transport]

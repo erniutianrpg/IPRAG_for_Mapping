@@ -1,0 +1,68 @@
+Let’s analyze the file content step by step to determine which module it belongs to.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `convert_nv12_to_nv21.h` → clearly indicates **color format conversion** (NV12 ↔ NV21)
+  - `distributed_hardware_log.h`, `distributed_camera_errno.h` → standard logging and error handling for distributed camera/hardware
+- Namespace: `OHOS::DistributedHardware`
+- Functions: All belong to class `ConvertNV12ToNV21`, implementing:
+  - Format compatibility check (`IsConvertible`)
+  - Image metadata extraction (`GetImageUnitInfo`)
+  - Validation of image unit info (`IsCorrectImageUnitInfo`)
+  - UV plane separation/combination (core logic for NV12↔NV21 conversion)
+  - Y-plane copy
+  - Full color conversion (`ColorConvertNV12ToNV21`)
+  - Entry point `ProcessData` that orchestrates conversion using input buffer and config params
+
+This is a **dedicated color space/format conversion utility**, specifically for converting between two YUV 4:2:0 semi-planar formats: NV12 (U then V interleaved) and NV21 (V then U interleaved).
+
+### 2. **Module Candidate Evaluation**
+
+Let’s map each candidate:
+
+- **DistributedCameraSourceMgr**: Manages lifecycle, state machine, IPC, callbacks — *too high-level*, not about pixel-level conversion.
+- **ChannelCommon / ChannelSource / ChannelSink**: Focus on communication channels (SoftBus, sessions), not data transformation.
+- **CameraDataProcessCommon**:  
+  > *"provides common data processing frameworks, data processing pipeline interfaces, codecs, **color space conversion**, frame-rate control..."*  
+  ✅ Explicitly includes **color space conversion** as part of its scope. This is a strong match.
+- **CameraDataPreProcess**: Preprocessing on sink side (before transmission). While conversion could happen here, this module is *pipeline-specific* and typically deals with raw sensor data or early-stage filtering — but NV12/NV21 are already processed YUV formats, often used post-decoding or pre-encoding.
+- **CameraDataPostProcess**: Post-processing on source side (after receiving data), e.g., decoding, format conversion for local consumption.  
+  > *"decodes, converts formats, and processes frame rate, resolution..."*  
+  Also plausible — if the controller receives NV12 and needs NV21 for display or further processing, this would be done here.
+- **CameraServiceCommon**: Shared basic services (commands, protocols, metadata) — not low-level pixel manipulation.
+- **VirtualCameraHdf**: HDF/HDI layer virtual device implementation — too hardware-adjacent; this is pure software conversion.
+- **utils**: General utilities like buffers, error codes, constants — but this file is *not generic*; it's a specific converter class with non-trivial logic.
+
+### 3. **Key Discriminator: Where does NV12→NV21 conversion occur?**
+
+In distributed camera systems:
+- Cameras often output NV21 (Android convention) or NV12 (some ISP outputs).
+- When transmitting over network, formats may need to be standardized.
+- The **post-processing side** (source/controller side) typically adapts received frames to match local expectations (e.g., for preview via Surface or encoder input).
+- However, the module name `CameraDataProcessCommon` explicitly lists “color space conversion” as a core capability, implying it's the *shared foundation* for such operations — likely used by both pre- and post-process pipelines.
+
+Also note:
+- The class is named `ConvertNV12ToNV21`, not tied to source/sink semantics.
+- It uses `DataBuffer`, `VideoConfigParams`, `ImageUnitInfo` — generic data structures, not channel-specific.
+- No IPC, SoftBus, session, or device-layer code present.
+
+The inclusion of `distributed_camera_errno.h` and `distributed_hardware_log.h` suggests it's part of the distributed camera stack, but the *functionality* is reusable and foundational.
+
+### 4. **Comparison with Reference Examples (implied)**
+
+Though no explicit reference examples are given in the prompt, the description of `CameraDataProcessCommon` as providing:
+> “common data processing frameworks … **color space conversion** … supplying foundational components for data processing flows on both the source and sink sides”
+
+… strongly indicates that dedicated format converters like this belong in **CameraDataProcessCommon**, since:
+- It’s not tied to a specific direction (source/sink),
+- It’s a reusable utility within the data processing pipeline,
+- It implements a standard conversion needed across multiple modules.
+
+In contrast, `CameraDataPostProcess` would likely *use* this converter, not contain it directly — i.e., `PostProcess` orchestrates steps (decode → convert → resize), while `ProcessCommon` provides the atomic conversion primitive.
+
+### ✅ Conclusion
+
+The file implements a **reusable, low-level color format conversion** component, fitting best under the module that provides *common data processing capabilities including color space conversion*.
+
+**Assigned Module**: [CameraDataProcessCommon]

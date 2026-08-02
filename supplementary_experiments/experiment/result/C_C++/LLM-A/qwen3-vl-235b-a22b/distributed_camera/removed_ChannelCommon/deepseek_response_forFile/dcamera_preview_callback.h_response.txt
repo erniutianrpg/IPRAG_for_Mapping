@@ -1,0 +1,69 @@
+Let’s analyze the file content step by step and compare it with the candidate modules.
+
+### File Content Summary:
+- **File name / header guard**: `OHOS_DCAMERA_PREVIEW_CALLBACK_H`
+- **Includes**:
+  - `"preview_output.h"` — likely related to preview output handling.
+  - `"icamera_operator.h"` — suggests interaction with camera operator interface (e.g., `CameraStandard::PreviewCallback` is inherited).
+- **Namespace**: `OHOS::DistributedHardware`
+- **Class**: `DCameraPreviewCallback`, inherits from `CameraStandard::PreviewCallback`
+- **Constructor**: Takes a `std::shared_ptr<StateCallback>` — implies it forwards state/events to an upper-layer callback handler.
+- **Methods**:
+  - `OnFrameStarted()`
+  - `OnFrameEnded(const int32_t frameCount)`
+  - `OnError(const int32_t errorCode)`
+  - All are overrides of standard preview callback methods.
+
+This class is clearly a **callback adapter** that bridges the native camera framework’s preview callback interface (`CameraStandard::PreviewCallback`) to a higher-level distributed camera state management system (via `StateCallback`). It does *not* implement camera control, data transmission, preprocessing/postprocessing, or channel logic directly — it only handles notification of preview events.
+
+### Candidate Module Evaluation:
+
+1. **DistributedCameraSourceMgr**  
+   → Handles lifecycle, controller, IPC, and *callback management on the source side*.  
+   ✅ The class is named `DCameraPreviewCallback`, lives in `DistributedHardware`, and manages preview callbacks — this strongly aligns with “callback management on the source side”.  
+   In distributed camera architecture, the *source side* (controller) receives preview frames and needs to notify its app/UI via callbacks. This class appears to be part of that callback chain.
+
+2. **DistributedCameraSinkMgr**  
+   → Handles callback/event notification on the *sink side* (controlled device), but typically sink-side callbacks would be for *local* camera events before sending data out. However, `DCameraPreviewCallback` inherits from `CameraStandard::PreviewCallback`, which is used by the *camera provider* (i.e., sink side) to notify when frames are ready — but here it's wrapped and forwarded to a `StateCallback`, suggesting it's used on the *source* side to receive notifications *from* the sink (via IPC).  
+   ⚠️ Ambiguous — need to consider where this class is instantiated.
+
+3. **ChannelSource / ChannelSink**  
+   → These are about *channel/IPC transport*, not callback adaptation. This class has no network/SoftBus code — just callback forwarding. So unlikely.
+
+4. **CameraDataProcessCommon / PreProcess / PostProcess**  
+   → These deal with image data pipelines, codecs, format conversion — not event/callback handling. This class does *no* data processing.
+
+5. **CameraServiceCommon**  
+   → Shared basic service capabilities: commands, protocols, metadata, etc. While `StateCallback` might be part of common services, this class is specifically a *preview callback adapter*, not a generic service.
+
+6. **VirtualCameraHdf**  
+   → HDF/HDI layer implementation — this is C++ but not HDF-specific; no `IHdfDevice`, `HdfDeviceObject`, etc. Not matching.
+
+7. **utils**  
+   → Provides utilities, buffers, error codes, and *callback handling* for `CameraClient/CameraOperator`.  
+   The description says: “including … preview/photo/video callback handling”.  
+   ✅ This is plausible — if `DCameraPreviewCallback` is a utility wrapper for standard camera callbacks, it could belong here.
+
+Now, critical distinction:
+- The class inherits `CameraStandard::PreviewCallback`, which is part of the *camera standard API* (typically used by apps or clients that consume camera preview).
+- In distributed camera, the **source side (controller)** acts as a *client* to the remote camera (sink), so it would register a `PreviewCallback` to receive preview frames — but since the actual camera is remote, the callback must be proxied over IPC.
+- Thus, `DCameraPreviewCallback` likely resides on the **source side**, wrapping the local callback registration and forwarding events (e.g., frame start/end/error) to the higher-level `StateCallback` (which may trigger UI updates or state transitions).
+
+Looking again at **DistributedCameraSourceMgr**:  
+> “...callback management on the source side, namely the controller side, enabling the controller to invoke distributed camera capabilities and use the controlled device's camera for preview...”
+
+This matches perfectly: the controller (source) needs to handle preview callbacks — this class is exactly that adapter.
+
+Also, the namespace `OHOS::DistributedHardware` is consistent with the Distributed Camera subsystem.
+
+The `utils` module is more for *generic helpers*, but this class is tightly coupled to the distributed camera preview flow — not a general-purpose utility.
+
+### Conclusion:
+The most appropriate module is **DistributedCameraSourceMgr**, because:
+- It implements preview callback handling on the source/controller side.
+- It bridges standard camera callbacks to distributed state management.
+- Matches the responsibility described for `DistributedCameraSourceMgr`: “callback management on the source side”.
+
+---
+
+**Assigned Module**: [DistributedCameraSourceMgr]

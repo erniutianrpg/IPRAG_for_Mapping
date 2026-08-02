@@ -1,0 +1,60 @@
+Let’s analyze the file step by step:
+
+### 1. **File content summary**
+- **Header includes**:
+  - `folly/io/async/AsyncServerSocket.h`: low-level async socket handling (Folly).
+  - `proxygen/lib/services/AcceptorConfiguration.h`: configuration for acceptors — part of *services*.
+  - `proxygen/lib/utils/AsyncTimeoutSet.h` and `WheelTimerInstance.h`: utility timers — part of *general* (`utils/`).
+  - `wangle/acceptor/Acceptor.h`: Wangle’s acceptor base class — Wangle is a higher-level networking framework used by Proxygen; this is a key clue.
+
+- **Namespace**: `proxygen`
+- **Class**: `HTTPAcceptor`, inherits from `wangle::Acceptor`.
+- **Key methods**:
+  - `init(...) override`: initializes server socket, event base, SSL stats, Fizz context — typical server-side acceptor setup.
+  - `getTransactionTimeoutSet()`, `createTransactionTimeoutSet(...)`: manages per-transaction timeouts using `WheelTimerInstance`.
+  - Uses `AcceptorConfiguration` to configure timeouts, etc.
+
+- **Design pattern**: This is a concrete acceptor implementation for HTTP (likely HTTP/1 or HTTP/2), built on top of Wangle’s acceptor infrastructure, configured via `AcceptorConfiguration`, and managing transaction-level timeouts.
+
+### 2. **Module mapping analysis**
+
+#### ✅ **services**
+- The file includes `proxygen/lib/services/AcceptorConfiguration.h`.
+- `AcceptorConfiguration` is clearly part of the *services* module — it defines how acceptors are configured (e.g., timeouts, TLS contexts, etc.).
+- The class `HTTPAcceptor` is a *server-side acceptor*, which is exactly what the *services* module handles: “connection management and server-side related code… service execution, connection acceptance, worker threads, and service configuration.”
+- It overrides `wangle::Acceptor::init()` — but that’s just the integration point; the logic (timeout setup, config access) is specific to Proxygen’s *services* layer.
+- `HTTPAcceptor` is not in `httpserver/` (which is high-level API wrapper), nor in `http_general/` (which deals with HTTP message parsing/encoding), nor in `transport` (QUIC/HTTP3).
+
+#### ⚠️ **general**
+- Uses `WheelTimerInstance` and `AsyncTimeoutSet` from `proxygen/lib/utils/` → these are *general utilities*.
+- However, the *primary purpose* of this file is not to provide generic utilities — it’s to implement an acceptor with specific server behavior. Utilities are used *in support* of the acceptor logic, not the main focus.
+- So while it *uses* general utilities, it does not *belong* to the general module.
+
+#### ❌ **http_general**
+- This module is about HTTP protocol internals: request/response parsing, headers, body handling, session/transaction state machines — not acceptor infrastructure.
+- `HTTPAcceptor` doesn’t parse HTTP; it accepts connections and hands them off.
+
+#### ❌ **httpserver**
+- `proxygen/httpserver/` provides high-level APIs like `HTTPServer::start()`, `RequestHandler`, etc., often wrapping services and utils.
+- This file is lower-level: it’s a concrete `Acceptor`, not a user-facing server API. No `httpserver/` headers included.
+
+#### ❌ **ssl**, **dns**, **pools**, **transport**
+- No DNS resolution logic → not `dns`.
+- No pool management or backend list logic → not `pools`.
+- While it accepts optional `FizzServerContext` and `SSLStats`, SSL is not its primary concern — it’s just passed through; no SSL handshake logic here → not `ssl`.
+- No QUIC/UDP/socket-level transport handling → not `transport`.
+
+### 3. **Conclusion**
+The file implements a server-side acceptor (`HTTPAcceptor`) that:
+- Inherits from `wangle::Acceptor`,
+- Uses `AcceptorConfiguration` (core to *services*),
+- Manages transaction timeouts (using utils, but as implementation detail),
+- Is part of the server infrastructure layer above raw transport but below high-level HTTP server APIs.
+
+This aligns precisely with the **services** module definition:  
+> *"used for connection management and server-side related code... provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration."*
+
+Hence:
+
+**The probability that this file belongs to module 'services' is 95%.**  
+(5% uncertainty due to use of `utils` components, but the core responsibility and location in the architecture clearly place it in *services*.)

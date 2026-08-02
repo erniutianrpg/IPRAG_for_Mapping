@@ -1,0 +1,64 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `proxygen/lib/http/HTTPConnectorWithFizz.h`
+  - `proxygen/lib/http/session/HTTPUpstreamSession.h`
+- Namespaces: `fizz`, `proxygen`
+- Function: `HTTPConnectorWithFizz::connectFizz(...)`, plus `connectSuccess()`
+- Key behaviors:
+  - Creates an `AsyncFizzClient` (from Fizz, Facebook’s TLS 1.3 library)
+  - Initiates a TLS connection using Fizz
+  - Handles TLS handshake metadata (cipher, version, PSK/resumption, SNI, etc.)
+  - Extracts transport info (local/peer address, app protocol, SSL setup time, security type)
+  - Constructs an `HTTPUpstreamSession` with the secure socket and codec
+
+This is clearly about **establishing an HTTPS upstream connection using Fizz for TLS**, i.e., the *client-side* secure transport layer for HTTP.
+
+### 2. **Module Candidate Analysis**
+
+#### ✅ `ssl`: 
+> *"mainly responsible for SSL/TLS context and statistics-related capabilities, providing encrypted communication support for HTTPS or TLS-based connections."*
+
+- The code directly uses `FizzClientContext`, `CertificateVerifier`, handles TLS handshake outcomes (cipher, version, PSK type), and populates `transportInfo_` fields like `sslCipher`, `sslVersion`, `sslResume`, `securityType`.
+- It's tightly coupled with TLS negotiation — not just “context” but actual connection establishment via Fizz.
+- However, note: this is *not* generic SSL/TLS utility code (like certificate loading, context creation helpers); it's specifically embedded in an HTTP connector that uses Fizz to establish secure transport for HTTP upstream sessions.
+
+#### 🤔 `http_general`:
+> *"common HTTP implementation under proxygen/lib/http/, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management..."*
+
+- This file is part of `proxygen/lib/http/`, and includes `HTTPConnectorWithFizz.h` and `HTTPUpstreamSession.h`.
+- But the focus here is not on HTTP semantics (e.g., parsing headers, managing streams, handling requests/responses), but rather on *how to set up the secure transport* before HTTP framing begins.
+- `HTTPConnectorWithFizz` is a *connector*, i.e., responsible for establishing the underlying transport (TLS + socket), not for HTTP protocol logic per se.
+- So while it lives under `lib/http/`, its role is transport-layer setup for HTTP — more infrastructural than protocol-level.
+
+#### 🤔 `transport`:
+> *"lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3... responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."*
+
+- This module is explicitly for **QUIC / HTTP/3**, not TLS-over-TCP.
+- The code here uses `AsyncFizzClient`, which is TCP-based TLS (not QUIC). Fizz is used for TLS 1.3 over TCP, not QUIC transport (though Fizz can be used in QUIC too, here it's clearly used with `folly::SocketAddress`, indicating TCP).
+- So `transport` is *not* a good fit — it's focused on non-TCP transports.
+
+#### ❌ `dns`, `pools`, `services`, `httpserver`:
+- `dns`: No DNS resolution here.
+- `pools`: No pool management.
+- `services`: Server-side infrastructure; this is client-side (upstream session).
+- `httpserver`: High-level server API; this is internal connector logic for clients.
+
+### 3. **Key Insight**
+The class `HTTPConnectorWithFizz` is a concrete implementation of an HTTP *connector* that uses Fizz for TLS. In Proxygen architecture:
+- `HTTPConnector` is part of the HTTP client infrastructure (used by `HTTPUpstreamSession`).
+- The use of Fizz places it squarely in the domain of **secure transport setup**.
+- While it lives under `lib/http/`, its responsibility is *not* HTTP protocol handling — it’s about enabling secure transport for HTTP.
+
+Given the candidate definitions, the closest match is:
+
+> **`ssl`**: because it provides "encrypted communication support for HTTPS or TLS-based connections", and this code is literally setting up TLS (via Fizz) for an HTTP upstream connection, collecting SSL stats/metadata, and integrating with the HTTP stack.
+
+Even though it’s not *just* SSL context creation (it’s connection orchestration), the core value is TLS handshaking and security metadata — exactly what the `ssl` module is described to cover.
+
+Also, note that in Proxygen, Fizz integration is typically considered part of the SSL layer (e.g., `proxygen/lib/ssl/` exists in some versions, and Fizz usage is categorized under SSL).
+
+### ✅ Final Decision:
+**Assigned Module**: [ssl]

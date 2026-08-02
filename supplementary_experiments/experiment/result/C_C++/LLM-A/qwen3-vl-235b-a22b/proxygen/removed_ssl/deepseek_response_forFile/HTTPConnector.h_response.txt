@@ -1,0 +1,65 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Namespace**: `proxygen`
+- **Key Types**:
+  - `HTTPUpstreamSession` (forward-declared)
+  - `HTTPConnector` — main class, handles connection setup (TCP + SSL), uses `folly::AsyncSocket`, timeouts via `HHWheelTimer`/`WheelTimerInstance`, supports HTTP codec factory configuration.
+  - `Callback` — abstract interface for connection success/error callbacks.
+- **Includes**:
+  - Folly I/O: `AsyncSocket`, `HHWheelTimer`, `SSLContext`, `SSLSession`, `SocketOptionMap`
+  - Proxygen HTTP codec: `DefaultHTTPCodecFactory`, `HTTPCodec`
+  - Proxygen utils: `Time.h`, `WheelTimerInstance.h`
+  - Wangle: `TransportInfo.h`
+
+This is clearly a *client-side* connection establishment utility for HTTP sessions — specifically for initiating upstream connections (e.g., to backend servers), not for accepting inbound connections.
+
+### 2. **What does `HTTPConnector` do?**
+- Manages asynchronous TCP or TLS connection attempts.
+- Supports setting HTTP version override, plaintext protocol (e.g., for ALPN), and custom HTTP codec factory.
+- Uses `folly::AsyncSocket::ConnectCallback` internally.
+- Tracks time elapsed, busy state, and provides callback hooks (`connectSuccess`, `connectError`, `preConnect`).
+- Designed to be used by higher-level components (e.g., HTTP client or proxy logic) that need to establish an upstream HTTP connection.
+
+This is **not**:
+- DNS resolution → no DNS-related includes or logic (`dns` module ❌)
+- Pool management → no server list, load balancing, or pool configuration (`pools` ❌)
+- Sampling logic → no sampling code (`sampling` ❌)
+- Server-side infrastructure (e.g., acceptors, workers) → it's a *connector*, not an acceptor; no service execution logic (`services` ❌)
+- High-level HTTP server framework → this is not in `proxygen/httpserver/`, nor does it expose server APIs (`httpserver` ❌)
+- QUIC/HTTP/3 transport → no QUIC, no `quic/`, no datagram/socket abstractions from transport layer (`transport` ❌)
+
+### 3. **Where does this fit?**
+The file resides logically in the HTTP client/connection layer of Proxygen. It:
+- Lives in the `proxygen` namespace.
+- Depends on `proxygen/lib/http/codec/` and `proxygen/lib/utils/`.
+- Is tightly coupled with HTTP session and codec configuration (e.g., `setHTTPCodecFactory`).
+- Is part of the *HTTP protocol stack* but at the connection initiation level — i.e., bridging transport (socket) and HTTP semantics (codec, version, protocol).
+
+Looking at candidate modules:
+
+- `general`: defined as “common utility and support code… providing foundational support for core HTTP abstractions, service frameworks, network processing…”  
+  → This is plausible, but `general` is described as corresponding mainly to `proxygen/lib/utils/`. This file is more HTTP-specific than generic utility.
+
+- `http_general`: defined as “common HTTP implementation under `proxygen/lib/http/`… responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management…”  
+  → `HTTPConnector` is not doing parsing/encoding, but it *is* managing HTTP session setup (i.e., establishing the transport for an HTTP session), and it configures the HTTP codec factory — which directly ties into HTTP protocol handling. Also, it’s in the same logical layer as `HTTPCodec`, `DefaultHTTPCodecFactory`, etc.
+
+In Proxygen’s structure:
+- `lib/http/codec/` = HTTP framing/parsing
+- `lib/http/session/` often contains `HTTPUpstreamSession`, `HTTPDownstreamSession`
+- `lib/http/client/` (or similar) would contain `HTTPConnector`
+
+While `HTTPConnector` isn’t strictly a codec, it is part of the *HTTP client infrastructure* — and since `http_general` is explicitly described as covering “HTTP protocol core layer” including “session management”, and this class manages the creation and lifecycle of upstream HTTP sessions (via connection + codec setup), it fits best under `http_general`.
+
+Also note: The presence of `HTTPUpstreamSession` forward declaration strongly suggests this is part of the HTTP session layer — not generic utilities.
+
+### 4. **Comparison with reference examples (implied by prompt)**  
+Though no explicit reference files are given, standard Proxygen layout tells us:
+- `HTTPConnector` is typically in `proxygen/lib/http/client/` or similar, and is considered part of the HTTP core, not transport or utils.
+
+Thus, among the options, **`http_general`** is the most appropriate.
+
+---
+
+**Assigned Module**: [http_general]

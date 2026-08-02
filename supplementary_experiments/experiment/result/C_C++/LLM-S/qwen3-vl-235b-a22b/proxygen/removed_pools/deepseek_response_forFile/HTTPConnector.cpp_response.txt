@@ -1,0 +1,101 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `folly/logging/xlog.h` → logging (utility)
+  - `proxygen/lib/http/HTTPConnector.h` → core header of this file
+  - `folly/io/SocketOptionMap.h`, `folly/io/async/AsyncSSLSocket.h` → low-level I/O and socket handling
+  - `proxygen/lib/http/codec/DefaultHTTPCodecFactory.h`, `HTTP1xCodec.h`, `HTTP2Codec.h` → HTTP codec logic (protocol parsing/encoding)
+  - `proxygen/lib/http/session/HTTPTransaction.h`, `HTTPUpstreamSession.h` → session & transaction management
+  - `wangle/ssl/SSLUtil.h` → SSL utility helpers
+
+- **Namespaces used**: `folly`, `proxygen`, `std`
+- **Functions defined**:
+  - `HTTPConnector::reset(...)`
+  - `HTTPConnector::setPlaintextProtocol(...)`
+  - `HTTPConnector::setHTTPVersionOverride(...)`
+  - `HTTPConnector::connect(...)` — plaintext TCP connection setup
+  - `HTTPConnector::connectSSL(...)` — TLS connection setup
+  - Helper: `microsecondsSince(connectStart_)`
+
+- **Raw excerpt** shows implementation of `HTTPConnector` constructor, destructor, reset, and two `connect` methods (plaintext + SSL), using:
+  - `AsyncSocket` / `AsyncSSLSocket`
+  - `DefaultHTTPCodecFactory`
+  - `TransportInfo` from `wangle`
+  - XLOG for debug logging
+
+This is clearly the **implementation of `HTTPConnector`**, which is a *client-side* component that establishes connections (TCP or TLS) and sets up the underlying transport for HTTP transactions.
+
+---
+
+### **2. Module Mapping Analysis**
+
+#### ✅ **http_general**
+- Defined as: *"common HTTP implementation under proxygen/lib/http/, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+- `HTTPConnector` lives in `proxygen/lib/http/` (as per include path).
+- It uses:
+  - `HTTPTransaction`, `HTTPUpstreamSession` → session/transaction layer
+  - `DefaultHTTPCodecFactory`, `HTTP1xCodec`, `HTTP2Codec` → codec layer
+  - Manages connection lifecycle for upstream (client-side) HTTP sessions
+- Though it touches transport (`AsyncSocket`, `AsyncSSLSocket`), it does **not implement transport logic itself** — it *uses* transport primitives.
+- It is not server-specific (so not `services` or `httpserver`), nor DNS, sampling, or QUIC/transport-layer.
+
+➡️ This fits **perfectly** under `http_general`: it's part of the core HTTP client infrastructure, bridging transport and session layers.
+
+#### ❌ **dns**
+- No DNS resolution logic (e.g., no `DNSResolver`, `DnsCache`, `getaddrinfo`, etc.)
+- Not relevant.
+
+#### ❌ **sampling**
+- No sampling logic (e.g., no rate limiting, probabilistic sampling, histogram counters)
+- Not relevant.
+
+#### ❌ **ssl**
+- While it uses SSL (`AsyncSSLSocket`, `SSLContext`, `SSLSession`), it does **not define or manage SSL contexts**, certificates, handshake logic, or TLS stats.
+- It *consumes* SSL facilities via Wangle/Folly but doesn’t implement SSL core — that’s what the `ssl` module would do.
+- So this is **not** the SSL module.
+
+#### ❌ **general**
+- `general` = `proxygen/lib/utils/` and common auxiliary code.
+- But `HTTPConnector` is in `proxygen/lib/http/`, not `utils/`.
+- It’s not a generic utility (like string helpers, time utils, etc.) — it’s tightly coupled to HTTP session establishment.
+- So lower likelihood.
+
+#### ❌ **services**
+- `services` = server-side infrastructure: service execution, connection acceptance, workers.
+- `HTTPConnector` is **upstream/client-side** (note: `HTTPUpstreamSession`), used by clients or proxies to connect *outward*, not accept inbound connections.
+- So not `services`.
+
+#### ❌ **httpserver**
+- High-level server framework (`proxygen/httpserver/`)
+- This file is not in that directory, and implements a *connector*, not a server handler or request router.
+- Not applicable.
+
+#### ❌ **transport**
+- `transport` = QUIC / HTTP/3 low-level transport (e.g., `QuicTransport`, `Http3Codec`, `DatagramSocket`)
+- This file uses TCP/TLS sockets (`AsyncSocket`, `AsyncSSLSocket`) — classic stream-based transport, not QUIC.
+- No mention of `quic`, `datagram`, `packetization`, `connection IDs`, etc.
+- So not `transport`.
+
+---
+
+### **3. Final Assessment**
+The file implements `HTTPConnector`, a key component in Proxygen’s HTTP client stack that:
+- Orchestrates connection setup (TCP/SSL)
+- Binds codecs and sessions
+- Lives in `proxygen/lib/http/`
+- Is used by higher-level client abstractions (e.g., `HTTPClient`, `ProxyClient`)
+
+This aligns exactly with the definition of **`http_general`**.
+
+Probability estimate:
+- Strong match to `http_general`: **95%**
+- Minor chance it could be considered `general` if one misclassifies it as utility — but its location, dependencies, and role confirm `http_general`.
+- All other modules are clearly mismatched.
+
+---
+
+**The probability that this file belongs to module 'http_general' is 95%.**

@@ -1,0 +1,60 @@
+Let’s analyze the file `worker\request.py` step by step.
+
+### 1. **File Path**
+- Path: `worker\request.py`
+  - This strongly suggests it belongs to the `worker` module, as per standard Celery directory structure (e.g., `celery/worker/request.py` in upstream).
+
+### 2. **Module Docstring**
+> "Task request.\n\nThis module defines the :class:`Request` class, that specifies how tasks are executed."
+
+- The `Request` class is central to how a task is represented and processed *inside the worker* — it encapsulates the message, metadata, execution context, and lifecycle callbacks (on_ack, on_success, on_failure, etc.). This is not about result backends, CLI, concurrency pools, or events per se — it's about the *internal representation of a task request during worker processing*.
+
+### 3. **Imports Analysis**
+Key imports include:
+- `celery.app.trace.*`: task tracing and execution logic.
+- `celery.concurrency.base.BasePool`: used in `execute_using_pool`.
+- `celery.exceptions.*`: exception handling during task execution.
+- `celery.signals`, `celery.states`, `celery.utils.*`: internal utilities and state management.
+- `billiard.*`: low-level multiprocessing primitives (used by prefork pool).
+- `kombu.*`: message decoding/safe repr — for handling incoming messages.
+
+Crucially, it does **not** import:
+- Backend-specific modules (`backends`, `redis`, `rpc`, `database`, etc.)
+- CLI-related modules (`bin`, `celery.bin.*`)
+- Event-specific modules like `celery.events` (though it *uses* `eventer`, which is passed in — but eventer is part of worker runtime)
+- Security modules (no signing, certificates)
+
+The imports align with *worker runtime internals*: task dispatch, execution, error handling, and lifecycle.
+
+### 4. **Class `Request` Responsibilities**
+The `Request` class includes methods such as:
+- `execute()`, `execute_using_pool()`: actual task invocation
+- `on_accepted`, `on_timeout`, `on_success`, `on_failure`, `on_retry`: lifecycle hooks tied to worker execution flow
+- `acknowledge()`, `reject()`, `terminate()`, `cancel()`: control over message acknowledgment and task termination
+- `send_event()`: emits worker-level events (e.g., task-succeeded), consistent with worker event emission
+- `_announce_revoked`, `_announce_cancelled`: worker-side revocation handling
+- `delivery_info`, `message`, `body`, `headers`: parsing the incoming message from the broker
+
+All these are core to the **worker’s job of receiving, preparing, executing, and reporting on a task**.
+
+### 5. **Comparison with Candidate Modules**
+- `backends`: ❌ No result storage or retrieval logic.
+- `bin`: ❌ Not CLI-related; no argument parsing or command entry points.
+- `concurrency`: ❌ While it uses `BasePool`, it doesn’t define pools or concurrency models — just invokes them.
+- `contrib`: ❌ No extension-specific logic (Django, pytest, abortable, etc.).
+- `events`: ❌ It *sends* events via `eventer`, but doesn’t implement event routing, transport, or monitoring — that’s handled elsewhere. The `eventer` is injected, not owned here.
+- `fixups`: ❌ No framework integration or startup fixup logic.
+- `loaders`: ❌ Doesn’t load configs or tasks — assumes task is already resolved.
+- `security`: ❌ No signing, serialization security, or cryptography.
+- `utils`: ❌ Uses many utils, but this is not a utility library — it’s a core domain object (`Request`) with complex behavior tied to worker execution.
+- `worker`: ✅ Matches perfectly: this is the *task request abstraction* used internally by the worker to manage task execution lifecycle — exactly what the `worker` module owns.
+
+### 6. **Reference Context**
+In upstream Celery (e.g., https://github.com/celery/celery/blob/main/celery/worker/request.py), this file is indeed part of the `worker` module and is imported by `celery.worker.job` and `celery.worker.consumer`. The `Request` class is the heart of how the worker processes a single task.
+
+---
+
+### ✅ Conclusion
+The file `worker\request.py` defines the `Request` class, which encapsulates the full lifecycle of a task inside the worker — from receipt to execution to result reporting and cleanup. It is tightly coupled with worker internals and is not reusable outside the worker context.
+
+**Assigned Module**: [`worker`]

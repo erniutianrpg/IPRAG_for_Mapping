@@ -1,0 +1,60 @@
+Let’s analyze the file content step by step to determine the most appropriate module.
+
+### 1. **File Overview**
+- File is a header (`#pragma once`) defining:
+  - A forward-declared class `HeaderIndexingStrategy`
+  - A struct `AcceptorConfiguration`, which inherits from `wangle::ServerSocketConfig`
+- It includes headers from:
+  - `folly/...` (async I/O, strings)
+  - `proxygen/lib/http/codec/HTTPSettings.h`
+  - `wangle/acceptor/ServerSocketConfig.h`
+  - `zlib.h`, `sys/stat.h`, etc.
+- The struct contains many HTTP/2 and connection-related configuration fields:
+  - `HTTP2PrioritiesEnabled`, `maxConcurrentIncomingStreams`, `initialReceiveWindow`, etc.
+  - `transactionIdleTimeout`, `writeBufferLimit`, `readBufNewAllocSize`
+  - `headerIndexingStrategy`, `serverEarlyResponseEnabled`, `HTTP2PingEnabled`
+  - `forceHTTP1_0_to_1_1`, `plaintextProtocol`, `egressSettings`
+
+This is clearly a **server-side configuration structure** used to configure how an HTTP server (likely using Wangle acceptors) behaves — especially around HTTP/2, timeouts, window sizes, and protocol behavior.
+
+### 2. **Key Clues**
+- Inherits from `wangle::ServerSocketConfig`: Wangle is Facebook’s async networking framework; `ServerSocketConfig` configures socket-level behavior for acceptors.
+- Fields like `transactionIdleTimeout`, `maxConcurrentIncomingStreams`, `receiveStreamWindowSize`, etc., are **HTTP/2 session/stream parameters**, directly tied to HTTP protocol semantics.
+- Includes `HTTPSettings.h` → indicates close coupling with HTTP settings (e.g., SETTINGS frame values).
+- Namespace: `proxygen` — core Proxygen library.
+- No SSL-specific fields (e.g., no certs, cipher suites, TLS versions) → rules out `ssl`.
+- Not about sampling → rules out `sampling`.
+- Not about backend pools or service discovery → rules out `pools`.
+- Not a utility/helper (e.g., no string manipulation, no generic algorithms) → unlikely `general`.
+- Not QUIC/transport-layer (no QUIC, no datagram, no transport sockets) → rules out `transport`.
+- Not high-level server API (no `HTTPServer`, no request handler registration, no routing) → less likely `httpserver`.
+
+### 3. **Compare with Candidate Modules**
+
+#### ✅ `services`
+> *"mainly corresponds to proxygen/lib/services/ and is used for connection management and server-side related code. On top of the low-level HTTP abstractions, it provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration."*
+
+- `AcceptorConfiguration` is used to configure how the server accepts connections and behaves per-connection/session — exactly what `services` handles.
+- In Proxygen, `lib/services/` contains classes like `HTTPServerTransport`, `HTTPServerHandler`, and configurations that tie together Wangle acceptors with HTTP semantics.
+- The presence of `wangle::ServerSocketConfig` inheritance strongly suggests this lives in the *server infrastructure* layer — i.e., `services`.
+- Many fields (e.g., `transactionIdleTimeout`, `HTTP2PrioritiesEnabled`, `headerIndexingStrategy`) are used during connection setup and session lifecycle — consistent with service-level configuration.
+
+#### ❌ `http_general`
+> *"common HTTP implementation under proxygen/lib/http/... responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management..."*
+
+- While some fields (like `egressSettings`, `maxConcurrentIncomingStreams`) relate to HTTP/2 semantics, this struct is not part of the *protocol codec* layer — it’s not involved in parsing/encoding.
+- It does not define any protocol state machines or codecs — just configuration passed down to them.
+- `HTTPSettings.h` is included, but that’s used across layers; inclusion alone doesn’t place it in `http_general`.
+
+#### ❌ `httpserver`
+> *"wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers"*
+
+- This is a *low-level configuration struct*, not a high-level API wrapper (e.g., no `HTTPServer::start()`, no `RequestHandlerFactory`, etc.).
+- `httpserver/` typically contains user-facing APIs; this looks internal to the server stack.
+
+### 4. **Conclusion**
+The struct `AcceptorConfiguration` is a server-side configuration object that bridges Wangle’s socket-level config with HTTP-specific behavior (especially HTTP/2). It belongs to the **server infrastructure layer**, which in Proxygen is precisely what the `services` module covers.
+
+Thus:
+
+- **Assigned Module**: [`services`]

@@ -1,0 +1,92 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `dcamera_source_callback_stub.h` → strongly suggests this is a *callback stub* for the **source side** (controller side), as "source" is explicitly in the name.
+  - `distributed_camera_errno.h` → generic error codes for distributed camera.
+  - `distributed_hardware_log.h` → logging utilities for distributed hardware (standard across modules).
+- **Namespaces**: `OHOS::DistributedHardware` → confirms this is part of OpenHarmony’s Distributed Hardware subsystem.
+- **Class**: `DCameraSourceCallbackStub`
+  - Inherits from `IPCObjectStub` (implied by `IPCObjectStub::OnRemoteRequest` call).
+  - Implements `OnRemoteRequest`, which dispatches IPC calls based on code (e.g., `NOTIFY_REG_RESULT`, `NOTIFY_UNREG_RESULT`).
+  - Contains inner handlers: `NotifyRegResultInner`, `NotifyUnregResultInner`, which read strings/integers from `MessageParcel` and call virtual methods `OnNotifyRegResult`, `OnNotifyUnregResult`.
+  - These are *callback stubs* — i.e., the server-side (stub) that receives IPC requests from the remote side (likely sink side) and forwards them to local callback implementations.
+
+> Key insight: This is an **IPC stub for callbacks from the sink to the source**, specifically for registration/unregistration result notifications. So the *source side* (controller) is receiving callbacks from the sink (controlled device) — meaning this stub runs on the **source side**, and handles incoming IPC messages *sent by the sink* to notify the source about registration/unregistration outcomes.
+
+This matches the pattern used in OpenHarmony’s IPC architecture:
+- Proxy (client-side, e.g., on sink) → sends request to Stub (server-side, e.g., on source)
+- Here, the stub is on the **source**, so the sink is calling back to the source — typical for asynchronous result reporting.
+
+---
+
+### **2. Module Mapping**
+
+Let’s evaluate each candidate:
+
+#### ✅ **DistributedCameraSourceMgr**
+- Responsibility: *"lifecycle, state machine, controller, input stream, data processing, IPC service, and callback management on the source side"*
+- Specifically mentions **callback management on the source side**.
+- The class `DCameraSourceCallbackStub` is clearly a callback stub used by the source-side manager to receive results from sink.
+- The functions `OnNotifyRegResult`, `OnNotifyUnregResult` are likely implemented in the `DistributedCameraSourceMgr` (or its delegate), and this stub dispatches to them.
+- The header `dcamera_source_callback_stub.h` is almost certainly part of this module.
+
+→ **Strong match**.
+
+#### ❌ **DistributedCameraSinkMgr**
+- This is the *sink-side* (controlled device) manager.
+- It would have *proxies* to call source-side stubs, not stubs itself for receiving sink-initiated callbacks.
+- While sink may *send* notifications, the stub receiving them lives on the source side.
+- So this file does **not** belong to SinkMgr.
+
+#### ❌ **ChannelCommon / ChannelSource**
+- These handle *channel-layer* communication (SoftBus sessions, data channels), not high-level IPC callbacks like registration results.
+- `DCameraSourceCallbackStub` is at the **IPC interface layer**, not the transport/channel layer.
+- No SoftBus or session-related APIs here.
+
+#### ❌ **CameraDataProcessCommon / CameraDataPreProcess / CameraDataPostProcess**
+- These deal with image/video data pipelines (encoding, decoding, format conversion, etc.).
+- This file handles only *control-plane* IPC (registration results), no media data processing.
+- No frame buffers, codecs, or pipeline logic.
+
+#### ❌ **CameraServiceCommon**
+- Provides *shared basic service capabilities*, e.g., protocols, camera info, events.
+- While error codes and logging are shared, this file is a concrete implementation of a callback stub — too specific for a “common” module.
+- Typically, common modules provide interfaces or helpers, not concrete stub classes tied to a specific role (source).
+
+#### ❌ **VirtualCameraHdf**
+- Operates at HDF/HDI layer, implements virtual camera devices, providers, operators.
+- This file is in `DistributedHardware` namespace, not `HDF` or `CameraDevice`, and uses `MessageParcel`/IPC — standard OHOS IPC, not HDF driver interfaces.
+- No mention of `HdfDevice`, `StreamOperator`, etc.
+
+#### ❌ **utils**
+- Generic utilities: buffers, constants, error codes, local camera helpers.
+- While it includes `distributed_camera_errno.h`, the core logic here is a full IPC stub class — too domain-specific for utils.
+- Utils would not contain a class with member function maps and dispatch logic.
+
+---
+
+### **3. Final Assessment**
+
+The file:
+- Is named `dcamera_source_callback_stub.h` (implied by include),
+- Implements a stub for callbacks **from sink to source**,
+- Belongs to the source-side callback management infrastructure,
+- Is tightly coupled with the **DistributedCameraSourceMgr**, which owns the lifecycle and callback registration logic.
+
+Thus, the highest probability is:
+
+> **DistributedCameraSourceMgr**
+
+Estimate confidence:
+- Strong structural match (class name, namespace, function semantics).
+- No other module fits the callback-stub-on-source pattern.
+- In OpenHarmony architecture, such stubs are typically colocated with the manager that owns the callback interface.
+
+---
+
+**Answer**:
+The probability that this file belongs to module 'DistributedCameraSourceMgr' is 95%.

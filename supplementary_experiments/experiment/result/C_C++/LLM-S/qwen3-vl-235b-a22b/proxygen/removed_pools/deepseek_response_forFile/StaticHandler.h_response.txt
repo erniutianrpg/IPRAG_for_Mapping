@@ -1,0 +1,62 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `<atomic>` → standard concurrency primitive.
+  - `<folly/File.h>`, `<folly/Memory.h>` → Folly utility libraries (I/O, memory management).
+  - `<proxygen/httpserver/RequestHandler.h>` → **key indicator**: this header is part of the *high-level HTTP server framework*, specifically `proxygen/httpserver/`, not the lower-level `lib/http` or `lib/services`.
+- **Namespaces**: `StaticService`, `proxygen`
+- **Types**:
+  - `ResponseHandler` (forward-declared in `proxygen`)
+  - `StaticHandler` — inherits from `proxygen::RequestHandler`
+- **Functions**:
+  - `readFile(folly::EventBase* evb)` — asynchronous file reading using event loop.
+  - `checkForCompletion()` — internal state management for streaming response.
+- **Class behavior**:
+  - Implements all virtual methods of `proxygen::RequestHandler`: `onRequest`, `onBody`, `onEOM`, `onUpgrade`, `requestComplete`, `onError`, `onEgressPaused`, `onEgressResumed`.
+  - Manages file I/O (`folly::File`) and async scheduling via `EventBase`.
+  - Uses atomic flags for thread-safe state (`paused_`, `error_`), indicating it's designed to run on event-driven, possibly multi-threaded server contexts.
+
+### 2. **Key Clue: Inheritance from `proxygen::RequestHandler`**
+The class `StaticHandler : public proxygen::RequestHandler` is the defining trait.
+
+Looking at Proxygen’s structure:
+- `proxygen/httpserver/RequestHandler.h` defines the **high-level request handler interface** used by applications building HTTP servers with `proxygen::HTTPServer`.
+- This is distinct from `proxygen/lib/http/` (low-level HTTP message parsing) and `proxygen/lib/services/` (connection/service lifecycle management).
+- The `httpserver` module is explicitly described as:  
+  > *"wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers... high-level HTTP server framework."*
+
+The `StaticHandler` is a concrete implementation of a request handler for serving static files — exactly the kind of user-facing handler one would write when using `proxygen::HTTPServer`.
+
+### 3. **Comparison with Candidate Modules**
+| Module | Relevance |
+|--------|-----------|
+| **dns** | ❌ No DNS-related code or headers. |
+| **sampling** | ❌ No sampling logic or metrics. |
+| **ssl** | ❌ No SSL/TLS context, certificates, or encryption. |
+| **general** | ⚠️ Partial: uses Folly utilities (`File`, `Memory`), but that’s common across many modules. However, `general` is for *utils* (e.g., `Timer`, `ScopedEventBaseThread`, helpers), not full request handlers. Not a strong fit. |
+| **http_general** | ❌ This is for core HTTP protocol logic (e.g., `HTTPMessage`, `HTTPCodec`, `TransportInfo`). `RequestHandler` is *not* part of this layer — it’s higher-level. |
+| **services** | ⚠️ `services/` handles connection acceptance, worker threads, service registration. But `RequestHandler` is *called by* services; it’s not part of the service infrastructure itself. StaticHandler is an application-level handler, not infrastructure. |
+| **httpserver** | ✅ **Strong match**: `#include <proxygen/httpserver/RequestHandler.h>` + implementation of `RequestHandler` interface + purpose (serving static files) = textbook use case for `httpserver` module. This module hosts examples like `StaticHandler`, `EchoHandler`, etc. |
+| **transport** | ❌ No QUIC, datagram, socket, or transport-layer concerns. |
+
+### 4. **Supporting Evidence**
+- In Facebook’s open-source Proxygen repo, `proxygen/httpserver/` contains:
+  - `RequestHandler.h`
+  - Example handlers like `StaticHandler.cpp/h`, `EchoHandler.cpp/h`
+  - These are *user-facing* handlers meant to be plugged into `HTTPServer::start()`.
+- The use of `folly::EventBase* evb` for scheduling file reads aligns with how `httpserver` handlers perform async I/O.
+- The namespace `StaticService` suggests it’s a user-defined service (not core library), but placed under `proxygen`-adjacent usage — consistent with apps using `httpserver`.
+
+### Conclusion
+This file is a **static file-serving request handler** built using the high-level `proxygen/httpserver` API. It does not belong to low-level protocol, transport, or infrastructure modules.
+
+**Probability assignment**:
+- `httpserver`: 95% — direct inclusion of its header, implements its interface, matches typical usage pattern.
+- `services`: 5% — only weak overlap via being used *by* services, but not part of the services module itself.
+- All others: ≤1%.
+
+---
+
+"The probability that this file belongs to module 'httpserver' is 95%."

@@ -1,0 +1,61 @@
+Let’s analyze the file content and map it to the most appropriate module.
+
+### Step 1: Identify the core subject of the file
+- The file is an implementation (`.cpp` or `.cc`) for `HTTPSession`, as indicated by:
+  - `#include <proxygen/lib/http/session/HTTPSession.h>`
+  - Namespace `proxygen`
+  - Constructor and many methods prefixed with `HTTPSession::`
+- The class `HTTPSession` inherits from `HTTPSessionBase` (as seen in constructor initialization list).
+- It includes headers like:
+  - `HTTP2Codec.h`, `HTTPChecks.h`, `HTTPHeaderSize.h`: protocol-level HTTP/2 handling.
+  - `WebTransportSession.h`, `WtUtils.h`: WebTransport (WT) support — a newer HTTP/3-related extension.
+  - `HTTPSessionController.h`, `HTTPSessionStats.h`: session control and telemetry.
+  - `ConnectionManager.h` (from wangle): connection lifecycle management.
+  - `AsyncFizzBase.h`: TLS layer integration (but only via interface; no SSL logic here).
+  - Uses `folly::io/Cursor`, `IOBuf`, `HHWheelTimer`, etc.: low-level I/O and timing utilities.
+
+### Step 2: Understand what `HTTPSession` does
+From the function list and excerpt:
+- Manages HTTP session lifecycle: `startNow()`, `closeWhenIdle()`, `immediateShutdown()`, `drain()`, `checkForShutdown()`.
+- Handles codec interaction: `setupCodec()`, `onMessageBegin()`, `onHeadersComplete()`, `onBody()`, `onTrailersComplete()`, `onMessageComplete()`, etc. — these are *codec callback handlers*.
+- Implements flow control, window updates, settings negotiation, priority, ping, goaway — all HTTP/2 semantics.
+- Supports WebTransport via `sendWTMaxData`, `sendWTMaxStreams`, etc.
+- Integrates with transport (`AsyncTransport`, `sock_`, `shutdownTransport()`), but does **not** implement transport itself.
+- Uses `HTTPTransaction` (via `findTransaction`, `createTransaction`, `decrementTransactionCount`, etc.) — transaction management.
+- Has stats, controller, byte event tracking — session-level coordination.
+
+This is clearly the **core HTTP session abstraction**, sitting between:
+- Low-level transport (handled by `AsyncTransport`, `wangle::ConnectionManager`)
+- Codec (e.g., `HTTP2Codec`)
+- Transactions (`HTTPTransaction`)
+- Higher-level services (e.g., `HTTPServer`)
+
+### Step 3: Compare with candidate modules
+
+| Module | Relevance |
+|--------|-----------|
+| `pools` | ❌ No backend pool logic here. Not related. |
+| `sampling` | ❌ No sampling logic. |
+| `ssl` | ❌ Includes `fizz/protocol/AsyncFizzBase.h`, but only as a type alias; no SSL context setup, handshake, or certificate logic implemented here. Not the focus. |
+| `general` | ⚠️ Some utility usage (`folly`, `ScopedTraceSection`, `Random`), but this is not a utils file — it's a core session implementation under `proxygen/lib/http/session/`. So too generic. |
+| `http_general` | ✅ Matches exactly: “common HTTP implementation under `proxygen/lib/http/`”, “responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3”. `HTTPSession` is the central session manager for HTTP/2 and WebTransport (HTTP/3 adjacent). |
+| `services` | ❌ That’s `proxygen/lib/services/` — e.g., `ServiceHandler`, `RequestHandler`, connection acceptance loop. This file is lower-level, not service orchestration. |
+| `httpserver` | ❌ That’s `proxygen/httpserver/`, high-level server API (e.g., `HTTPServer`, `RequestHandler`). This is internal session logic, not the public API layer. |
+| `transport` | ❌ Transport module is for QUIC/HTTP3 *transport* (e.g., `QuicTransport`, `QuicSocket`). While WebTransport is included, `HTTPSession` here is still using standard TCP-style `AsyncTransport`, and WT is handled at the HTTP session layer, not transport layer. Also, no QUIC-specific code (e.g., `quic::`, `QuicTransport`, `QuicPacketBuilder`) appears. |
+
+### Step 4: Confirm with reference pattern
+The description of `http_general` explicitly says:
+> “responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3.”
+
+The file implements:
+- Session management (`HTTPSession`)
+- Codec callbacks (parsing/encoding)
+- Transaction association & lifecycle
+- HTTP/2 frame handling (`onSettings`, `onWindowUpdate`, `onPing`, etc.)
+- WebTransport extensions (part of HTTP/3 ecosystem, but implemented in HTTP session layer)
+
+Thus, it fits `http_general` perfectly.
+
+---
+
+**Assigned Module**: [http_general]

@@ -1,0 +1,82 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `folly/io/async/EventBase.h`: Folly’s event loop abstraction — used for asynchronous I/O, common across many Proxygen modules.
+  - `proxygen/lib/http/connpool/SessionHolder.h`: Key clue — this is from `proxygen/lib/http/connpool/`, indicating connection pooling logic within the HTTP layer.
+- **Namespace**: `proxygen`
+- **Types**:
+  - `HTTPTransaction`: Core HTTP transaction abstraction (request/response lifecycle).
+  - `ThreadIdleSessionController`, `ServerIdleSessionController`: Controllers for idle session management — likely tied to thread-local or server-wide session lifecycle policies.
+  - `SessionPool`: Main class — manages a pool of HTTP sessions, with idle/active/full session lists, timeouts, draining, etc.
+- **Functions**:
+  - Session lifecycle: `putSession`, `removeOldestIdleSession`, `drainAllSessions`, `closeWithReset`, `addDrainingSession`
+  - Transaction acquisition: `getTransaction`, `attemptOpenTransaction`
+  - Attachment/detachment callbacks (`attachIdle`, `detachFilled`, etc.) — these are *callbacks from `SessionHolder`*, implying `SessionPool` implements `SessionHolder::Callback`.
+  - Configurable limits/timing: `setMaxIdleSessions`, `setTimeout`, `purgeExcessIdleSessions`
+  - EventBase access: `getEventBase()` — needed for scheduling timers, I/O, etc.
+
+The raw excerpt confirms:
+- `SessionPool` inherits from `SessionHolder::Callback`.
+- It maintains three session lists: `idleSessionList_`, `unfilledSessionList_`, `fullSessionList_`.
+- It’s tightly coupled with `HTTPSessionBase`, `HTTPTransaction`, and `SessionHolder`.
+- The design is about **connection pooling**, **session reuse**, **idle timeout handling**, and **transaction acquisition** — all core to efficient HTTP client/server operation.
+
+---
+
+### **2. Module Candidate Evaluation**
+
+#### ✅ **http_general**
+- **Definition**: *"common HTTP implementation under proxygen/lib/http/... responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management..."*
+- **Evidence**:
+  - File path implied by include: `proxygen/lib/http/connpool/SessionHolder.h`
+  - `SessionPool` is clearly part of **HTTP connection pooling**, which is a standard component of HTTP client/server infrastructure (e.g., reusing TCP connections for multiple requests).
+  - `HTTPTransaction`, `HTTPSessionBase` are fundamental HTTP abstractions.
+  - Idle session controllers and pooling logic are part of the *general HTTP layer*, not specific to server, transport, or services.
+  - This is not high-level (like `httpserver`) nor low-level transport (like `transport` or `ssl`), but rather mid-level infrastructure supporting both client and server sides.
+- **Conclusion**: Strong match.
+
+#### ❌ **dns**
+- No DNS resolution logic, no use of DNS-related types (e.g., `DNSResolver`, `DnsQuery`, etc.).
+- Not relevant.
+
+#### ❌ **sampling**
+- No sampling logic (e.g., probabilistic sampling, rate limiting based on sampling ratios).
+- No mention of `SamplingRate`, `Sampler`, etc.
+
+#### ❌ **ssl**
+- No SSL/TLS context, certificates, handshake logic, or crypto primitives.
+- Includes only `EventBase` and `SessionHolder`, no OpenSSL/BoringSSL headers.
+
+#### ❌ **general**
+- `general` = `proxygen/lib/utils/` and auxiliary capabilities.
+- But this file is in `proxygen/lib/http/connpool/` (implied by include), which is *not* under `utils/`. Also, `SessionPool` is not a generic utility — it's HTTP-specific session/connection pooling.
+- So while it's “general” in the sense of being reusable, its domain is HTTP, so `http_general` is more precise.
+
+#### ❌ **services**
+- `services` = `proxygen/lib/services/`, for server-side infrastructure like service executors, worker threads, connection acceptance.
+- `SessionPool` is not about accepting connections or dispatching to services — it's about managing *already-established* HTTP sessions for reuse. It could be used *by* services, but it’s not part of the service framework itself.
+
+#### ❌ **httpserver**
+- `httpserver` = high-level APIs for building HTTP servers (e.g., `HTTPServer`, `RequestHandler`, `ResponseBuilder`).
+- This file is lower-level — it’s about session pooling, not request routing or handler registration.
+- Not a wrapper API; it’s an internal implementation detail.
+
+#### ❌ **transport**
+- `transport` = QUIC / HTTP/3 / socket-level transport.
+- No QUIC, datagrams, streams, or transport-specific types.
+- Uses `HTTPSessionBase`, which is higher-level than transport (transport would deal with `QuicTransport`, `UDPSocket`, etc.).
+
+---
+
+### **3. Final Assessment**
+The file implements `SessionPool`, a core component of HTTP connection pooling in Proxygen, located logically under `proxygen/lib/http/connpool/`. This falls squarely under the **http_general** module, which covers HTTP session management, transaction handling, and related protocol-layer infrastructure.
+
+Other modules are either too high-level (`httpserver`, `services`), too low-level (`transport`, `ssl`), or unrelated (`dns`, `sampling`, `general`).
+
+---
+
+**The probability that this file belongs to module 'http_general' is 98%.**

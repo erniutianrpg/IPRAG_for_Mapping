@@ -1,0 +1,82 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `StaticHandler.h` → custom header, likely part of a static file-serving handler.
+  - `folly/FileUtil.h`, `folly/executors/GlobalExecutor.h`, `folly/io/async/EventBaseManager.h` → Folly utilities for I/O, executors, and event loops.
+  - `proxygen/httpserver/ResponseBuilder.h` → high-level HTTP response construction (part of `httpserver`).
+  - `proxygen/lib/utils/SafePathUtils.h` → path safety utility (part of `general` utils).
+- **Namespaces**: `StaticService`, `proxygen`
+- **Functions**:
+  - `StaticHandler::onRequest(...)`: handles incoming HTTP request, validates method, resolves path safely, opens file, sends 200, schedules async read.
+  - `StaticHandler::readFile(...)`: reads file in chunks using `folly::readNoInt`, sends body chunks via `ResponseBuilder`, handles EOF/error.
+  - `StaticHandler::onEgressPaused()` / `onEgressResumed()`: flow control for downstream buffering.
+- **Raw excerpt** shows:
+  - A full implementation of a static file server handler.
+  - Uses `ResponseBuilder` (from `proxygen/httpserver`) to send responses.
+  - Uses `SafePath::getPath` (from `proxygen/lib/utils`) for path sanitization.
+  - Schedules I/O on global CPU executor + runs callbacks on EventBase thread.
+  - Implements HTTP GET semantics, error handling, streaming file response.
+
+---
+
+### **2. Module Mapping Analysis**
+
+#### ✅ **httpserver**
+- The file uses `#include <proxygen/httpserver/ResponseBuilder.h>`.
+- `ResponseBuilder` is *exclusive* to the `httpserver` module — it's the high-level API for building responses in Proxygen’s server framework.
+- `StaticHandler` is clearly a *handler* that plugs into the `httpserver` framework (e.g., used with `HTTPServer` or `RequestHandlerFactory`).
+- The pattern (`onRequest`, `onEgressPaused`, `onEgressResumed`) matches the `RequestHandler` interface defined in `proxygen/httpserver/RequestHandler.h`.
+- This is a classic example of a user-defined handler built *on top of* `httpserver`.
+
+→ Strong match.
+
+#### ⚠️ **services**
+- `services` = `proxygen/lib/services/`, which includes things like `Service`, `ConnectionManager`, `Worker`, etc.
+- This file does *not* interact with connection management, service lifecycle, or worker threads directly.
+- It’s not implementing a `Service`, nor does it use `proxygen/lib/services/` headers.
+- It’s a *request handler*, not a service infrastructure component.
+
+→ Not a match.
+
+#### ⚠️ **general**
+- Includes `SafePathUtils.h` from `lib/utils/`, which is part of `general`.
+- But this is just a *utility dependency*, not indicative of module ownership.
+- The core logic is HTTP-server-oriented, not generic utility code.
+
+→ Minor relevance, but not primary.
+
+#### ❌ **http_general**
+- `http_general` = core HTTP protocol layer: parsing, encoding, session, transaction, HTTP/2/3 framing.
+- This file does *not* touch HTTP message parsing, headers decoding, HPACK, stream IDs, etc.
+- It receives a fully parsed `HTTPMessage` and only acts on its path/method — so it sits *above* the protocol layer.
+
+→ Not a match.
+
+#### ❌ **dns**, **sampling**, **ssl**, **transport**
+- No DNS resolution (`dns`), no sampling logic (`sampling`), no SSL context or certs (`ssl`), no QUIC/UDP sockets or transport frames (`transport`).
+- All irrelevant here.
+
+---
+
+### **3. Conclusion**
+This file implements a `StaticHandler` that:
+- Inherits from (or conforms to) `proxygen::RequestHandler`,
+- Uses `ResponseBuilder` (exclusive to `httpserver`),
+- Is designed to be plugged into an `HTTPServer` instance,
+- Follows the high-level server framework patterns (e.g., `onRequest`, egress pause/resume),
+- Is located logically under `httpserver`-style usage (even if physically placed elsewhere, its *role* is within `httpserver`).
+
+Thus, the strongest and most accurate module assignment is:
+
+> **httpserver**
+
+Probability: Very high — this is *exactly* the kind of code expected in the `httpserver` module’s ecosystem (even if the handler itself is user/application code, the module it belongs to *architecturally* is `httpserver`, as per Proxygen’s module taxonomy).
+
+---
+
+### Final Answer:
+The probability that this file belongs to module 'httpserver' is 95%.

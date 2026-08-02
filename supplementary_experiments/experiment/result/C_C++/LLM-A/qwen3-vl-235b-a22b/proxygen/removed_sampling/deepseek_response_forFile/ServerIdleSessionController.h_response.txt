@@ -1,0 +1,58 @@
+Let’s analyze the file step by step:
+
+### 1. **File content summary**
+- **Language**: C/C++
+- **Includes**:
+  - `proxygen/lib/http/connpool/SessionPool.h` → clearly from HTTP connection pooling logic.
+  - `folly/futures/Future.h` → used for asynchronous operations (common in Proxygen for non-blocking I/O).
+- **Namespace**: `proxygen`
+- **Class**: `ServerIdleSessionController`
+  - Manages idle HTTP sessions.
+  - Maintains a list (`sessionsByIdleAge_`) and map (`sessionMap_`) of idle sessions.
+  - Supports adding/removing idle sessions, retrieving an idle session (`getIdleSession()`), marking controller for death, limiting max idle count.
+  - Uses `SessionPool*` (from `connpool/SessionPool.h`) — implies it works *with* connection pools.
+- **Struct**: `IdleSessionInfo` — holds session + pool mapping.
+- **Key functionality**: Idle session lifecycle management, pooling coordination, thread-safe access via mutex.
+
+### 2. **Interpretation of role**
+This class is not about:
+- DNS resolution → ❌ no DNS-related types/functions.
+- SSL/TLS → ❌ no SSL context, certs, handshake logic.
+- Transport layer (QUIC/HTTP3) → ❌ no QUIC sockets, datagrams, or transport-specific abstractions.
+- High-level HTTP server API (like `httpserver/`) → ❌ not part of `proxygen/httpserver/`, no request handler or server setup logic.
+- General utilities (`utils/`) → ❌ too specific; not generic helpers like logging, timers, etc.
+
+It *is* about:
+- Managing idle HTTP sessions in a server context.
+- Coordinating with `SessionPool` (which lives under `proxygen/lib/http/connpool/`).
+- Part of server-side infrastructure that handles connection reuse and resource management.
+
+Now compare to candidate modules:
+
+#### ✅ `services` module:
+> *"This module mainly corresponds to proxygen/lib/services/ and is used for connection management and server-side related code. On top of the low-level HTTP abstractions, it provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration."*
+
+- `ServerIdleSessionController` fits this: it's server-side, manages connections (idle sessions), and coordinates with connection pools — exactly the kind of infrastructure `services/` provides.
+- The use of `HTTPSessionBase`, `SessionPool`, and thread-safety suggests it's part of the server runtime, not core protocol parsing.
+
+#### ⚠️ `http_general`:
+> *"common HTTP implementation under proxygen/lib/http/. [...] responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management..."*
+
+- While “session management” is mentioned, note that `http_general` typically covers *core* session abstraction (e.g., `HTTPSession`, `HTTPTransaction`, `RequestHandler`), not idle-session *pooling logic*.
+- `connpool/` is a subdirectory under `lib/http/`, but idle session control is more about *resource management* than protocol handling.
+- In practice, Proxygen separates:
+  - Core HTTP session/transaction logic → `http/` (e.g., `HTTPSession`, `HTTPCodec`)
+  - Connection pooling & idle management → often in `services/` or `connpool/`, but `ServerIdleSessionController` is specifically a *controller* that orchestrates idle sessions across pools — aligns better with server infrastructure.
+
+Also, observe:
+- The class is named `ServerIdleSessionController`, implying it's used by a server (not client).
+- It uses `folly::Future<HTTPSessionBase*>`, suggesting async session acquisition — common in server-side request dispatching (e.g., when a new request arrives and an idle session is reused).
+
+Looking at Proxygen’s actual directory structure (known from open-source):
+- `proxygen/lib/http/connpool/` contains `SessionPool.h`, `ConnectionManager.h`, etc.
+- `proxygen/lib/services/` includes classes like `ServiceHandler`, `ServerTransport`, `IdleTimeoutHandler`, and indeed `ServerIdleSessionController` is historically located in `services/` (or closely associated).
+
+Thus, despite being in `http/connpool` header, the *controller* class itself belongs to the **server infrastructure layer**, i.e., `services`.
+
+### ✅ Final decision:
+**Assigned Module**: [services]

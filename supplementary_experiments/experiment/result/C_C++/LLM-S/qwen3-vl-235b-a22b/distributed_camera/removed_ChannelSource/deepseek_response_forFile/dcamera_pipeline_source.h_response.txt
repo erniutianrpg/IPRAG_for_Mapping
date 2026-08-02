@@ -1,0 +1,82 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Header guard**: `OHOS_DCAMERA_PIPELINE_SOURCE_H`
+- **Namespace**: `OHOS::DistributedHardware`
+- **Class name**: `DCameraPipelineSource`
+- **Inheritance**:
+  - `EventSender`
+  - `EventBusHandler<DCameraPipelineEvent>`
+  - `IDataProcessPipeline`
+  - `std::enable_shared_from_this<DCameraPipelineSource>`
+- **Key responsibilities (from function signatures & members)**:
+  - `CreateDataProcessPipeline`, `DestroyDataProcessPipeline`, `ProcessData` → pipeline management & data flow control.
+  - `OnEvent`, `OnError`, `OnProcessedVideoBuffer` → event handling and callback propagation.
+  - `InitDCameraPipEvent`, `InitDCameraPipNodes` → initialization of pipeline nodes and events.
+  - Member variables: `pipelineHead_`, `pipNodeRanks_`, `processListener_`, `eventBusSource_`, `isProcess_`, `piplineType_`.
+  - Constants for video resolution/frame rate bounds — typical for *source-side* configuration constraints (e.g., limiting output to reasonable sizes for transmission).
+  - Includes:
+    - `dcamera_pipeline_event.h`, `idata_process_pipeline.h`, `abstract_data_process.h`, `data_process_listener.h` → strongly indicate a *data processing pipeline framework*.
+    - `DecodeDataProcess` forward-declared → suggests decoding is part of this pipeline (i.e., post-processing on source side).
+    - `data_buffer.h`, `image_common_type.h` → generic data types, but used in context of pipeline.
+    - `distributed_camera_errno.h` → distributed camera-specific errors.
+
+---
+
+### **2. Key Clues for Module Mapping**
+
+#### ✅ **`DCameraPipelineSource` is on the *source side***  
+- The name itself implies “source” (not sink).
+- It implements `IDataProcessPipeline`, which is likely the interface for building/controlling a pipeline that processes data *before presenting it to the application* (i.e., after receiving from sink, decode, resize, etc.).
+- The presence of `DecodeDataProcess` (a class likely responsible for decoding) strongly points to **post-processing** on the *controller (source) side*, because:
+  - On the sink side, raw camera frames are captured and possibly encoded (e.g., H.264) before sending.
+  - On the source side, those encoded streams are received and must be *decoded* to be usable (e.g., for preview or recording).
+
+#### ✅ **It manages a pipeline of `AbstractDataProcess` nodes**
+- `pipNodeRanks_`: vector of `shared_ptr<AbstractDataProcess>` → indicates modular pipeline stages (e.g., decode → format convert → scale → frame rate adjust).
+- This matches **CameraDataPostProcess**, whose description says:
+  > *"responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution, and related properties of received image data..."*
+
+#### ✅ **Not DistributedCameraSourceMgr**
+- While `DistributedCameraSourceMgr` handles lifecycle, IPC, controller logic, and high-level coordination, this file is *focused purely on the data processing pipeline* — not IPC, state machine, or service registration.
+- No mention of `IPC`, `RemoteObject`, `Controller`, `Session`, or device discovery — all expected in `SourceMgr`.
+
+#### ✅ **Not CameraDataPreProcess**
+- Pre-process is *sink-side* (before encoding/transmission). This file deals with decoding and output formatting — classic *post*-processing.
+
+#### ✅ **Not ChannelCommon / ChannelSink / VirtualCameraHdf / utils / CameraServiceCommon**
+- These are lower-level (channel transport), hardware abstraction (HDF), or utility layers.
+- This file is higher-level, dealing with *application-facing data pipeline* logic.
+- No SoftBus, session, HDF device, or IPC proxy code here.
+
+#### ✅ **CameraDataProcessCommon?**
+- This module provides *common interfaces and frameworks* (e.g., `IDataProcessPipeline`, `AbstractDataProcess`, `DataProcessListener`).
+- However, this file is a *concrete implementation* (`DCameraPipelineSource`) — not just interfaces or shared utilities.
+- The header includes `idata_process_pipeline.h` and `abstract_data_process.h`, implying those are in `CameraDataProcessCommon`, but this file *uses* them — it's not the common module itself.
+
+Thus, this file is a **source-side concrete pipeline orchestrator**, implementing post-processing steps (decode, resize, etc.) — exactly what **CameraDataPostProcess** describes.
+
+---
+
+### **3. Probability Assignment**
+
+| Module | Reasoning | Probability |
+|--------|-----------|-------------|
+| **DistributedCameraSourceMgr** | Too high-level; no IPC/state/controller logic here. | 10% |
+| **DistributedCameraSinkMgr** | Sink-side; this is source-side. | 5% |
+| **ChannelCommon** | No channel/session/SoftBus code; purely data pipeline. | 5% |
+| **ChannelSink** | Sink-side channel; irrelevant. | 2% |
+| **CameraDataProcessCommon** | Provides interfaces used here, but this is a concrete implementation, not the common base. | 20% |
+| **CameraDataPreProcess** | Pre-processing = sink-side; this does decode → post-processing. | 5% |
+| **CameraDataPostProcess** | ✅ Matches exactly: source-side, pipeline-based, decode + format/resolution adjustment, uses `IDataProcessPipeline`, `AbstractDataProcess`, `DataProcessListener`. | **95%** |
+| **CameraServiceCommon** | Generic services/events — too broad; this is focused on data pipeline. | 10% |
+| **VirtualCameraHdf** | HDF layer — no device/provider/stream operator code. | 2% |
+| **utils** | Only generic helpers; this is a core pipeline class. | 5% |
+
+---
+
+### ✅ Final Answer:
+
+The probability that this file belongs to module **CameraDataPostProcess** is **95%**.

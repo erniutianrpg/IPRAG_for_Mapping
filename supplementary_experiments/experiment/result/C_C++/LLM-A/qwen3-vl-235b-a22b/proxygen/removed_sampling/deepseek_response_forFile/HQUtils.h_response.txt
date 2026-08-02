@@ -1,0 +1,80 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `folly/Optional.h` — generic utility (Folly)
+  - `proxygen/lib/http/HTTP3ErrorCode.h`, `HTTPException.h`, `codec/ErrorCode.h`, `HQFramer.h`, `HTTPSettings.h` — all HTTP/3 and HQ (HTTP over QUIC) related
+  - `quic/codec/QuicInteger.h`, `quic/codec/Types.h` — low-level QUIC codec types
+
+- **Namespace**: `proxygen::hq` — clearly indicates *HTTP over QUIC* (HQ) layer.
+- **Functions**:
+  - `hqToHttpErrorCode(...)`: maps HTTP/3 error codes to proxygen HTTP error codes.
+  - `toProxygenError(...)`: maps QUIC transport errors to Proxygen errors.
+  - `httpToHqSettingsId(...)`, `hqToHttpSettingsId(...)`: bidirectional mapping between HTTP settings IDs and HQ settings IDs.
+- **Constants**:
+  - Stream IDs, header table sizes, QPACK parameters — all specific to HTTP/3/HQ protocol configuration and framing.
+  - Uses `quic::StreamId`, `quic::kEightByteLimit`, etc. — ties into QUIC transport layer.
+
+This file is a **header-only utility file** that provides:
+- Error code translation between QUIC transport, HTTP/3 (HQ), and core Proxygen HTTP layers.
+- Settings ID translation.
+- Constants for HQ session streams, QPACK, and stream limits.
+
+It sits at the **boundary between QUIC transport and HTTP/3 protocol logic**, acting as an *adapter* or *glue* layer.
+
+---
+
+### 2. **Candidate Module Analysis**
+
+| Module | Relevance |
+|--------|-----------|
+| **dns** | ❌ No DNS-related code. |
+| **pools** | ❌ No backend pool or service discovery logic. |
+| **ssl** | ❌ No SSL/TLS context or crypto code. |
+| **general** | ⚠️ Partial: contains utility functions, but these are *protocol-specific*, not general-purpose utilities (e.g., not in `utils/`). Also, `general` typically covers things like `Timer`, `AsyncSocket`, `IOBuf`, etc., not HQ/QUIC mappings. |
+| **http_general** | ✅ Strong candidate: This module covers *common HTTP implementation*, including HTTP/2 and HTTP/3. The file deals with HTTP/3 error codes, settings IDs, and framing (`HQFramer.h`), which are part of the HTTP protocol core layer. However, note that `hq::` namespace suggests it's specifically for *HTTP over QUIC*, which may be considered a sublayer of HTTP/3. |
+| **services** | ❌ Server-side infrastructure (connection acceptance, workers); this is not about services. |
+| **transport** | ✅ Also strong: Defined as “transport-layer support module for HTTP/3/QUIC scenarios”, responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache. The file includes QUIC codec headers and maps QUIC errors → Proxygen errors — exactly what a transport-to-HTTP adapter would do. |
+
+Now, key distinction:
+- `http_general` = core HTTP protocol logic (parsing, encoding, sessions, transactions, settings, errors) — *application-layer protocol*.
+- `transport` = lower-level transport (QUIC frames, streams, connection state, error mapping from transport to application).
+
+The file:
+- Includes `quic/codec/*` → direct QUIC dependency.
+- Maps `quic::QuicErrorCode` → `ProxygenError` → this is **transport-to-application error translation**, a classic transport-layer responsibility.
+- Defines constants like `kSessionStreamId`, `kMaxClientBidiStreamId`, `kMaxPushId` — these are QUIC stream ID conventions used by HQ, i.e., transport-level semantics.
+- Functions like `httpToHqSettingsId` / `hqToHttpSettingsId` bridge HTTP settings and HQ settings — but HQ is the *HTTP/3 framing layer on top of QUIC*, so this is still part of the transport-to-HTTP integration.
+
+Looking at Proxygen’s actual directory structure (implied by module descriptions):
+- `proxygen/lib/http/codec/HQFramer.h` is under `http/codec/`, suggesting HQ framing is considered part of HTTP layer.
+- But `quic/codec/*` is under `quic/`, a separate transport subsystem.
+
+However, the **namespace `proxygen::hq`** and the fact that this file lives (by inclusion pattern) alongside `HTTP3ErrorCode.h`, `HQFramer.h`, and `HTTPSettings.h` strongly suggests it belongs to the **HTTP/3 protocol implementation**, i.e., **http_general**.
+
+But wait — the module description for `transport` says:
+> “responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache.”
+
+And this file:
+- Does **not** handle datagrams, sockets, or PSK cache.
+- Does **not** implement QUIC frames — just defines constants and mappings.
+- Is included by HQFramer and HTTP3 error handling — likely part of the *HTTP/3 codec layer*, not raw transport.
+
+In Facebook’s Proxygen repo (real-world knowledge), files like this (with `proxygen::hq` namespace, error/code mapping, settings ID conversion) reside in `proxygen/lib/http/codec/` or `proxygen/lib/http/`, and are considered part of the **HTTP/3 implementation**, i.e., under the broader **http_general** module.
+
+Also, the reference examples imply:
+- `http_general` covers “HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3”.
+
+Since this file enables HTTP/3 (HQ) to interoperate with core HTTP and QUIC transport via mappings and constants, it is **part of the HTTP/3 protocol core**, not pure transport.
+
+✅ Therefore, the best fit is: **http_general**
+
+---
+
+### Final Decision:
+- Not `transport`, because it doesn’t implement transport logic — only adapts between layers.
+- Not `general`, because it’s not generic; it’s HTTP/3-specific.
+- Strong match with `http_general` per module definition.
+
+**Assigned Module**: [http_general]

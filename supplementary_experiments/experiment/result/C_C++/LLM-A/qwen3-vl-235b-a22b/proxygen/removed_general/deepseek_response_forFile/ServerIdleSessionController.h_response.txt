@@ -1,0 +1,61 @@
+Let’s analyze the file step by step:
+
+### 1. **File location and includes**
+- The header is included from:  
+  `#include <proxygen/lib/http/connpool/SessionPool.h>`  
+  → This points to `proxygen/lib/http/connpool/`, which is under the HTTP layer, specifically connection pooling.
+- Also includes:  
+  `#include <folly/futures/Future.h>`  
+  → Standard Folly async utility; not module-specific.
+
+### 2. **Namespace**
+- `namespace proxygen { ... }` — standard for Proxygen core components.
+
+### 3. **Class name and purpose**
+- `class ServerIdleSessionController`
+  - Manages *idle* HTTP sessions (i.e., sessions that are not currently active but can be reused).
+  - Methods:
+    - `getIdleSession()` → returns an idle session (async via `folly::Future`)
+    - `addIdleSession()`, `removeIdleSession()` → manage idle session lifecycle
+    - `popBestIdlePool()` → selects best pool for reuse
+    - `setMaxIdleCount()`, `isMarkedForDeath()`, `markForDeath()` → control policy and shutdown
+  - Internal structure:
+    - `IdleSessionInfo` holds `(session, sessionPool)`
+    - Uses `std::list` + `unordered_map` for O(1) lookup/removal of idle sessions
+    - Tracks idle age (LIFO or FIFO? list implies insertion order = idle age)
+    - Thread-safe with `std::mutex`
+
+This is clearly about **reusing idle HTTP sessions** — a key optimization in high-performance HTTP servers to avoid costly connection setup/teardown.
+
+### 4. **Relation to candidate modules**
+
+Let’s evaluate each candidate:
+
+- **dns**: No DNS resolution logic here → ❌  
+- **pools**: While it uses `SessionPool*`, the class itself is *not* about configuring backend server pools or load balancing — it's about managing *idle client-facing HTTP sessions* on the *server side*, reusing them across requests. So not primarily a “backend pool” config module → ❌  
+- **sampling**: No sampling logic → ❌  
+- **ssl**: No SSL/TLS context or handshake logic → ❌  
+- **http_general**: This module covers “HTTP protocol parsing, encoding/decoding, session management, transaction management”.  
+  - **Session management** is explicitly listed.  
+  - Idle session reuse is a core part of *server-side session management* (e.g., keeping connections alive for keep-alive, reducing overhead).  
+  - The file lives under `proxygen/lib/http/connpool/`, and `connpool` is logically part of the HTTP layer’s session/connection resource management — not transport, not services, but *within* the HTTP core infrastructure.  
+  → ✅ Strong match.
+
+- **services**: Defined as “connection management and server-side related code… on top of low-level HTTP abstractions”, including “service execution, connection acceptance, worker threads”.  
+  - This class is lower-level than that: it doesn’t handle connection acceptance, workers, or service dispatch — it only manages *already-established idle sessions* for reuse.  
+  - It’s used *by* higher-level server components (e.g., `HTTPServer`, or service handlers), but it’s not itself part of the service orchestration layer.  
+  → Less appropriate than `http_general`.
+
+- **transport**: Related to QUIC/HTTP/3 transport — this is pure HTTP/1.x-style session reuse, no transport-level concerns → ❌
+
+### 5. **Cross-reference with known Proxygen structure**
+In Proxygen:
+- `lib/http/connpool/` contains connection/session pooling utilities used by the HTTP server.
+- `ServerIdleSessionController` is used by `HTTPServer` and `HTTPSession` to implement keep-alive and session reuse — it’s part of the *HTTP session lifecycle management*, which falls under the HTTP protocol core (`http_general`), not the higher-level service wrapper (`httpserver`) or infrastructure (`services`).
+
+### Conclusion:
+The class implements idle HTTP session management — a core part of HTTP session handling within the HTTP layer. This aligns best with:
+
+> **http_general**: This module mainly corresponds to the common HTTP implementation under `proxygen/lib/http/`. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management...
+
+✅ **Assigned Module**: [http_general]

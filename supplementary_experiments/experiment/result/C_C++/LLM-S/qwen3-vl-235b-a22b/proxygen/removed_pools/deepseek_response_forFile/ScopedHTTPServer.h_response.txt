@@ -1,0 +1,79 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `<barrier>`, `<chrono>` — standard library (synchronization & time)
+  - `folly/io/async/SSLContext.h` — Folly SSL context (used for TLS setup)
+  - `folly/system/ThreadName.h` — thread naming utility
+  - `proxygen/httpserver/HTTPServer.h`, `ResponseBuilder.h` — **high-level HTTP server APIs**
+- **Namespace**: `proxygen`
+- **Types defined**:
+  - `ScopedHandler<T>`: wraps a user-defined handler, implements `RequestHandler`, forwards requests to user handler, uses `ResponseBuilder`.
+  - `ScopedHandlerFactory<T>`: factory for `ScopedHandler`, implements `RequestHandlerFactory`.
+  - `ScopedHTTPServer`: RAII wrapper around `HTTPServer`, starts/stops server, manages lifecycle, exposes port/address info.
+- **Functions**:
+  - `start(...)` overloads: one with `HandlerType`, `port`, `numThreads`, `sslCfg`, `idleTimeoutMs`; another with `IPConfig` + `HTTPServerOptions`.
+  - Uses `ResponseBuilder r(downstream_)`, calls `r.sendWithEOM()`, etc.
+- **Raw excerpt** shows:
+  - A high-level convenience abstraction for quickly spinning up an HTTP server.
+  - No low-level parsing, transport, or protocol logic — just wiring user handlers to Proxygen’s server core.
+  - Heavy use of `proxygen/httpserver/*` headers.
+  - Uses `wangle::SSLContextConfig` (via `std::unique_ptr<wangle::SSLContextConfig>`) — but only as a configuration parameter; not implementing SSL logic itself.
+
+---
+
+### **2. Module Comparison**
+
+#### ✅ **httpserver**
+- **Definition**: *"wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers... high-level HTTP server framework."*
+- **Evidence**:
+  - Includes `proxygen/httpserver/HTTPServer.h` and `ResponseBuilder.h`.
+  - Defines `ScopedHTTPServer`, which is clearly a *convenience wrapper* for `HTTPServer`.
+  - Provides `start()` static methods that abstract away server setup (threads, SSL config, port binding).
+  - `ScopedHandler` and `ScopedHandlerFactory` are helper classes to adapt arbitrary handler types to Proxygen’s request handler interface — exactly what a high-level server API would provide.
+  - This is *not* core protocol logic (`http_general`), nor transport (`transport`), nor service infrastructure (`services`); it's a thin layer *on top* of those.
+- **Conclusion**: Strong match.
+
+#### ❌ **services**
+- **Definition**: *"connection management and server-side related code... service execution, connection acceptance, worker threads, service configuration."*
+- While `ScopedHTTPServer` does manage threads and server lifecycle, it does so via `HTTPServer`, not by reimplementing connection acceptance or service execution. It's a *user-facing wrapper*, not infrastructure code in `lib/services/`. The actual service/workers live inside `HTTPServer`, not this file.
+- **Conclusion**: Not a match — too high-level.
+
+#### ❌ **http_general**
+- **Definition**: *"HTTP protocol core layer: parsing, encoding/decoding, session/transaction management, HTTP/2/3 protocol capabilities."*
+- This file contains no parsing, no codec, no session/transaction state beyond what `RequestHandler` already provides. It doesn’t touch `HTTPMessage` internals — just forwards it.
+- **Conclusion**: Not a match.
+
+#### ❌ **transport**
+- Involves QUIC/HTTP/3, sockets, datagrams — none present here.
+- **Conclusion**: No match.
+
+#### ❌ **ssl**
+- Though `SSLContext.h` and `SSLContextConfig` are included, the file does *not* implement SSL logic — just passes config through. No certificate handling, handshake logic, or TLS stats.
+- **Conclusion**: Not the ssl module.
+
+#### ❌ **dns**, **sampling**, **general**
+- `dns`: no DNS resolution.
+- `sampling`: no sampling logic.
+- `general`: while `ScopedHandler` is somewhat “utility-like”, it is tightly coupled to `httpserver` APIs and lives in the `httpserver/` namespace and includes. The `general` module is for *generic* utilities (e.g., `utils/`), not HTTP-server-specific wrappers.
+- Also note: the file is likely located in `proxygen/httpserver/` (given includes and naming), not `lib/utils/`.
+
+---
+
+### **3. Final Assessment**
+This file is a **high-level convenience wrapper** for starting an HTTP server with minimal boilerplate — exactly the purpose of the `httpserver` module.
+
+It defines:
+- A RAII `ScopedHTTPServer` class,
+- Adapter classes (`ScopedHandler`, `ScopedHandlerFactory`) to bridge user handlers to Proxygen’s interface,
+- Static `start()` helpers that hide complexity of `HTTPServer::IPConfig`, threading, SSL config.
+
+All of this aligns precisely with the description of the **httpserver** module.
+
+---
+
+**The probability that this file belongs to module 'httpserver' is 98%.**  
+(The remaining 2% accounts for possibility of being in a test or example directory, but given the includes and structure, it's almost certainly part of the official `httpserver` public API layer.)

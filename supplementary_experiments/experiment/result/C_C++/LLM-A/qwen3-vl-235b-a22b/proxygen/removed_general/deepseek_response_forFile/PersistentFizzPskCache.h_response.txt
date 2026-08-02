@@ -1,0 +1,55 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `fizz/backend/openssl/certificate/CertUtils.h` → Fizz (Facebook’s TLS library) + OpenSSL cert utilities
+  - `fizz/client/PskCache.h`, `PskSerializationUtils.h` → Fizz client-side PSK (Pre-Shared Key) caching & serialization
+  - `wangle/client/persistence/FilePersistentCache.h` → Wangle (Facebook’s networking library) persistent file-based cache
+- Namespaces: `folly`, `proxygen`
+- Types:
+  - `struct PersistentCachedPsk`: holds serialized PSK + usage count
+  - `class PersistentFizzPskCache`: inherits from `fizz::client::PskCache`, implements persistent PSK caching using file-backed storage
+- Functions:
+  - Lifecycle: destructor
+  - PSK management: `getPsk`, `peekPsk`, `putPsk`, `removePsk`
+  - Usage tracking: `getPskUses`, `setMaxPskUses`
+  - Serialization helpers: `toDynamic`, `convertTo`
+- Core logic:
+  - Uses `FilePersistentCache` to persist PSKs on disk.
+  - Serializes/deserializes PSKs using Fizz’s `serializePsk`/`deserializePsk`.
+  - Tracks PSK usage count; removes PSK after max uses reached.
+  - Integrates with Fizz’s TLS client PSK cache interface.
+
+### 2. **What is a PSK in TLS?**
+- In TLS 1.3, PSKs are used for session resumption (e.g., via tickets or external caches).
+- Fizz’s `PskCache` is an interface for storing/retrieving PSKs — typically used by TLS clients/servers to resume sessions efficiently.
+- Persistent caching of PSKs (e.g., across process restarts) is critical for long-lived clients or services that want to resume sessions without full handshakes.
+
+### 3. **Module Candidates Review**
+
+| Module | Relevance |
+|--------|-----------|
+| `dns` | ❌ No DNS resolution here. |
+| `pools` | ❌ No server pool or backend list configuration. |
+| `sampling` | ❌ No sampling logic (e.g., rate limiting, probabilistic decisions). |
+| `ssl` | ⚠️ Partial: deals with TLS (Fizz), but this is *not* about SSL context setup, certificates, handshake stats, or core TLS engine — it's specifically about *PSK caching*, which is a **transport-layer session resumption mechanism**, not general SSL/TLS context. |
+| `http_general` | ❌ Not HTTP protocol parsing, encoding, sessions, transactions. This is lower-level than HTTP. |
+| `services` | ❌ Not about service execution, connection acceptance, workers. This is client-side caching. |
+| `transport` | ✅ Strong match: The description says: *“transport module for HTTP/3/QUIC scenarios, responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache.”*<br>→ PSK cache is explicitly mentioned.<br>→ Fizz is used for TLS, and PSK caching is part of transport-layer session resumption (especially relevant for QUIC/HTTP/3 where 0-RTT relies on PSKs/tickets).<br>→ The class `PersistentFizzPskCache` is a concrete implementation of a PSK cache backed by file persistence — exactly the kind of infrastructure needed at the transport layer for persistent session resumption.
+
+### 4. **Cross-check with Reference Examples (implied by prompt)**  
+Although no explicit reference examples are given, the module definitions themselves clarify:
+- `transport` includes “token/PSK cache” explicitly.
+- This file implements a *persistent* PSK cache using Fizz + Wangle — clearly aligning with transport-layer concerns, especially for QUIC/HTTP/3 where PSK reuse is essential for performance.
+
+Also note:
+- It lives under `proxygen::` namespace, but that doesn’t imply `http_general` or `services` — Proxygen’s `transport` layer also uses `proxygen` namespace for shared infrastructure.
+- The use of `wangle::PersistentCacheConfig` and file persistence suggests it’s infrastructure for long-lived connections — typical of transport-layer optimization.
+
+---
+
+### ✅ Conclusion:
+The file implements a persistent PSK cache for Fizz (TLS), integrated with Proxygen’s transport layer needs — especially relevant for session resumption in HTTP/3/QUIC. The `transport` module explicitly covers “token/PSK cache”.
+
+**Assigned Module**: [transport]

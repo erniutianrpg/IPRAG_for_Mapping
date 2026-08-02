@@ -1,0 +1,69 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `proxygen/lib/http/sink/HTTPTransactionSink.h`
+  - `proxygen/lib/http/session/HQSession.h`
+- Namespace: `proxygen`
+- Functions implemented:
+  - `HTTPTransactionSink::getTCPTransportFD()`
+  - `HTTPTransactionSink::getPeerCertificate()`
+  - `HTTPTransactionSink::getQUICTransport()`
+  - `HTTPTransactionSink::sendPing()`
+  - `HTTPTransactionSink::addSessionObserver()`
+
+These are all methods of `HTTPTransactionSink`, which appears to be a class that provides access to transport-level details (TCP socket FD, peer cert, QUIC socket) and session-level operations (ping, observer registration) from an HTTP transaction context.
+
+Key observations:
+- The class interacts with:
+  - `httpTransaction_->getTransport().getUnderlyingTransport()` → underlying transport (e.g., `folly::AsyncSocket`)
+  - `HQSession` → a QUIC-capable HTTP session type (`HQSession` likely stands for *HTTP/3 over QUIC* session)
+  - `quic::QuicSocket` → explicit QUIC transport
+  - `HTTPSessionObserverContainer` → session observer pattern
+
+So this is clearly in the **HTTP layer**, but specifically dealing with **transport introspection and session interaction** — not raw transport implementation (like `proxygen/lib/transport/`), nor high-level server APIs (like `httpserver`).
+
+### 2. **Candidate Module Matching**
+
+Let’s evaluate each candidate:
+
+#### ✅ `http_general`
+> *"This module mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+- `HTTPTransactionSink` lives in `proxygen/lib/http/sink/` — part of `lib/http/`.
+- It deals with **transaction-level transport introspection**, **session access**, and **observer registration**, all within the HTTP abstraction layer.
+- `HQSession` is an HTTP session type for QUIC (i.e., HTTP/3), and `HTTPTransactionSink` bridges transaction ↔ session ↔ transport — exactly the kind of cross-cutting HTTP-layer logic `http_general` covers.
+- Note: While it touches QUIC, it does **not implement QUIC transport** — it only *uses* `quic::QuicSocket` via `HQSession`. So it's not the `transport` module.
+
+#### ❌ `transport`
+> *"mainly corresponds to lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3."*
+
+- This file does **not** contain any QUIC transport implementation code (no `QuicSocket` internals, no packet handling, no congestion control, etc.).
+- It only calls `getQuicSocket()` on `HQSession`, which is itself part of the HTTP session layer — not the raw transport module.
+- So this is *using* transport, not *implementing* it.
+
+#### ❌ `ssl`
+> *"mainly responsible for SSL/TLS context and statistics..."*
+
+- Though `getPeerCertificate()` is present, it's just delegating to the underlying transport’s certificate API — not managing TLS contexts or handshake logic.
+- No SSL-specific logic (e.g., certificate validation, context setup, cipher suites) here.
+
+#### ❌ `dns`, `sampling`, `general`, `services`, `httpserver`
+- `dns`: no DNS resolution logic.
+- `sampling`: no sampling logic.
+- `general`: too generic; this is specifically HTTP-layer, not utils/common helpers (e.g., not in `utils/`).
+- `services`: this is not about connection acceptance, workers, service execution — it's per-transaction/session utility.
+- `httpserver`: this is not in `proxygen/httpserver/`, and doesn’t provide high-level server APIs (e.g., `RequestHandler`, `Server`, etc.).
+
+### 3. **Reference Examples (implied)**  
+Though no explicit examples were given, based on standard Proxygen structure:
+- `lib/http/sink/`, `lib/http/session/`, `lib/http/codec/`, `lib/http/server/` → all fall under `http_general`.
+- `HTTPTransactionSink` is a helper class used by both client and server sides to expose transport/session info from a transaction — a canonical part of the HTTP core abstraction.
+
+### ✅ Conclusion
+The file belongs to the **HTTP protocol core layer**, specifically providing transaction-to-transport/session bridging functionality — squarely within the scope of `http_general`.
+
+---
+
+**Assigned Module**: [http_general]

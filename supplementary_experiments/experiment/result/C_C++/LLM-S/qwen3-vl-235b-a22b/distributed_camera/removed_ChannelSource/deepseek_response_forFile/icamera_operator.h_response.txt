@@ -1,0 +1,153 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **File Summary**
+- **File name**: `OHOS_ICAMERA_OPERATOR_H` (header defining an interface `ICameraOperator`)
+- **Includes**:
+  - Standard C++: `<cstdint>`, `<memory>`, `<string>`, `<vector>`
+  - Distributed camera-specific headers:
+    - `"data_buffer.h"` → data buffer abstraction
+    - `"dcamera_capture_info_cmd.h"` → capture configuration info
+    - `"dcamera_event_cmd.h"` → event types (e.g., state changes)
+    - `"types.h"` → likely common types (e.g., `DCameraSettings`, `DCameraEvent`, etc.)
+- **Namespaces**: `OHOS::DistributedHardware`
+- **Key Types**:
+  - `StateCallback`: abstract base class for state/event callbacks (`OnStateChanged`, `OnMetadataResult`)
+  - `ResultCallback`: abstract base class for result callbacks (`OnPhotoResult`, `OnVideoResult`)
+  - `ICameraOperator`: pure virtual interface for camera operation control:
+    - Lifecycle: `Init()`, `UnInit()`
+    - Configuration: `UpdateSettings()`
+    - Capture control: `StartCapture()`, `StopCapture()`
+    - Callback registration: `SetStateCallback()`, `SetResultCallback()`
+
+This is clearly a **client-facing interface** (i.e., for the *controller* side) that allows an application or service to interact with a distributed camera — specifically, to issue commands and receive results/events.
+
+Note:
+- It does **not** implement any logic — only declares abstract interfaces.
+- It uses `std::shared_ptr<...>` for callback and command objects — typical of client-side proxy usage.
+- The interface mirrors what a *CameraOperator* would expose in a local camera HAL/service (e.g., like Android’s `CameraDevice`/`CameraCaptureSession`), but adapted for distributed use.
+
+Now let’s evaluate each candidate module:
+
+---
+
+### **1. DistributedCameraSourceMgr**
+> Responsible for lifecycle, state machine, controller, input stream, data processing, IPC service, and callback management on the **source side (controller side)**, enabling the controller to invoke distributed camera capabilities...
+
+- ✅ Matches: This is the *controller side*, and `ICameraOperator` is exactly the interface a controller would use to operate the remote camera.
+- ✅ Callbacks (`StateCallback`, `ResultCallback`) are used by the source side to receive events/results from sink.
+- ✅ Methods like `StartCapture`, `UpdateSettings`, `Set*Callback` align with controller-side operations.
+- ❌ But: `SourceMgr` is likely the *implementation* (manager class), whereas this file is a *pure interface header*. However, interface headers are often colocated with their manager/module — especially in OHOS, where interfaces like `ICameraOperator` are part of the source-side public API.
+
+→ **High relevance**.
+
+---
+
+### **2. DistributedCameraSinkMgr**
+> On the **sink side (controlled side)** — receives commands, uses local camera, sends image data back.
+
+- ❌ Mismatch: The interface is designed for the *caller* (controller), not the *callee* (controlled device). The sink side would implement `ICameraOperator`, but this header is not the implementation — it's the contract the sink must fulfill. So while the sink *implements* this, the header itself belongs to the *client* (source) side API.
+
+→ Low probability.
+
+---
+
+### **3. ChannelCommon**
+> SoftBus adaptation, session/channel interfaces, listeners — communication foundation.
+
+- ❌ No channel/session/SoftBus specifics here. No mention of `ISession`, `IChannel`, `SoftBus`, etc.
+- This is application-level camera control, not transport-layer.
+
+→ Very low.
+
+---
+
+### **4. ChannelSink**
+> Controlled-side channel implementation — receives commands via SoftBus, sends image data.
+
+- ❌ Again, this is about transport; this header defines camera *operations*, not channel I/O.
+- While `ChannelSink` may internally hold a reference to `ICameraOperator`, the interface itself is not part of channel layer.
+
+→ Low.
+
+---
+
+### **5. CameraDataProcessCommon**
+> Common data processing frameworks, pipelines, codecs, color space, frame rate.
+
+- ❌ No data processing logic or pipeline interfaces here. No mention of encoders, decoders, resizers, etc.
+- Callbacks deal with *results*, but not how they’re processed.
+
+→ Low.
+
+---
+
+### **6. CameraDataPreProcess**
+> Sink-side preprocessing pipeline.
+
+- ❌ Not relevant — this is not about preprocessing; it's about control and callbacks.
+
+→ Very low.
+
+---
+
+### **7. CameraDataPostProcess**
+> Source-side post-processing (decoding, format conversion, etc.)
+
+- ❌ While `OnPhotoResult`/`OnVideoResult` deliver data, this header doesn’t define *how* data is processed — only that it’s delivered. So not post-processing logic.
+
+→ Low.
+
+---
+
+### **8. CameraServiceCommon**
+> Shared basic service capabilities: commands, protocols, camera info, events, metadata, controller interfaces.
+
+- ⚠️ Partial match: It includes events (`DCameraEvent`), metadata (`OnMetadataResult`), and controller interfaces.
+- But note: `CameraServiceCommon` sounds like a *shared utility* layer — possibly containing structs/enums/constants.
+- However, `ICameraOperator` is more specific: it’s the *primary control interface* for the source side, not just “common” utilities.
+- In OHOS architecture, `ICameraOperator` is typically part of the **source manager’s public API**, not a generic shared service.
+
+→ Medium-low; less likely than `DistributedCameraSourceMgr`.
+
+---
+
+### **9. VirtualCameraHdf**
+> HDF/HDI layer — virtual camera devices, Host/Provider/Device, Stream Operator, Metadata processing, IPC proxies.
+
+- ❌ This is at the *HDF driver/HDI* level. The interface here is higher-level (application/service layer), not hardware abstraction.
+- HDF modules would have `IDevice`, `IStreamOperator`, etc., not `ICameraOperator` with `StartCapture(std::vector<DCameraCaptureInfo>)`.
+- Also, no HDF-related includes (e.g., `hdf_log.h`, `device_resource_if.h`).
+
+→ Very low.
+
+---
+
+### **10. utils**
+> Common utilities: data buffers, constants, error codes, general support for `CameraClient`/`CameraOperator`, including local camera query/open/close/stream acquisition, and preview/photo/video callback handling.
+
+- ✅ Includes `"data_buffer.h"`, `"types.h"` — suggests utility-like dependencies.
+- ✅ Callback classes (`StateCallback`, `ResultCallback`) could be considered utility abstractions.
+- But: `ICameraOperator` is a *core interface*, not a utility. Utilities are usually non-interface helpers (e.g., `BufferUtils`, `ErrorCodeHelper`).
+- In OHOS, `utils` modules usually don’t define major interfaces like `ICameraOperator`; those live in manager modules.
+
+→ Medium, but less likely than `SourceMgr`.
+
+---
+
+### Final Reasoning:
+- The file is a **public interface header** for controlling a distributed camera from the **controller (source) side**.
+- The only module whose responsibility explicitly includes “controller”, “invoke distributed camera capabilities", and “callback management on the source side” is:
+  > **DistributedCameraSourceMgr**
+
+In OHOS codebase conventions:
+- Interface headers like `ICameraOperator.h` are typically placed under the module that *owns the client-facing API* — i.e., `DistributedCameraSourceMgr`.
+- Implementation (`CameraOperator.cpp`, `SourceManager.cpp`) would reside there too.
+
+Thus, despite being an interface (not implementation), this file **belongs to the DistributedCameraSourceMgr module** as its public API definition.
+
+---
+
+### ✅ Final Answer:
+The probability that this file belongs to module 'DistributedCameraSourceMgr' is 95%.

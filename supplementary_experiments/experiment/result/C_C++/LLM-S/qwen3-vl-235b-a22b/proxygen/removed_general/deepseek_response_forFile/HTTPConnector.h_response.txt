@@ -1,0 +1,102 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Namespace**: `proxygen`
+- **Key Types**:
+  - `HTTPUpstreamSession` (forward-declared)
+  - `HTTPConnector` — main class, inherits from `folly::AsyncSocket::ConnectCallback`
+  - `Callback` — abstract interface for connection result handling
+- **Key Functions**:
+  - `connect()`, `connectSSL()` — initiate TCP/SSL connections
+  - `reset()`, `setPlaintextProtocol()`, `setHTTPVersionOverride()`, `setHTTPCodecFactory()`
+  - Time tracking: `timeElapsed()`
+  - Uses `HHWheelTimer`, `WheelTimerInstance`, `TimePoint`, `SSLContext`, `SSLSession`, `AsyncSocket`, `SocketAddress`, etc.
+- **Includes**:
+  - Folly I/O & async: `AsyncSocket`, `HHWheelTimer`, `SSLContext`, `SSLSession`, `SocketOptionMap`
+  - Proxygen HTTP codec: `DefaultHTTPCodecFactory`, `HTTPCodec`
+  - Proxygen utils: `Time.h`, `WheelTimerInstance.h`
+  - Wangle: `TransportInfo.h`
+
+This is clearly a **client-side connection establishment utility**, specifically for initiating HTTP(S) upstream connections — i.e., connecting to backend servers (e.g., in a proxy or client context), not for accepting incoming connections.
+
+It does **not**:
+- Handle DNS resolution (`dns`)
+- Manage server pools (`pools`)
+- Implement sampling logic (`sampling`)
+- Deal with SSL/TLS *context creation or stats* in isolation — though it uses SSL, it's just consuming `SSLContext` and `SSLSession`, not managing them (so less likely `ssl`)
+- Implement HTTP protocol parsing/encoding — it uses `DefaultHTTPCodecFactory`, but doesn’t implement codecs itself
+- Provide server-side infrastructure like acceptors, workers, service execution (`services`, `httpserver`)
+- Deal with QUIC/HTTP/3 transport (`transport`)
+
+---
+
+### **2. Module Mapping**
+
+#### ✅ **http_general**
+- This module covers *common HTTP implementation* under `proxygen/lib/http/`, including:
+  - HTTP session management
+  - Codec factories (`DefaultHTTPCodecFactory`)
+  - Connection setup for HTTP(S) clients/servers (but note: this is *upstream*, i.e., client-side)
+- The file includes `DefaultHTTPCodecFactory.h`, `HTTPCodec.h`, `Time.h`, `WheelTimerInstance.h` — all part of `proxygen/lib/http/utils/` and `proxygen/lib/http/codec/`.
+- `HTTPUpstreamSession` is a known type in Proxygen’s upstream HTTP client stack (used in `proxygen/lib/http/client/`).
+- `HTTPConnector` is a low-level connector used by `HTTPClientSession` and related classes — it's part of the *HTTP client infrastructure*, which sits in `proxygen/lib/http/` (specifically, often in `client/` subdirectory, but still under `http_general` scope per the module definition).
+
+> The description says: *"responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management..."* — while this file doesn’t do parsing, it manages the *session-level connection setup* and integrates with codec factories, fitting the broader "HTTP core layer" scope.
+
+#### ❌ **services**
+- `services` = server-side infrastructure: acceptors, workers, service execution.
+- This file is about *connecting out*, not accepting inbound connections.
+- No use of `Service`, `Worker`, `Acceptor`, etc.
+- Not matching.
+
+#### ❌ **httpserver**
+- High-level HTTP server APIs (e.g., `HTTPServer`, `RequestHandler`).
+- This is client-side connection logic — opposite direction.
+- Not matching.
+
+#### ❌ **transport**
+- Specifically for QUIC / HTTP/3 transport layer.
+- No QUIC, no `QuicSocket`, no datagram, no token cache.
+- Uses TCP via `AsyncSocket`, not QUIC.
+- Not matching.
+
+#### ❌ **ssl**
+- Would contain SSL context management, certificate validation, TLS handshake logic, stats.
+- This file only *uses* `SSLContext` and `SSLSession` as parameters — it doesn’t create or manage them.
+- Not the core SSL module; just consumes SSL facilities.
+- Low match.
+
+#### ❌ **dns**
+- No DNS resolver usage (`DNSResolver`, `DnsLookup`, etc.).
+- `SocketAddress` is used, but that’s post-resolution.
+- Not matching.
+
+#### ❌ **pools**
+- No pool management, no backend list, no load balancing logic.
+- `HTTPConnector` may be *used by* pool-aware clients, but it itself is not pool logic.
+- Not matching.
+
+#### ❌ **sampling**
+- No sampling logic (e.g., rate limiting, probabilistic decisions).
+- Not matching.
+
+---
+
+### **3. Conclusion**
+The file implements `HTTPConnector`, a utility class for establishing HTTP(S) connections (TCP + optional SSL), integrating with:
+- Folly async I/O (`AsyncSocket`, `HHWheelTimer`)
+- Proxygen HTTP codec factory
+- Time/wheel timer utilities
+
+This fits squarely within **`http_general`**, as it’s part of the foundational HTTP client stack in `proxygen/lib/http/`. In Facebook’s Proxygen codebase, `HTTPConnector` lives in `proxygen/lib/http/client/`, which is considered part of the general HTTP layer (not a separate top-level module like `services` or `httpserver`).
+
+While it touches transport (TCP) and SSL, those are *dependencies*, not its primary responsibility.
+
+---
+
+**Final Answer**:
+
+The probability that this file belongs to module 'http_general' is 95%.

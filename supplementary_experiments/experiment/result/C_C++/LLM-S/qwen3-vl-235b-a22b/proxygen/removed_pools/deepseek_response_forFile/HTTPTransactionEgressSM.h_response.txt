@@ -1,0 +1,67 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File metadata**
+- **Language**: C/C++
+- **Includes**:
+  - `<iosfwd>` — standard I/O forward declarations (common, not module-specific)
+  - `<proxygen/lib/utils/StateMachine.h>` — key: this is from `proxygen/lib/utils/`, which maps directly to the **general** module per the description.
+- **Namespace**: `proxygen`
+- **Types**:
+  - `class HTTPTransactionEgressSMData`: a state machine data class for *egress* (outbound) HTTP transaction flow.
+  - Two enums: `State` and `Event`, defining states/events for an HTTP transaction’s egress side (e.g., `HeadersSent`, `sendBody`, `ChunkHeaderSent`, etc.).
+- **Functions**:
+  - `getInitialState()`, `find(State s, Event e)`, `getName()` — standard interface for a state machine data provider (used by `StateMachine<T>` template).
+- **Raw excerpt**:
+  - Defines `HTTPTransactionEgressSMData` with state/event enums covering HTTP message transmission phases: headers, body, chunks, trailers, EOM.
+  - Uses `StateMachine<HTTPTransactionEgressSMData>` → creates a concrete state machine type for egress transaction.
+  - Includes stream insertion operators (`operator<<`) for debugging/logging.
+
+### 2. **What is this file doing?**
+This is a *state machine definition* for the **egress (sending) side of an HTTP transaction**, i.e., how the server/client sends an HTTP response/request — managing the lifecycle of sending headers, body chunks, trailers, EOM, etc.
+
+It is **not**:
+- DNS resolution → no DNS types or resolvers.
+- Sampling → no sampling logic or counters.
+- SSL → no SSL/TLS context, certs, or handshake logic.
+- Transport (QUIC/HTTP3) → although HTTP/3 uses datagrams, this file is generic to HTTP semantics (chunked encoding, trailers, EOM), not transport-specific (no QUIC handles, socket abstractions, etc.).
+- Services → no connection management, worker threads, service config.
+- httpserver → this is not a high-level server API; it's a low-level internal component.
+- It is also **not** in `proxygen/lib/http/` directly (though logically related), but note:
+  - The header included is from `utils/StateMachine.h`, and the class is named `HTTPTransactionEgressSMData`, suggesting it's part of the *HTTP transaction machinery*, likely used by `http` layer components.
+
+However, crucially:
+> The **general** module is defined as:  
+> *"mainly corresponds to proxygen/lib/utils/ and some common auxiliary capabilities... providing foundational support for core HTTP abstractions..."*
+
+And:
+> The **http_general** module is defined as:  
+> *"mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management..."*
+
+Now, where would a state machine for HTTP transaction egress live?
+
+In Facebook’s Proxygen codebase (which this appears to be), `HTTPTransactionEgressSMData.h` is indeed located in `proxygen/lib/http/` — specifically, it's part of the HTTP transaction state machine definitions, alongside `HTTPTransactionIngressSMData.h`, and used by `HTTPTransaction.cpp`.
+
+Let’s verify via logical inference:
+- `StateMachine.h` is in `utils/`, but **using** it to define an HTTP transaction state machine is part of the *HTTP protocol core*, not generic utility.
+- The state names (`HeadersSent`, `ChunkHeaderSent`, `TrailersSent`, `EOMQueued`) are HTTP-specific semantics (HTTP/1.1 chunked encoding, HTTP/2 trailers, EOM = End of Message).
+- This is tightly coupled with `HTTPTransaction`, which lives in `proxygen/lib/http/`.
+- The `general` module is for *generic utilities* (e.g., `Timer`, `ScopedEventBaseThread`, `AsyncSocket`, `IOBuf`, `StateMachine` itself), but **not** for protocol-specific state machines.
+
+Thus, while the *base* `StateMachine` template is in `general`, the *instantiation and definition* of `HTTPTransactionEgressSMData` is a core part of the HTTP transaction layer → belongs to **http_general**.
+
+Also, note the naming: `HTTPTransactionEgressSMData` strongly suggests it's part of the HTTP transaction subsystem — exactly what `http_general` covers.
+
+### 3. Module likelihood scoring
+- **dns**: 0% — no DNS-related symbols.
+- **sampling**: 0% — no sampling logic.
+- **ssl**: 0% — no SSL types or functions.
+- **general**: 30% — uses `utils/StateMachine.h`, but the content is *not* a generic utility; it’s HTTP-specific. The `general` module hosts the *framework*, not the protocol-specific state machines.
+- **http_general**: **85%** — this is a core HTTP transaction state machine definition; matches description: “HTTP protocol core layer… transaction management… protocol-related capabilities”.
+- **services**: 5% — no service/connection management code.
+- **httpserver**: 5% — too low-level; httpserver is higher-level wrappers (e.g., `HTTPServer`, `RequestHandler`).
+- **transport**: 5% — no transport-layer specifics (QUIC, UDP, etc.); datagram here refers to HTTP/2 datagram extension or generic send, not QUIC datagram.
+
+### Final decision:
+The file defines the egress state machine for HTTP transactions — a foundational piece of the HTTP protocol implementation, residing logically in `proxygen/lib/http/`, which maps to the **http_general** module.
+
+"The probability that this file belongs to module 'http_general' is 85%."

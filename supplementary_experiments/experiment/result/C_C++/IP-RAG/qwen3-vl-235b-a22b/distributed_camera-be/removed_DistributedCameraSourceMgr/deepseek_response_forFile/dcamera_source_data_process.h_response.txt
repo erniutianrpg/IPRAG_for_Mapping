@@ -1,0 +1,81 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+services\cameraservice\sourceservice\include\distributedcameramgr\dcameradata\dcamera_source_data_process.h
+```
+- Located under `sourceservice` → indicates this is on the **source side** (i.e., the *controller* side, where the app/user requests camera data).
+- Subdirectory `dcameradata` suggests it deals with **data processing**, not control logic or channel communication directly.
+- The class name: `DCameraSourceDataProcess`
+
+### 2. **File Content Summary**
+- Class `DCameraSourceDataProcess` inherits from `ICameraSourceDataProcess`.
+- Public methods:
+  - Constructor with `devId`, `dhId`, `streamType`
+  - `FeedStream(...)`: accepts buffers — likely *ingesting* stream data (but note: this is on the *source* side; however, in distributed camera architecture, the *source side* is typically the controller, and the *sink side* is the device providing camera data — so why would source side feed streams? Let's resolve this carefully.)
+  - `ConfigStreams`, `ReleaseStreams`, `StartCapture`, `StopCapture`, `GetAllStreamIds`
+- Private members:
+  - `std::vector<std::shared_ptr<DCameraStreamDataProcess>> streamProcess_`
+  - `std::set<int32_t> streamIds_`
+  - Device & DH IDs, stream type
+
+Crucially, it includes:
+```cpp
+#include "dcamera_stream_data_process.h"
+#include "icamera_source_data_process.h"
+```
+→ So it uses/coordinates multiple `DCameraStreamDataProcess` instances.
+
+Also note: the interface `ICameraSourceDataProcess` implies this is the *implementation* of a source-side data processing interface.
+
+But here’s the key architectural nuance:
+
+In OpenHarmony’s Distributed Camera design:
+- **Source side** = the *controller* (e.g., a phone requesting camera from another device)
+- **Sink side** = the *controlled device* (e.g., a tablet with physical camera, acting as sink)
+
+However, the naming `DCameraSourceDataProcess` can be confusing.
+
+Let’s examine method semantics:
+- `FeedStream(std::vector<std::shared_ptr<DataBuffer>>& buffers)` — this sounds like *receiving* data (i.e., feeding into a pipeline). On the **source side**, you wouldn’t normally “feed” raw camera buffers — that’s what the **sink side** does (captures and feeds data upstream).
+- But wait: In some architectures, the *source side* may still handle *post-processing* of received data (e.g., after decoding), and `FeedStream` could be part of a local pipeline for rendering or further processing.
+
+However, the class inherits `ICameraSourceDataProcess`, and the header is under `sourceservice/include/.../dcameradata/`. Also, the member `streamProcess_` is a vector of `DCameraStreamDataProcess`, which — based on naming — likely handles per-stream data processing.
+
+Now compare to candidate modules:
+
+#### Candidate: `CameraDataPostProcess`
+> *"responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution, and related properties of received image data so that the controller can use distributed camera data as if using a local Camera."*
+
+This matches:
+- Source side ✅
+- Data processing (not channel, not HAL) ✅
+- Handles streams, capture control, buffer feeding → consistent with post-processing after receiving data from sink
+- Uses `DCameraStreamDataProcess` internally → likely per-stream post-processing units
+
+#### Candidate: `CameraDataProcessCommon`
+> *"provides common data processing frameworks, data processing pipeline interfaces, codecs, color space conversion..."*
+
+This is more about *shared infrastructure*, abstract interfaces, or base classes — but `DCameraSourceDataProcess` is a concrete implementation, not a generic framework.
+
+#### Candidate: `CameraServiceCommon`
+> *"shared basic service capabilities... basic commands, protocols, camera info, events..."*
+
+No — this class is not about protocols/events; it’s about *data flow* and stream handling.
+
+#### Candidate: `ChannelSource` / `ChannelSink`
+These are about *channel/session/SoftBus* communication — but this header has **no SoftBus, session, or IPC-related includes or types**. It only includes data processing headers.
+
+#### Candidate: `CameraDataPreProcess`
+> *"on the sink side or input side, processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow."*
+
+That would be on the *sink* side — but our file is under `sourceservice`, so unlikely.
+
+Thus, despite the potentially confusing name `SourceDataProcess`, the context (file path in `sourceservice`, inheritance from `ICameraSourceDataProcess`, coordination of stream data processors, and methods like `FeedStream`, `StartCapture`) strongly indicates this is the **post-processing stage on the source (controller) side**, where received encoded video frames are decoded, formatted, and prepared for local consumption (e.g., preview).
+
+This aligns precisely with **`CameraDataPostProcess`**.
+
+---
+
+### ✅ Final Assignment:
+**Assigned Module**: [CameraDataPostProcess]

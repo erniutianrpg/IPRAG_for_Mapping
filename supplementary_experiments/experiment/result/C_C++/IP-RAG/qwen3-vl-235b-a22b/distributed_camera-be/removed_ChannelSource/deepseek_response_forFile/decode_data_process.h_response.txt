@@ -1,0 +1,74 @@
+Let’s analyze the file systematically.
+
+### 1. **File Path**
+```
+services\data_process\include\pipeline_node\multimedia_codec\decode_data_process.h
+```
+- Located under `data_process/include/pipeline_node/multimedia_codec/` → strongly suggests this is part of a **data processing pipeline**, specifically handling **multimedia decoding**.
+- The term *decode* and *multimedia_codec* indicate video/audio decoding functionality.
+- It's a *pipeline node*, meaning it's a stage in a data processing pipeline (e.g., input → decode → post-process → output).
+
+### 2. **Key Inclusions & Dependencies**
+From the includes:
+- `avcodec_video_decoder.h`, `avcodec_common.h`, `format.h`, `surface.h`, `avsharedmemory.h`: all related to **media codec decoding**, especially video decoding using AVCodec-like interfaces.
+- `dcamera_codec_event.h`, `event_bus.h`, `event_sender.h`, `eventbus_handler.h`: event-driven architecture for distributed camera events.
+- `abstract_data_process.h`, `dcamera_pipeline_source.h`: indicates integration into a broader **data processing pipeline** for distributed camera.
+- `data_buffer.h`, `image_common_type.h`: standard data structures for image/video buffers and metadata.
+- `distributed_camera_errno.h`: domain-specific error codes.
+
+### 3. **Class Definition & Responsibilities**
+The main class is:
+```cpp
+class DecodeDataProcess : public EventSender,
+                          public EventBusHandler<DCameraCodecEvent>,
+                          public AbstractDataProcess,
+                          public std::enable_shared_from_this<DecodeDataProcess>
+```
+
+Key methods include:
+- `InitDecoder()`, `SetDecoderOutputSurface()`, `FeedDecoderInputBuffer()`, `OnOutputBufferAvailable()` → clearly **video decoder control and buffer management**.
+- `CopyDecodedImage()`, `CopyYUVPlaneByRow()`, `CheckCopyImageInfo()` → **post-decode image copying/conversion**, likely from decoder output surface to internal data buffer format.
+- `PostOutputDataBuffers()`, `DecodeDone()` → pipeline output stage: after decoding, push buffers downstream.
+- `ProcessData(std::vector<std::shared_ptr<DataBuffer>>& inputBuffers)` → core pipeline node interface: takes raw encoded data (input), decodes it, produces decoded frames (output).
+- Uses `DCameraPipelineSource` as callback target → implies it feeds decoded frames back to the pipeline source (i.e., upstream consumer on the **source side**).
+
+### 4. **Role in Distributed Camera Architecture**
+In distributed camera:
+- The **sink side** (controlled device) captures raw video → encodes → sends over channel.
+- The **source side** (controller) receives encoded stream → **decodes** → processes → displays or uses as local camera feed.
+
+This class:
+- Takes encoded data (`inputBuffers`) → decodes → outputs decoded frames (`outputBuffers`).
+- Integrates with `DCameraPipelineSource`, which is likely the **source-side pipeline manager** (see candidate module description: *DistributedCameraSourceMgr* handles “data processing” and “callback management on the source side”).
+- Handles decoder lifecycle, surface binding, timestamp extraction, YUV copy — all typical of **post-reception decoding** on the **source side**.
+
+Crucially, the module `CameraDataPostProcess` is defined as:
+> *"responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution, and related properties of received image data so that the controller can use distributed camera data as if using a local Camera."*
+
+This matches **exactly**:
+- It's on the **source side** (controller).
+- It **decodes** received encoded streams.
+- It prepares data for consumption (e.g., copying to `DataBuffer`, aligning height, handling timestamps).
+- It's part of the **post-processing pipeline** (after channel reception, before display/use).
+
+Also note:
+- `CameraDataProcessCommon` is for *common* frameworks and interfaces — but this is a concrete implementation of a decode node, not a generic framework.
+- `DistributedCameraSourceMgr` is higher-level (lifecycle, state machine, IPC service, controller), while this is a low-level **pipeline node** used *by* the source manager.
+- The file path `services\data_process\include\pipeline_node\...` confirms it's a **pipeline node**, and per the candidate definitions, such nodes belong to `CameraDataPostProcess` when they handle decoding on the source side.
+
+### 5. **Elimination of Other Candidates**
+- `DistributedCameraSinkMgr`: sink side — this is decoding, which happens on source side.
+- `ChannelCommon` / `ChannelSink`: communication layer — this is not about channels or SoftBus.
+- `CameraDataPreProcess`: preprocessing on sink side (e.g., before encoding) — this is decoding, i.e., *after* transmission.
+- `VirtualCameraHdf`: HDF/HDI layer virtual device — this is application/service layer, not driver/HDI.
+- `utils`: utilities — this is a full-fledged pipeline node with complex logic, not a utility.
+- `CameraServiceCommon`: shared basic services — too high-level; this is specific to decoding.
+
+### ✅ Conclusion
+The file implements a **video decoding node** in the **source-side data post-processing pipeline**, precisely matching the definition of:
+
+> **CameraDataPostProcess**
+
+---
+
+**Assigned Module**: [CameraDataPostProcess]

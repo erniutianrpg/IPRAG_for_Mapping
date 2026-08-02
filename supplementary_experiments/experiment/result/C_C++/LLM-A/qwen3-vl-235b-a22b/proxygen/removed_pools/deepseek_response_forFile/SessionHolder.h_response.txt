@@ -1,0 +1,50 @@
+Let’s analyze the file content step by step to determine which architecture module it belongs to.
+
+### 1. **File context and purpose**
+- The header includes:
+  - `folly/IntrusiveList.h` → used for intrusive linked lists (common in connection/session pooling).
+  - `proxygen/lib/http/ProxygenErrorEnum.h`
+  - `proxygen/lib/http/connpool/Endpoint.h` → endpoint abstraction (host/port/secure flag), typically used in connection pooling.
+  - `proxygen/lib/http/session/HTTPSessionBase.h` → base class for HTTP sessions (core session abstraction).
+
+- The main type defined is `SessionHolder`, which:
+  - Wraps an `HTTPSessionBase*`.
+  - Implements `HTTPSessionBase::InfoCallback` (a callback interface for session lifecycle events).
+  - Manages session state (e.g., idle, partially filled, filled) via `link()`/`unlink()`, `detach*`/`attach*` methods — strongly suggesting **connection pooling** behavior.
+  - Has a nested `Callback` interface for pool management callbacks (e.g., attach/detach).
+  - Has a nested `Stats` interface for connection-level telemetry.
+  - Provides methods like `isPoolable`, `newTransaction`, `drain`, `closeWithReset`, `shouldAgeOut`, etc.
+  - Handles many session lifecycle events: `onCreate`, `onIngressError`, `onRequestBegin/End`, `onActivateConnection`, `onDeactivateConnection`, `onIngressMessage`, `onSettings`, etc.
+
+This is clearly about **managing HTTP sessions in a connection pool**, tracking their state, lifecycle, and interaction with higher-level logic (e.g., transaction creation, stats, draining).
+
+### 2. **Compare with candidate modules**
+
+- **dns**: No DNS resolution logic here. ❌  
+- **sampling**: No sampling logic. ❌  
+- **ssl**: No SSL/TLS context or crypto. ❌  
+- **general**: This is for *utils* (e.g., `proxygen/lib/utils/`). While `SessionHolder` is utility-like, it's tightly coupled to HTTP session and connection pooling — not generic utilities. Also, the includes point to `http/connpool/`, `http/session/`, so it's HTTP-specific. Likely not general. ⚠️  
+- **http_general**: Defined as “common HTTP implementation under `proxygen/lib/http/`”, responsible for “HTTP protocol parsing, encoding/decoding, session management, transaction management…”.  
+  - `SessionHolder` is directly involved in **session management** and **transaction creation** (`newTransaction`), and lives in the HTTP layer (`http/connpool/Endpoint.h`, `http/session/HTTPSessionBase.h`).  
+  - Connection pooling is a core part of HTTP session reuse and performance — fits well under *HTTP core layer*.  
+  ✅ Strong match.
+
+- **services**: Defined as `proxygen/lib/services/`, for *server-side infrastructure*: service execution, connection acceptance, worker threads, config.  
+  - `SessionHolder` is lower-level — it doesn’t handle accepting connections or dispatching to services; it manages individual sessions *after* they’re created. It’s more about pooling than service orchestration. So likely not services. ❌  
+
+- **httpserver**: High-level server APIs (e.g., `HTTPServer`, `RequestHandler`). This is a low-level session wrapper — not a high-level API. ❌  
+- **transport**: QUIC/HTTP/3 transport layer. This file deals with HTTP/1.x or HTTP/2 sessions (via `HTTPSessionBase`, `HTTPMessage`, `SettingsList`, etc.), no QUIC-specific types or transports. ❌
+
+### 3. **Key evidence**
+- `#include <proxygen/lib/http/connpool/Endpoint.h>` → explicitly in `connpool/`, which is part of HTTP layer.
+- `SessionHolder` implements `HTTPSessionBase::InfoCallback`, indicating it’s designed to plug into the HTTP session lifecycle.
+- The pattern (intrusive list, attach/detach states, poolability, draining) matches classic HTTP connection pooling — a standard component of HTTP client/server stacks, implemented in the HTTP core layer in Proxygen.
+
+In Proxygen’s codebase, connection pooling logic (e.g., `ConnPool`, `SessionHolder`, `Endpoint`) resides under `proxygen/lib/http/connpool/`, which falls under the broader **http_general** module per the description:  
+> *"This module mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management..."*
+
+Thus, `SessionHolder` is part of HTTP session/connection management — squarely in **http_general**.
+
+---
+
+**Assigned Module**: [http_general]

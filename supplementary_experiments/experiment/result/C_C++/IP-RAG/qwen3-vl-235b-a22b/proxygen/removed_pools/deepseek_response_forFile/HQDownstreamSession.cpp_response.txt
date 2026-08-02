@@ -1,0 +1,53 @@
+Let’s analyze the file `proxygen/lib/http/session/HQDownstreamSession.cpp` step by step.
+
+### 1. **File Path and Context**
+- Path: `proxygen/lib/http/session/HQDownstreamSession.cpp`
+  - This is under `proxygen/lib/http/session/`, which strongly suggests it belongs to the HTTP layer.
+  - The class name `HQDownstreamSession` indicates:
+    - **HQ**: Hypertext Transfer Protocol over QUIC (HTTP/3), where “HQ” is Facebook/Meta’s internal name for HTTP/3 over QUIC.
+    - **Downstream**: Indicates this session handles *server-side* (i.e., downstream from the client’s perspective) traffic — i.e., it's part of an HTTP server receiving requests and sending responses, possibly with server push.
+
+### 2. **Key Content Observations**
+From the excerpt and function list:
+
+- Includes header: `#include <proxygen/lib/http/session/HQDownstreamSession.h>`
+- Namespace: `proxygen`
+- Functions include:
+  - `onTransportReady()`, `onFullHandshakeDone()`, `onWriteCipherAvailable()` — these are transport-level lifecycle callbacks, but they’re *wrapping* QUIC/TLS events into HTTP session semantics.
+  - `setupOnHeadersComplete()`: deals with HTTP transaction setup upon headers completion — core HTTP transaction handling.
+  - `createEgressPushStream()`, `findPushStream()`, `pushAllowedByGoaway()`, `newPushedTransaction()`: all related to **HTTP/3 server push**, a protocol-level feature of HTTP/3 (HQ).
+  - Uses `quic::StreamId`, `hq::PushId`, `HQStreamTransportBase`, `HeaderCodec`, `HTTPTransaction`, `HTTPMessage`, `HTTPSessionController`, etc.
+  - Explicitly references `HTTPSessionStats`, `FilterIteratorFn`, `WheelTimerInstance`, `folly::EventBase`, `folly::SSLContext` — these are shared infrastructure, but used in context of HTTP session management.
+
+Crucially:
+- It is **not** doing raw DNS resolution → rules out `dns`.
+- Not about sampling logic → rules out `sampling`.
+- While it uses SSL/TLS (`folly::SSLContext`, `onFullHandshakeDone`), it does *not* manage SSL contexts or stats itself — those are passed in; it’s consuming TLS events, not implementing SSL — so not `ssl`.
+- It’s not in `utils/`, nor generic utilities — it’s deeply tied to HTTP session state and transaction flow → rules out `general`.
+- It’s not in `services/` (which would be higher-level connection acceptance, worker pools, service registration), though it *is* server-side. But `services` typically sits *above* session-level abstractions.
+- It’s not in `httpserver/` (which is the high-level API wrapper like `HTTPServer::start()`); this is lower-level session implementation.
+- It *does* use QUIC primitives (`quic::StreamId`, `hq::PushId`), but the file is under `lib/http/session/`, not `lib/transport/`. The `transport` module is defined as *"lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3"*. However, this file is *not* in `transport/`, and its responsibilities are **session-layer HTTP semantics over QUIC**, not raw transport framing or QUIC connection management.
+
+### 3. **Module Mapping Logic**
+The key distinction:
+- `transport` module: deals with QUIC connection establishment, stream creation at transport level, datagram handling, token caching — e.g., `QuicSocket`, `QuicClientTransport`, `HQTransport`.
+- `http_general`: defined as *"common HTTP implementation under proxygen/lib/http/... responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+This file implements:
+- HTTP session management (`HQDownstreamSession`)
+- Transaction attachment (`setupOnHeadersComplete`)
+- Server push logic for HTTP/3 (`createEgressPushStream`, `pushAllowedByGoaway`)
+- Integration of QUIC streams into HTTP transaction model
+
+→ This is exactly what `http_general` covers: **HTTP protocol layer including HTTP/3 (HQ) session abstractions**, sitting *above* raw transport but *below* high-level services/server APIs.
+
+Also note: There are sibling files like `HTTPSession.cpp`, `HTTPUpstreamSession.cpp`, `HTTPDownstreamSession.cpp`, and `HQUpstreamSession.cpp` — all under `lib/http/session/`, and they belong to `http_general`.
+
+The fact that this is `HQDownstreamSession` (not `HQTransport`) confirms it’s part of the HTTP session abstraction, not transport.
+
+### 4. **Conclusion**
+The file implements HTTP/3 (HQ) downstream session logic — managing transactions, headers, server push, and integrating QUIC streams into the HTTP transaction model — squarely within the scope of the **HTTP protocol core layer**, i.e., `http_general`.
+
+---
+
+**Assigned Module**: [http_general]

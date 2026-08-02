@@ -1,0 +1,81 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+services\data_process\src\pipeline_node\multimedia_codec\decode_data_process_common.cpp
+```
+- Located under `data_process/src/pipeline_node/multimedia_codec/` → strongly suggests this is part of a **data processing pipeline**, specifically handling **multimedia decoding**.
+- The `_common` suffix and `decode_data_process` name indicate it's a reusable, generic decoder node implementation.
+
+### 2. **Includes**
+```cpp
+#include "decode_data_process.h"
+#include "distributed_hardware_log.h"
+#include "graphic_common_c.h"
+#include "convert_nv12_to_nv21.h"
+#include "dcamera_utils_tools.h"
+#include "decode_video_callback.h"
+```
+- `convert_nv12_to_nv21.h`: indicates YUV format conversion (common in video decoding/post-processing).
+- `dcamera_utils_tools.h`: general utility for distributed camera.
+- `decode_video_callback.h`: callback interface for decoded frames.
+- `graphic_common_c.h`: low-level graphics/image buffer handling.
+- All point to **video decoding and image format manipulation**, not channel communication or device abstraction.
+
+### 3. **Namespace & Class**
+- Namespace: `OHOS::DistributedHardware`
+- Class: `DecodeDataProcess`
+  - Implements video decoding logic:
+    - `InitDecoder()`, `FeedDecoderInputBuffer()`, `OnOutputBufferAvailable()`, `CopyDecodedImage()`, etc.
+    - Handles codec events, surface buffers, timestamping, YUV plane copying.
+    - Uses `Media::AVCodecBufferInfo`, `Surface`, `SurfaceBuffer` — standard multimedia framework types (e.g., OHOS Media subsystem).
+  - Also includes `DecodeSurfaceListener`, which manages surface buffer availability — typical for rendering/decoding pipelines.
+
+### 4. **Key Responsibilities Observed**
+- Validates input/output video configs (resolution, codec type, frame rate).
+- Initializes and manages a video decoder (via media framework).
+- Converts decoded image data (e.g., NV12 → NV21) — format conversion.
+- Copies decoded frames into output `DataBuffer`s for downstream use.
+- Integrates with event bus (`EventBus`, `DCameraCodecEvent`) for pipeline coordination.
+- Called as part of a *pipeline node* — fits a modular data processing flow.
+
+This is clearly **post-reception decoding**: after data arrives (likely over channel), it decodes compressed video (e.g., H.264/H.265) into raw YUV frames for consumption by the source-side app/controller.
+
+### 5. **Compare with Candidate Modules**
+
+| Module | Relevance |
+|--------|-----------|
+| **DistributedCameraSourceMgr** | Manages lifecycle, controller-side orchestration — too high-level; this file is a low-level pipeline node, not a manager. ❌ |
+| **ChannelCommon / ChannelSource / ChannelSink** | Deal with transport (SoftBus), sessions, IPC — no network/channel code here. Includes are all local processing. ❌ |
+| **CameraDataProcessCommon** | *"provides common data processing frameworks, data processing pipeline interfaces, codecs, color space conversion..."* → This matches **exactly**: it's a pipeline node implementing decoding + format conversion, reusable across sides. ✅ |
+| **CameraDataPreProcess** | *"preprocessing pipeline on the sink side or input side, before transmission/encoding"* — but this is **decoding**, i.e., *after* transmission, on the **source side** (controller receives encoded stream, decodes it). So not pre-process. ❌ |
+| **CameraDataPostProcess** | *"post-processing pipeline on the source side or output side. It decodes, converts formats..."* → This explicitly mentions **decoding** and format conversion on the **source side**. Very strong match. ✅ |
+| **CameraServiceCommon** | Shared service capabilities (commands, protocols, metadata) — not codec/data buffer handling. ❌ |
+| **VirtualCameraHdf** | HDF/HDI layer virtual camera device — this is user-space pipeline logic, not driver/device layer. ❌ |
+| **utils** | General utilities — while it uses some utils, the core is a full decode node, not just helpers. ❌ |
+
+Now distinguish between:
+- **CameraDataProcessCommon** (generic framework/pipeline interfaces)
+- **CameraDataPostProcess** (specifically for source-side post-processing including decoding)
+
+The file:
+- Is named `decode_data_process_common.cpp` — the `_common` suggests it's a shared component.
+- Belongs to `pipeline_node/multimedia_codec/` — implies it's a node in a pluggable pipeline.
+- Is used on the **source side** (since it decodes received encoded stream for local use — per Distributed Camera architecture).
+- The class `DecodeDataProcess` is likely instantiated as part of the **post-processing stage** on the source side.
+
+Looking at the description of **CameraDataPostProcess**:
+> *"responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution, and related properties of received image data so that the controller can use distributed camera data as if using a local Camera."*
+
+This is **precisely** what this file does:
+- Decodes received encoded video.
+- Converts YUV formats (NV12→NV21).
+- Aligns height, validates configs.
+- Outputs `DataBuffer`s ready for preview/recording.
+
+Also note: the function `PostOutputDataBuffers()` and `DecodeDone(...)` suggest integration into a larger post-processing pipeline.
+
+While `CameraDataProcessCommon` provides *framework*, this file is a concrete **implementation node** used in post-processing — and the module name `CameraDataPostProcess` explicitly includes "decodes", making it the best fit.
+
+### ✅ Final Decision:
+**Assigned Module**: [CameraDataPostProcess]

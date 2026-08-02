@@ -1,0 +1,65 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File context & location clues**
+- Includes:  
+  `proxygen/lib/http/session/SimpleController.h`  
+  `proxygen/lib/http/session/CodecErrorResponseHandler.h`  
+  `proxygen/lib/http/session/HTTPDirectResponseHandler.h`  
+  `proxygen/lib/http/session/HTTPSessionAcceptor.h`  
+
+  → All headers are under `proxygen/lib/http/session/`, which strongly suggests this is part of the **HTTP session layer**, i.e., core HTTP protocol handling, not transport, DNS, SSL, or high-level server APIs.
+
+- Namespace: `proxygen`
+- Class: `SimpleController`
+- Key responsibilities in code:
+  - Implements `getRequestHandler`, `getParseErrorHandler`, `getTransactionTimeoutHandler`: these are callbacks invoked during HTTP transaction lifecycle (request parsing, error handling, timeout).
+  - Uses `HTTPSessionAcceptor` to delegate handler creation.
+  - Creates error handlers (`CodecErrorResponseHandler`, `HTTPDirectResponseHandler`) for protocol errors (e.g., 400, 408).
+  - Manages session attachment/detachment (though stubbed).
+  - Relies on `HTTPErrorPage`, `HTTPException`, `HTTPMessage`, `HTTPTransaction`, `HTTPTransactionHandler` — all core HTTP abstractions.
+
+This is clearly **not**:
+- `dns`: no DNS resolution logic.
+- `pools`: no backend pool or service discovery.
+- `sampling`: no sampling logic.
+- `ssl`: no TLS/SSL context or handshake logic.
+- `transport`: no QUIC, socket, or low-level transport; uses higher-level `HTTPTransaction`, not `QuicTransport`.
+- `httpserver`: This is *not* under `proxygen/httpserver/`, and does not use high-level server APIs like `HTTPServer::start()`, `RequestHandlerFactory`, etc. Instead, it's a low-level controller used *by* such servers.
+- `services`: While `HTTPSessionAcceptor` lives in `lib/services/` (we’ll verify), the class `SimpleController` itself is defined in `lib/http/session/`, and its role is tightly coupled with HTTP transaction/session lifecycle — more protocol than infrastructure.
+
+Let’s double-check module boundaries:
+
+#### Module definitions from candidates:
+- **http_general**: *"common HTTP implementation under proxygen/lib/http/... responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management..."*  
+  ✅ Matches exactly: `SimpleController` is in `lib/http/session/`, handles transaction-level decisions (error, timeout, request routing), works with `HTTPTransaction`, `HTTPMessage`, and delegates to acceptor — classic session/controller layer within HTTP core.
+
+- **services**: *"corresponds to proxygen/lib/services/... connection management and server-side related code... service execution, connection acceptance, worker threads..."*  
+  The `HTTPSessionAcceptor` *is* in `lib/services/`, but `SimpleController` is **not** — it's in `lib/http/session/`. Moreover, `SimpleController` is a *controller* that *uses* the acceptor, not the acceptor itself; it’s more about HTTP semantics than server infrastructure.
+
+In Proxygen’s architecture:
+- `lib/http/` = core HTTP protocol stack (messages, transactions, sessions, controllers, codecs)
+- `lib/services/` = server-side orchestration (acceptors, workers, service factories)
+- `httpserver/` = high-level wrapper (e.g., `HTTPServer`, `RequestHandlerFactory`)
+
+The file implements `SimpleController`, which is a standard component in Proxygen’s HTTP session layer — often used as a default controller when building servers (e.g., in `HTTPServer` examples). Its purpose is to provide default behavior for handling requests, errors, timeouts at the HTTP transaction level — squarely in the **HTTP protocol core**.
+
+### 2. Probability assessment
+
+| Module | Match Reasoning | Likelihood |
+|--------|------------------|------------|
+| `dns` | No DNS-related code | 0% |
+| `pools` | No pool/backend logic | 0% |
+| `sampling` | No sampling logic | 0% |
+| `ssl` | No TLS/SSL usage | 0% |
+| `transport` | No QUIC/transport primitives; uses HTTPTransaction abstraction | 5% (only indirect via session) |
+| `services` | Uses `HTTPSessionAcceptor` (from services), but class itself is in `http/session`, and role is protocol-level control, not infra | 20% |
+| `httpserver` | High-level server API layer; this is lower-level; not in `httpserver/` dir | 15% |
+| **`http_general`** | Directly in `lib/http/session/`, implements core HTTP transaction handling, error/response generation, session binding — matches definition precisely | **95%** |
+
+Note: There is a small chance someone might conflate `services` because of `HTTPSessionAcceptor`, but the *file itself* (its location, responsibilities, types used) belongs to the HTTP general layer. In Proxygen’s actual source tree, `SimpleController.h` resides in `proxygen/lib/http/session/`, which falls under `http_general`.
+
+---
+
+**Final answer**:
+
+The probability that this file belongs to module 'http_general' is 95%.

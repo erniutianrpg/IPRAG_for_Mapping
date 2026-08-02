@@ -1,0 +1,70 @@
+Let’s analyze the file systematically:
+
+**File path**:  
+`services\cameraservice\cameraoperator\client\include\icamera_operator.h`
+
+**Key observations from content**:
+- It defines an **interface** `ICameraOperator`, along with two callback interfaces: `StateCallback` and `ResultCallback`.
+- The interface provides core camera operation methods:
+  - `Init()`, `UnInit()`
+  - `UpdateSettings()`
+  - `StartCapture()`, `StopCapture()`
+  - Callback registration: `SetStateCallback()`, `SetResultCallback()`
+- It uses types like:
+  - `std::shared_ptr<DCameraEvent>`, `DCameraCaptureInfo`, `DCameraSettings`, `DataBuffer`
+  - Includes headers: `data_buffer.h`, `dcamera_capture_info_cmd.h`, `dcamera_event_cmd.h`, `types.h`
+- Namespace: `OHOS::DistributedHardware`
+- This is a *client-side* header (as per path: `cameraoperator/client/include/`) — i.e., used by clients that want to operate a distributed camera (likely the controller/source side).
+- It is **not implementing** any logic — it's purely an abstract interface for camera control, with callbacks for state changes and capture results.
+
+Now compare against candidate modules:
+
+1. **DistributedCameraSinkMgr**  
+   → Focuses on sink-side lifecycle, access control, data output, event notification, IPC.  
+   → But this file is a *client interface*, not sink-side manager logic. Also, sink-side would likely implement `ICameraOperator`, not define it as a client-facing interface. ❌
+
+2. **ChannelCommon / ChannelSource / ChannelSink**  
+   → These are about *channel communication* (SoftBus, sessions, transport).  
+   → This header has no channel/session/networking constructs — only camera operation abstraction. No mention of SoftBus, sessions, or transport layers. ❌
+
+3. **CameraDataProcessCommon / CameraDataPreProcess / CameraDataPostProcess**  
+   → These deal with *data processing pipelines*: codecs, color conversion, frame rate, etc.  
+   → This file does not involve data transformation; it's about control and result delivery (e.g., `OnPhotoResult`, `OnVideoResult`), but not how the data is processed. The callbacks receive `DataBuffer`, but the interface itself doesn’t process it. So not a match. ❌
+
+4. **CameraServiceCommon**  
+   → *"Provides shared basic service capabilities for the source and sink sides... including basic commands, protocols, camera information, channel information, events, Metadata settings, open-camera information, and controller interfaces."*  
+   → This fits well:  
+     - `ICameraOperator` is a *controller interface* (used by controller to operate remote camera).  
+     - It deals with basic commands (`Init`, `StartCapture`, `UpdateSettings`), events (`OnStateChanged`), metadata (`OnMetadataResult`), and results (`OnPhotoResult`, `OnVideoResult`).  
+     - It's shared (used by both sides? Actually, client-side uses it to talk to service; service implements it — so it's a shared contract).  
+     - The included headers (`dcamera_capture_info_cmd.h`, `dcamera_event_cmd.h`, `types.h`) suggest protocol/command definitions — aligning with “basic commands, protocols, events”.  
+   ✅ Strong candidate.
+
+5. **VirtualCameraHdf**  
+   → HDF/HDI layer implementation: Host, Provider, Device, Stream Operator, IPC proxies at hardware abstraction level.  
+   → This is a high-level client interface, not HDF device driver code; no mention of HDF, HDI, or device nodes. ❌
+
+6. **utils**  
+   → *"Provides common distributed camera utilities, data buffers, indexes, constants, error codes, and general support capabilities related to CameraClient/CameraOperator..."*  
+   → Note: it explicitly mentions *“related to CameraClient/CameraOperator”*.  
+  - This header defines `ICameraOperator`, which is central to `CameraOperator`.  
+  - However, `utils` is described as providing *utilities* (buffers, constants, error codes), not core interface contracts.  
+  - While `data_buffer.h` is included, the main content here is the interface definition — more structural than utility.  
+  - In typical architecture, interface definitions like `ICameraOperator` belong to a *service contract* module (like `CameraServiceCommon`), not `utils`.
+
+Let’s double-check the path:  
+`services\cameraservice\cameraoperator\client\include\icamera_operator.h`  
+→ This suggests it's part of the *camera operator service*, and the `client` subdirectory implies it's for clients to include and use the interface — i.e., the public API of the camera operator service.
+
+In OpenHarmony-style architectures, such interface headers (especially with `I` prefix and pure virtual methods) are typically placed in a *common service module* that defines the contract between client and service.
+
+Given that **CameraServiceCommon** explicitly includes:
+- "controller interfaces"
+- "basic commands, protocols, camera information, events"
+- shared across source/sink
+
+And this file defines exactly that — the controller-facing interface for operating a distributed camera — it is best matched to **CameraServiceCommon**.
+
+✅ Final decision:
+
+**Assigned Module**: [CameraServiceCommon]

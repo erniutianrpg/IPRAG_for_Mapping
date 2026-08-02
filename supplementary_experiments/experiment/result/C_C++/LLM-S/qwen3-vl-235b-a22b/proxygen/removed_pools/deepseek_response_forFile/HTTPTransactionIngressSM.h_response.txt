@@ -1,0 +1,89 @@
+Let’s analyze the file step by step:
+
+### 1. **File content summary**
+- **Header includes**:
+  - `<iosfwd>`: standard C++ forward declarations (I/O)
+  - `<map>`: STL container, used for state/event mapping (likely in `find()` implementation)
+  - `<proxygen/lib/utils/StateMachine.h>`: key clue — this is a *utility* header under `utils/`, indicating use of a generic state machine framework.
+
+- **Namespace**: `proxygen` — confirms it's part of Proxygen.
+
+- **Class**: `HTTPTransactionIngressSMData`
+  - Defines **state** and **event** enums for an HTTP transaction ingress (i.e., *receiving* side of an HTTP transaction).
+  - States include: `Start`, `NonFinalHeadersReceived`, `FinalHeadersReceived`, `RegularBodyReceived`, `ChunkHeaderReceived`, `ChunkBodyReceived`, `TrailersReceived`, `EOMQueued`, etc.
+  - Events include: `onNonFinalHeaders`, `onFinalHeaders`, `onBody`, `onChunkHeader`, `onChunkComplete`, `onTrailers`, `onEOM`, etc.
+  - Provides `getInitialState()`, `find(State, Event)` (transition logic), and `getName()` — all typical for a *state machine data spec*.
+  - Ends with: `using HTTPTransactionIngressSM = StateMachine<HTTPTransactionIngressSMData>;` — this instantiates a concrete state machine using the generic `StateMachine` template from `utils/`.
+
+- **Operators**: `operator<<` for streaming states/events — common utility for debugging/logging.
+
+### 2. **What does this represent?**
+This is a **state machine definition** for the *ingress* (incoming) side of an HTTP transaction — i.e., how the server (or proxy) processes incoming HTTP messages (headers, body chunks, trailers, EOM, etc.).
+
+It is **not**:
+- DNS resolution → no DNS-related types/functions.
+- Sampling → no sampling logic or metrics.
+- SSL/TLS → no crypto, certs, handshake logic.
+- Transport (QUIC/HTTP3) → no transport-specific types (e.g., QUIC streams, datagram frames); though HTTP/2/3 may use similar state machines, this is protocol-level, not transport-layer.
+- Services → no connection management, worker threads, service execution.
+- httpserver → this is not a high-level server API; it's internal to transaction processing.
+- **But**: It lives *under* `proxygen/lib/utils/StateMachine.h`, and defines a *data spec* for a state machine used in HTTP transaction handling.
+
+### 3. **Module mapping**
+Let’s evaluate each candidate:
+
+- **dns**: ❌ No DNS logic. Probability: **0%**
+
+- **sampling**: ❌ No sampling. Probability: **0%**
+
+- **ssl**: ❌ No SSL context, TLS, certificates. Probability: **0%**
+
+- **general**: ✅ This module covers `proxygen/lib/utils/` and “common auxiliary capabilities”, including foundational utilities like `StateMachine`. The file *uses* `StateMachine.h` and defines a state machine *data spec* — exactly the kind of reusable utility code that belongs in `general`. However, note: while the *definition* is utility-like, it’s *specialized* for HTTP transactions.
+
+- **http_general**: ✅ This module is “common HTTP implementation under `proxygen/lib/http/`”, responsible for “HTTP protocol parsing, encoding/decoding, session management, transaction management”. The class `HTTPTransactionIngressSMData` is clearly about *HTTP transaction state management* — specifically the ingress side of a transaction. State machines like this are core to HTTP transaction lifecycle handling (e.g., in `HTTPTransaction.cpp`, `HTTPSession.cpp`). In Facebook’s Proxygen, such state machine definitions typically reside in `proxygen/lib/http/` (e.g., `HTTPTransactionSM.h`, `HTTPTransactionIngressSM.h`). Even though the *template* (`StateMachine`) is in `utils/`, the *instantiation and data spec* for HTTP transactions belong to the HTTP layer.
+
+  Let’s verify:  
+  - The name `HTTPTransactionIngressSMData` strongly suggests it’s part of HTTP transaction infrastructure.
+  - In real Proxygen codebase (publicly available), files like `HTTPTransactionSM.h` and `HTTPTransactionIngressSM.h` exist under `proxygen/lib/http/`.
+  - The state names match HTTP message parsing phases (headers → body → trailers → EOM), which is HTTP protocol logic — not generic utility.
+
+- **services**: ❌ No service orchestration, connection acceptance, etc. Probability: **5%**
+
+- **httpserver**: ❌ High-level server APIs (e.g., `HTTPServer::start()`, request handlers). This is low-level transaction state — not server framework. Probability: **5%**
+
+- **transport**: ❌ No QUIC, socket, datagram transport primitives; this is application-layer (HTTP) state. Probability: **10%**
+
+### 4. **Critical distinction: general vs. http_general**
+- `general` = truly generic utilities (e.g., `StateMachine.h`, ` folly::Optional`, `ByteRange`, `Timer`, etc.) — reusable across modules.
+- `http_general` = HTTP-specific utilities and abstractions (e.g., `HTTPMessage`, `HTTPHeaders`, `HTTPTransaction`, state machines for HTTP transactions).
+
+The file:
+- Includes `StateMachine.h` (from `general`),
+- But defines `HTTPTransactionIngressSMData`, which is **HTTP-transaction-specific** state/event enumeration and transition logic.
+- It is *not* a generic utility — it’s tightly coupled to HTTP semantics.
+
+Therefore, while it *uses* a general utility, the **file itself** belongs to the HTTP layer — i.e., `http_general`.
+
+In practice, in Proxygen’s source tree:
+```
+proxygen/lib/utils/StateMachine.h          ← general
+proxygen/lib/http/HTTPTransactionIngressSM.h ← http_general
+```
+This file matches the latter pattern.
+
+### Final Assessment:
+- **http_general**: Strong fit — defines HTTP transaction ingress state machine data. Core to HTTP protocol handling.
+- **general**: Weak fit — only because it uses a utility, but the content is not generic.
+
+Probability estimation:
+- http_general: **95%**
+- general: **5%**
+- others: near 0%
+
+> Note: The duplicate `"enum class"` entries in `"types"` appear to be a parsing artifact (likely mis-parsed from the two `enum class State` and `enum class Event`), but doesn’t affect analysis.
+
+---
+
+**The probability that this file belongs to module 'http_general' is 95%.**  
+**The probability that this file belongs to module 'general' is 5%.**  
+All other modules: 0%.

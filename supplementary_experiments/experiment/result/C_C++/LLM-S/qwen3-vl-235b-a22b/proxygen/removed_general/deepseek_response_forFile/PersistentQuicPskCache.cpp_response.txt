@@ -1,0 +1,70 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **File path implied**: `proxygen/lib/transport/PersistentQuicPskCache.h` is included, and the implementation is for `PersistentQuicPskCache`, a class in namespace `proxygen`.
+- **Key responsibilities**:
+  - Persists QUIC PSKs (Pre-Shared Keys) to disk using a generic persistent cache (`wangle::PersistentCacheConfig`).
+  - Handles serialization/deserialization of Fizz PSKs and QUIC transport parameters.
+  - Integrates with:
+    - `fizz` (TLS 1.3 handshake library, especially PSK handling),
+    - `quic` (QUIC transport layer — specifically `CachedServerTransportParametersSerialization`),
+    - `folly` (utilities: `Conv`, `json/dynamic`, `IOBuf`, `io::Cursor`, etc.).
+- **Core logic**:
+  - `getPsk()`: deserializes stored PSK + transport params → returns `quic::QuicCachedPsk`.
+  - `putPsk()`: serializes `quic::QuicCachedPsk` → stores as `PersistentQuicCachedPsk`.
+  - Tracks usage count (`uses`) and evicts after max uses.
+  - Uses `fizz::client::serializePsk` / `deserializePsk` → TLS-level PSK handling.
+  - Reads/writes QUIC transport parameters (e.g., `readCachedServerTransportParameters`).
+
+This is clearly about **caching QUIC PSKs persistently**, which is needed for 0-RTT resumption in QUIC connections — a *transport-layer* concern specific to HTTP/3/QUIC.
+
+---
+
+### **2. Module Candidates Evaluation**
+
+#### ✅ **transport**
+- Matches perfectly:
+  - Located under `proxygen/lib/transport/` (as per include path).
+  - Deals with **QUIC-specific persistence**: PSK + transport parameters caching.
+  - Direct dependency on `quic/client/handshake/CachedServerTransportParametersSerialization.h`.
+  - Part of the low-level transport infrastructure needed for HTTP/3 (QUIC), not HTTP semantics.
+  - Not part of core HTTP parsing or server logic — it's below that layer.
+- This is exactly what the `transport` module description says:  
+  > *"transport support related to QUIC / HTTP/3... responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."*
+
+#### ❌ **http_general**
+- Covers HTTP protocol parsing, encoding/decoding, sessions, transactions, HTTP/2/3 *protocol framing* — but **not** persistent PSK caching at the transport layer.
+- PSK caching is orthogonal to HTTP message processing; it’s used *before* connection establishment (during handshake).
+- No HTTP message handling here.
+
+#### ❌ **ssl**
+- While it uses `fizz` (a TLS library), the file does **not** manage SSL contexts, certificates, or handshake state machines directly.
+- It only *serializes/deserializes* PSKs (which are TLS artifacts), but the purpose is transport-layer session resumption, not SSL context management.
+- The `ssl` module likely handles `SSLContext`, `TLSHandshake`, etc., not persistent storage of PSKs.
+
+#### ❌ **dns**, **pools**, **sampling**, **services**, **httpserver**
+- None of these involve QUIC PSK caching.
+  - `dns`: resolution only — no DNS references here.
+  - `pools`: backend server lists — irrelevant.
+  - `sampling`: lightweight sampling — no sampling logic.
+  - `services`: server-side infrastructure (acceptors, workers) — this is client-side cache (used by QUIC client handshake).
+  - `httpserver`: high-level server APIs; this is low-level transport.
+
+Note: Although `PersistentQuicPskCache` is used by QUIC clients (likely in `quic/client`), the file lives in `proxygen/lib/transport/`, and Proxygen’s `transport` module explicitly includes QUIC-related components.
+
+---
+
+### **3. Final Assessment**
+- The file implements a **persistent cache for QUIC PSKs and transport parameters**, tightly coupled with `quic`, `fizz`, and `proxygen::transport`.
+- It is a supporting component for **HTTP/3/QUIC transport resumption**, squarely in the domain of the `transport` module.
+
+> Probability that this file belongs to module **transport** is **98%**.
+
+(2% uncertainty due to possible boundary ambiguity between `quic` and `proxygen/transport`, but since the file is physically in `proxygen/lib/transport/` and the module description explicitly mentions “PSK cache”, it's overwhelmingly `transport`.)
+
+---
+
+**Answer**:  
+"The probability that this file belongs to module 'transport' is 98%."

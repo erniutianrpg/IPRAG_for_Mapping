@@ -1,0 +1,70 @@
+Let’s analyze the file content step by step to determine the most appropriate module.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `decode_data_process.h` → core header for this class
+  - `distributed_hardware_log.h`, `dcamera_utils_tools.h` → generic DH utilities/log
+  - `graphic_common_c.h`, `convert_nv12_to_nv21.h` → image format handling, YUV conversion
+  - `decode_video_callback.h` → callback interface for decode events
+
+- Namespaces: `OHOS::DistributedHardware` → clearly part of Distributed Hardware (DH) camera subsystem.
+
+- Functions:
+  - All functions belong to `DecodeDataProcess` and `DecodeSurfaceListener`.
+  - Key responsibilities include:
+    - Initializing/destroying a video decoder node (`InitNode`, `ReleaseProcessNode`)
+    - Checking config validity & convertibility (`IsInDecoderRange`, `IsConvertible`)
+    - Managing decoder lifecycle (`InitDecoder`, `SetDecoderOutputSurface`, `FeedDecoderInputBuffer`)
+    - Handling codec events, input/output buffer availability (`OnInputBufferAvailable`, `OnOutputBufferAvailable`, `OnEvent`, `OnError`)
+    - Copying decoded image data (`CopyDecodedImage`, `CopyYUVPlaneByRow`, `CheckCopyImageInfo`)
+    - Posting output buffers (`PostOutputDataBuffers`)
+    - Surface listener for output buffer handling
+
+This is clearly a **decoder node** that processes incoming encoded video data (e.g., from remote sink), decodes it, possibly converts color format (NV12→NV21), and outputs decoded frames — i.e., **post-processing on the source side (controller side)** after receiving encoded video from the sink.
+
+### 2. **Module Candidate Analysis**
+
+Let’s map responsibilities:
+
+- **DistributedCameraSourceMgr**: Handles *lifecycle, state machine, controller, input stream, data processing, IPC, callbacks* on the **source/controller side**, enabling controller to use remote camera.  
+  → This includes *data processing*, but typically at a higher level (orchestrating nodes). The `DecodeDataProcess` is a *sub-component* used by the source manager — not the manager itself.
+
+- **DistributedCameraSinkMgr**: On the *controlled/sink side*, handles local camera capture, encoding, sending.  
+  → Not relevant: this file is about *decoding*, not encoding or capturing.
+
+- **ChannelSource / ChannelSink**: Pure transport layer (SoftBus), command/data transfer.  
+  → No network/SoftBus logic here; this is purely media processing.
+
+- **CameraDataProcessCommon**: Provides *common frameworks, pipeline interfaces, codecs, color space conversion*, etc., for both sides.  
+  → Strong candidate: includes codecs, YUV conversion (`convert_nv12_to_nv21.h`), buffer handling, pipeline event bus usage. But note: this is specifically a *decode* node — not generic framework.
+
+- **CameraDataPreProcess**: Preprocessing on *sink/input side* before transmission/encoding.  
+  → Opposite direction: this is *after* transmission, on the receiver side → not pre-process.
+
+- **CameraDataPostProcess**: Post-processing on *source/output side*: **decodes, converts formats, adjusts frame rate/resolution** so controller can use data like local camera.  
+  ✅ This matches *exactly*:
+    - Decoding video (`InitDecoder`, `FeedDecoderInputBuffer`, `OnOutputBufferAvailable`)
+    - Format conversion (`convert_nv12_to_nv21.h`, `CopyYUVPlaneByRow`)
+    - Output to surface/buffer for consumption by controller
+    - Part of pipeline on source side (controller side)
+
+- **CameraServiceCommon**: Shared basic services (commands, protocols, metadata, open-camera info).  
+  → Too high-level; no protocol/command handling here.
+
+- **VirtualCameraHdf**: HDF/HDI layer virtual device implementation.  
+  → No HDF interfaces or device operators here.
+
+- **utils**: Generic utilities (buffers, error codes, tools).  
+  → While it uses `dcamera_utils_tools.h`, the bulk is specialized decoding logic — not generic utility.
+
+### 3. **Key Evidence**
+- Function names like `DecodeDataProcess::ProcessData`, `PostOutputDataBuffers`, `CopyDecodedImage`, `OnOutputBufferAvailable` indicate this is the **final stage before presenting decoded frames to the controller application**.
+- It operates on `DataBuffer` inputs (likely received over channel) and produces decoded `SurfaceBuffer` outputs — classic *post-processing*.
+- The class is named `DecodeDataProcess`, and it's used on the side that *receives* encoded video and *outputs* usable frames — i.e., the **source side’s post-processing pipeline**.
+- Reference example: In distributed camera architecture, the **source side** receives encoded video from sink, decodes it, rescales/converts if needed, and feeds it to local preview/recording — exactly what this class does.
+
+### 4. **Conclusion**
+The file implements a video decoder node that performs format conversion, decoding, and output buffering on the **source/controller side** — precisely the responsibility of **CameraDataPostProcess**.
+
+> ✅ **Assigned Module**: [CameraDataPostProcess]

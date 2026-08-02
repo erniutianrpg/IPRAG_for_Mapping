@@ -1,0 +1,60 @@
+Let’s analyze the file content step by step to determine which module it belongs to.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `fps_controller_process.h` → indicates this is a frame-rate control component.
+  - `dcamera_utils_tools.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` → standard distributed camera utilities, error codes, and logging (common across modules).
+- Namespace: `OHOS::DistributedHardware` → confirms this is part of the distributed hardware subsystem.
+- Key functions:
+  - `FpsControllerProcess::InitNode()`, `ReleaseProcessNode()`
+  - `ProcessData(std::vector<std::shared_ptr<DataBuffer>>& inputBuffers)` — core data processing function
+  - Frame rate calculation & control logic:
+    - `UpdateFPSControllerInfo()`
+    - `CalculateFrameRate()`
+    - `IsDropFrame()`
+    - `ReduceFrameRateByUniformStrategy()`
+    - `FpsControllerDone()` — likely forwards processed frames downstream
+
+The class `FpsControllerProcess` implements **frame rate limiting/dropping logic** based on incoming frame timestamps and target frame rate. It operates on `DataBuffer`s (likely video frames), decides whether to drop or forward them, and maintains timing history.
+
+This is clearly a **data processing node** in a pipeline that controls output frame rate — i.e., a *post-processing* step to ensure the output matches a target FPS (e.g., for network bandwidth or display constraints).
+
+### 2. **Compare with Candidate Modules**
+
+Let’s evaluate each candidate:
+
+- **DistributedCameraSourceMgr**: Manages lifecycle, IPC, controller, input stream — too high-level; not focused on per-frame FPS control.
+- **DistributedCameraSinkMgr**: Controls sink-side lifecycle, access, event notification — again, higher-level management, not frame-by-frame processing.
+- **ChannelCommon / ChannelSink**: Deal with transport (SoftBus), sessions — unrelated to FPS logic.
+- **CameraDataProcessCommon**: Described as providing *"common data processing frameworks, data processing pipeline interfaces, codecs, color space conversion, **frame-rate control**, image types..."* — explicitly mentions **frame-rate control** as part of its scope. This is highly relevant.
+- **CameraDataPreProcess**: Preprocessing on sink side *before transmission/encoding* — but FPS control here is likely applied *after* decoding (since it inspects `timeUs` from decoded buffers and decides to drop frames before rendering). Also, the class name `FpsControllerProcess` suggests it's part of a processing chain, possibly post-decode.
+- **CameraDataPostProcess**: *"decodes, converts formats, and processes frame rate, resolution..."* — also mentions frame rate processing. But note: `ProcessData` receives `inputBuffers` and checks for `"timeUs"` metadata — this implies the buffers are already decoded (since raw camera streams don’t usually have `timeUs` metadata unless decoded/processed). The log says `"decoder output timestamp"` — confirming this runs **after decoding**, i.e., in the **post-processing** stage on the source side (controller side), where received video is rendered or forwarded.
+
+Let’s double-check:
+> `if (!inputBuffers[0]->FindInt64("timeUs", timeStampUs)) { DHLOGE("Find decoder output timestamp fail."); }`
+
+→ So this node sits **after a decoder**, meaning it's in the **post-decode pipeline**, i.e., **post-processing** on the source side (where the controller receives and displays/renderes video).
+
+Also, the class is named `FpsControllerProcess`, and it drops frames if incoming FPS exceeds target — typical for **rendering-side frame control** to avoid overloading display or network.
+
+Now compare:
+- `CameraDataPostProcess`: *"decodes, converts formats, and processes frame rate, resolution, and related properties of received image data so that the controller can use distributed camera data as if using a local Camera."*
+  ✅ Matches: receives decoded frames, adjusts frame rate, prepares for local use.
+
+- `CameraDataProcessCommon`: Provides *common* framework and interfaces — could be the base, but this file appears to be a concrete implementation (`FpsControllerProcess`), not a generic interface or utility.
+
+In OpenHarmony’s architecture (based on naming conventions and context), `CameraDataPostProcess` typically contains concrete processors like FPS controllers, resizers, format converters — all applied after decoding on the source side.
+
+Also, note the inclusion of `fps_controller_process.h` — suggests this is a dedicated FPS controller *within* the post-processing pipeline.
+
+### 3. **Conclusion**
+The file implements a frame-rate control node that operates on decoded video frames (after decoder), decides to drop or pass frames based on target FPS, and is part of the data processing pipeline on the **source side** (controller side) — precisely what `CameraDataPostProcess` is defined to handle:
+
+> *"responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution, and related properties..."*
+
+Even though it doesn’t do decoding itself, it’s part of the post-processing chain *after* decode, and specifically handles frame rate — matching the module description.
+
+Thus, the most appropriate module is:
+
+- **Assigned Module**: [CameraDataPostProcess]

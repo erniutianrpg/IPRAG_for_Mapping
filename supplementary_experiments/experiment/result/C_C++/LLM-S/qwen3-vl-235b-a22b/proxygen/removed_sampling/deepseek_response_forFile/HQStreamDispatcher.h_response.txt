@@ -1,0 +1,96 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. Key Observations from File Content**
+
+#### **Includes**
+- `quic/api/QuicSocket.h` → Direct QUIC transport interface (low-level transport)
+- `proxygen/lib/http/codec/HQFramer.h` → HTTP/3 (HQ = HTTP/3 over QUIC) framing logic
+- `proxygen/lib/http/codec/HQUnidirectionalCodec.h` → HTTP/3 unidirectional stream codec (e.g., control, push, etc.)
+- `folly/io/async/EventBase.h` → Folly event loop abstraction (used across layers, but especially in transport/network code)
+
+→ Strong signal: **HTTP/3 / QUIC transport layer**, specifically handling stream dispatching at the *transport-to-application* boundary.
+
+#### **Namespaces**
+- `proxygen` → Confirms this is part of Proxygen.
+
+#### **Types & Functions**
+- `HQStreamDispatcherBase`: Base class that inherits from `quic::QuicSocket::PeekCallback`, indicating it's a callback for peeking into QUIC stream data before full delivery.
+- `CallbackBase`, `DispatchTimeout`, `HQUniStreamDispatcher`, `HQBidiStreamDispatcher`: These are dispatcher classes for handling different types of HTTP/3 streams (unidirectional, bidirectional, control, push, etc.).
+- Functions like:
+  - `handleStream(...)`
+  - `parseUniStreamPreface(...)`
+  - `dispatchControlStream(...)`
+  - `dispatchRequestStream(...)`
+  - `takeTemporaryOwnership(...)`, `releaseOwnership(...)`, `dispatchTimeoutExpired(...)`  
+  → All relate to **stream lifecycle management** and **preface parsing** for HTTP/3 over QUIC.
+
+This is not about:
+- DNS resolution (`dns`)
+- Pool configuration (`pools`)
+- SSL/TLS context (`ssl`)
+- General utilities (`general`)
+- High-level HTTP server APIs (`httpserver`)
+- Service execution or connection acceptance (`services`)
+
+It *is* about:
+- Interfacing between QUIC transport and HTTP/3 semantics.
+- Dispatching incoming QUIC streams based on their type (control, request, push, etc.) — i.e., **transport-layer stream demultiplexing for HTTP/3**.
+
+#### **Location Clues**
+Although the raw excerpt doesn’t show the file path, the includes suggest:
+- It lives in `proxygen/lib/http/codec/` or possibly `proxygen/lib/transport/` — but given the use of `HQFramer.h` and `HQUnidirectionalCodec.h`, and the fact that it’s dispatching streams *before* full HTTP message parsing, it sits **between transport and HTTP codec layers**.
+
+In Facebook’s Proxygen architecture:
+- `transport` module handles QUIC socket interaction, stream creation, and low-level transport events.
+- `http_general` handles HTTP/2 and HTTP/3 *codec*, *session*, *transaction* logic — but usually *after* streams are assigned to an HTTP session.
+- The **stream dispatcher** is typically part of the transport layer because it decides *which* HTTP session or handler gets a new stream, based on preface parsing — which happens right after stream creation, before full HTTP decoding.
+
+Indeed, in Proxygen’s source tree:
+- `HQStreamDispatcherBase` and related classes reside under `proxygen/lib/http/codec/` **but are tightly coupled with QUIC transport**.
+- However, the module classification here distinguishes:
+  - `http_general`: core HTTP protocol logic (framing, headers, body, sessions)
+  - `transport`: QUIC-specific transport support (including stream dispatching, token handling, congestion control, etc.)
+
+Given that this class:
+- Inherits from `quic::QuicSocket::PeekCallback`
+- Manages stream ownership timeouts
+- Parses prefaced stream types (control, push, bidi request)
+- Uses `quic::StreamId` directly
+- Does *not* handle HTTP messages, headers, or transactions — only stream type dispatch
+
+→ This is **transport-layer logic**, specifically for HTTP/3 over QUIC.
+
+---
+
+### **2. Module Matching**
+
+| Module | Relevance |
+|--------|-----------|
+| `dns` | ❌ No DNS-related code |
+| `pools` | ❌ No backend pool logic |
+| `ssl` | ❌ No TLS/SSL context or certs |
+| `general` | ❌ Not generic utils; too protocol-specific |
+| `http_general` | ⚠️ Partial: uses HTTP/3 codec headers, but this is *not* codec/parsing per se — it's stream demux before codec. Core HTTP logic (e.g., `HTTPMessage`, `HTTPSession`) is absent. |
+| `services` | ❌ No service execution, worker threads, or connection acceptance |
+| `httpserver` | ❌ High-level server API — this is lower-level |
+| `transport` | ✅ Strong match: deals with QUIC stream lifecycle, ownership, timeout, dispatch — exactly what transport module owns for HTTP/3 |
+
+In Proxygen’s internal structure, the `transport` module includes:
+- QUIC socket integration
+- Stream dispatchers for HTTP/3
+- Token/cid management
+- Datagram support
+- Integration with `HQFramer`/`HQCodec` but *orchestrating* them
+
+This file is clearly part of that orchestration layer.
+
+---
+
+### **Conclusion**
+
+The file implements stream dispatching logic for HTTP/3 over QUIC, tightly integrated with `quic::QuicSocket`, managing stream ownership and timeouts, and delegating to appropriate handlers based on stream type. This is squarely in the **transport** module’s responsibility domain.
+
+> The probability that this file belongs to module 'transport' is **95%**.  
+> (Remaining 5% uncertainty due to possible borderline placement in `http_general`, but architectural role strongly favors `transport`.)

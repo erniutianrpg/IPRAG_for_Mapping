@@ -1,0 +1,90 @@
+Let’s analyze the file `proxygen/lib/http/session/HTTPSession.h` step by step, using the provided content, path, includes, types, functions, and candidate modules.
+
+---
+
+### 1. **File Path**
+```
+proxygen/lib/http/session/HTTPSession.h
+```
+- This is under `proxygen/lib/http/session/`, which strongly suggests it belongs to the **HTTP protocol core layer**, specifically handling *session-level* logic (as opposed to transport, codec, or service layers).
+
+---
+
+### 2. **Key Inclusions**
+The header includes:
+- `HTTPCodec.h`, `HTTPCodecFilter.h`, `FlowControlFilter.h` → HTTP protocol decoding/encoding and flow control.
+- `HTTPSessionBase.h`, `HTTPTransaction.h`, `ByteEventTracker.h`, `HTTPSessionActivityTracker.h`, `SessionLoopCallback.h` → session and transaction management infrastructure.
+- `folly/io/async/AsyncSocket.h`, `AsyncSSLSocket.h`, `EventBase.h`, `HHWheelTimer.h` → async I/O and timing primitives used for session lifecycle.
+- `fizz/record/Types.h` → TLS-related (but only types; no SSL context setup).
+- `proxygen/lib/http/HTTPConstants.h`, `HTTPHeaderSize.h` → HTTP-specific constants and header size tracking.
+
+Notably:
+- No includes from `proxygen/lib/transport/` (e.g., QUIC, UDP, etc.) → rules out **transport**.
+- No includes from `proxygen/lib/services/` or `proxygen/httpserver/` → rules out **services** and **httpserver**.
+- Includes are focused on *HTTP session state*, *transactions*, *codec callbacks*, *flow control*, *timers*, and *I/O buffering* — all part of the **core HTTP session implementation**.
+
+---
+
+### 3. **Class Definition**
+The main class is:
+```cpp
+class HTTPSession
+    : public HTTPSessionBase
+    , public HTTPTransaction::Transport
+    , public ByteEventTracker::Callback
+    , protected folly::AsyncTransport::BufferCallback
+    , private FlowControlFilter::Callback
+    , private HTTPCodec::Callback
+    , private SessionLoopCallback
+    , private folly::AsyncTransport::ReadCallback
+    , private folly::AsyncTransport::WriteCallback
+```
+
+This shows:
+- It implements the HTTP codec callback interface → handles parsing of frames (headers, body, trailers, etc.).
+- It manages transactions (`transactions_`, `incomingStreams_`, `outgoingStreams_`).
+- It integrates with flow control, timers (e.g., `WriteTimeout`, `DrainTimeout`, `PingProber`), and activity tracking.
+- It owns the underlying socket (`sock_`) and drives the event loop via `EventBase`.
+
+This is the **central session object** that ties together:
+- Transport (socket),
+- Codec (parsing/writing),
+- Transaction lifecycle,
+- Flow control,
+- Timeouts,
+- Statistics.
+
+This is *exactly* what the **http_general** module is described as:
+> *"Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+Note: While this file uses SSL sockets (`AsyncSSLSocket.h`), it does *not* manage SSL contexts, certificates, or handshake logic — those belong in the **ssl** module. Here, SSL is just a transport type; the session is agnostic to whether it's plain TCP or TLS.
+
+Also, the file is not about pooling backends (**pools**), sampling (**sampling**), utilities (**general**), or high-level server APIs (**httpserver**).
+
+---
+
+### 4. **Comparison with Candidate Modules**
+
+| Module | Match? | Reason |
+|--------|--------|--------|
+| `pools` | ❌ | No backend pool logic, no service discovery. |
+| `sampling` | ❌ | No sampling logic; no histogram/statistics sampling code. |
+| `ssl` | ❌ | Uses `AsyncSSLSocket`, but doesn’t handle TLS context, certs, or handshake. Not SSL-focused. |
+| `general` | ❌ | This is not a utility/helper (like `utils/WheelTimerInstance.h`), but a core session class. `general` is for *shared utilities*, not protocol session state. |
+| `http_general` | ✅ | Direct match: session management, transaction handling, codec integration, HTTP/2 semantics (priorities, streams, settings, ping, goaway), flow control — all core HTTP protocol layer responsibilities. |
+| `services` | ❌ | No connection acceptance, worker threads, service registration, or request routing. |
+| `httpserver` | ❌ | This is *not* in `proxygen/httpserver/`, and provides no high-level server API (e.g., `RequestHandler`, `Server`, etc.). |
+| `transport` | ❌ | No QUIC, no datagram, no transport-specific abstractions beyond generic `AsyncTransport`. |
+
+---
+
+### 5. **Conclusion**
+The file `HTTPSession.h` is the central session implementation for HTTP(S) connections in Proxygen — managing streams, transactions, codec interaction, timeouts, flow control, and transport I/O. It resides in `lib/http/session/`, and its responsibilities align precisely with the definition of the **http_general** module:
+
+> *"Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+Even though it uses TLS-capable sockets, it does not implement SSL logic itself — that’s delegated to lower layers (e.g., `ssl` module or Fizz). So it remains squarely in **http_general**.
+
+---
+
+**Assigned Module**: [http_general]

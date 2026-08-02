@@ -1,0 +1,66 @@
+Let’s analyze the file content step by step and map it to the most appropriate module.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `"SessionWrapper.h"` (custom, likely internal)
+  - `folly/Memory.h`, `folly/io/async/AsyncSocket.h`, `folly/io/async/DelayedDestruction.h` → Folly async I/O utilities
+  - `proxygen/httpserver/RequestHandler.h` → **High-level HTTP server interface**
+  - `proxygen/lib/http/HTTPConnector.h` → Low-level HTTP client-side connection handling (used for upstream proxying)
+
+- Namespaces: `ProxyService`, `proxygen`
+- Key types:
+  - `ResponseHandler` (forward-declared)
+  - `ProxyStats`
+  - `ProxyHandler` — inherits from:
+    - `proxygen::RequestHandler` (**httpserver** interface)
+    - `folly::DelayedDestruction`
+    - `proxygen::HTTPConnector::Callback` (**lib/http** client-side connector callback)
+    - `folly::AsyncSocket::ConnectCallback`, `AsyncReader::ReadCallback`, `AsyncWriter::WriteCallback` (Folly transport-level callbacks)
+  - `ServerTransactionHandler` — inner class implementing `proxygen::HTTPTransactionHandler`
+
+- Functions include:
+  - Constructor with `ProxyStats*`, `HHWheelTimer*`
+  - HTTP request lifecycle overrides (`onRequest`, `onBody`, `onEOM`, etc.) — standard `RequestHandler` API
+  - Server-side transaction callbacks (`onServerHeadersComplete`, `onServerBody`, etc.)
+  - Upstream connection callbacks (`connectSuccess`, `connectError`) — used when acting as a reverse proxy (i.e., connecting to backend servers)
+  - Methods like `abortDownstream()`, `checkForShutdown()` — proxy control logic
+
+### 2. **Key Observations**
+- The class `ProxyHandler` is a concrete implementation of `proxygen::RequestHandler`, which is part of the **httpserver** module.
+- However, it also uses `HTTPConnector` (from `proxygen/lib/http/`) to initiate *upstream* connections — i.e., it acts as a **reverse proxy**: receives an HTTP request via `httpserver`, then forwards it to a backend using `HTTPConnector`.
+- This is **not** just a simple HTTP server; it's a proxy service that bridges the high-level `httpserver` interface with low-level HTTP client logic (`HTTPConnector`) and manages bidirectional transaction flow.
+
+### 3. **Candidate Module Comparison**
+
+| Module | Relevance |
+|--------|-----------|
+| `dns` | ❌ No DNS resolution logic visible. |
+| `pools` | ❌ No backend pool management or configuration parsing. |
+| `sampling` | ❌ No sampling logic. |
+| `general` | ⚠️ Some utility usage (e.g., `DelayedDestruction`, `HHWheelTimer`), but not core purpose. |
+| `http_general` | ⚠️ Handles core HTTP abstractions (parsing, transactions), but this file is *using* those abstractions, not implementing them. |
+| `services` | ✅ `proxygen/lib/services/` contains code for **server-side infrastructure**, including proxy-like handlers that manage connections, transactions, and upstream communication. In Proxygen, `services` often includes components like `ProxyService`, `LoadBalancerService`, etc., built on top of `httpserver` and `lib/http`. The namespace `ProxyService` strongly suggests this belongs here. |
+| `httpserver` | ⚠️ While it implements `RequestHandler`, it’s not a generic server handler — it’s a specialized proxy handler that orchestrates upstream connections. `httpserver` is for *simple* HTTP servers; this is more complex and sits *above* `httpserver` in functionality (i.e., uses `httpserver` as input, but adds proxy logic). |
+
+### 4. **Reference Clue: Namespace `ProxyService`**
+The namespace `ProxyService` is a strong indicator. In Proxygen’s architecture, modules under `lib/services/` often use such domain-specific namespaces (e.g., `LoadBalancerService`, `HealthCheckService`). The presence of `ProxyStats`, `ServerTransactionHandler`, and upstream connection handling aligns with service-layer responsibilities — managing a full proxy workflow, not just handling a single request.
+
+Also, `HTTPConnector` is part of `lib/http`, but its *usage* here (as a callback-driven upstream connector) is typical of service-layer components that need to make outbound HTTP calls.
+
+### 5. **Conclusion**
+This file implements a reverse proxy handler that:
+- Accepts requests via `httpserver::RequestHandler`,
+- Manages upstream connections via `HTTPConnector`,
+- Coordinates bidirectional transaction flow,
+- Uses stats/timers for operational visibility,
+- Lives in namespace `ProxyService`.
+
+This matches the **`services`** module definition:  
+> *"used for connection management and server-side related code. On top of the low-level HTTP abstractions, it provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration."*
+
+While it uses `httpserver`, it is not *part of* the `httpserver` module — it’s a higher-level service built *on top* of it.
+
+---
+
+**Assigned Module**: ["services"]

@@ -1,0 +1,72 @@
+Let’s analyze the file `proxygen/lib/http/session/HQStreamDispatcher.h` step by step, using the provided content and candidate modules.
+
+---
+
+### 1. **File Path & Context**
+- Path: `proxygen/lib/http/session/HQStreamDispatcher.h`
+  - Located under `proxygen/lib/http/session/`, which suggests it's part of the **HTTP session layer**, specifically for **HTTP/3 (HQ = HTTP/3 over QUIC)**.
+  - The filename includes “HQ”, which stands for *HTTP/3 over QUIC* in Proxygen (e.g., `HQFramer`, `HQUnidirectionalCodec`).
+
+---
+
+### 2. **Key Dependencies (Includes)**
+The includes reveal critical context:
+- `quic/api/QuicSocket.h` → Direct dependency on **QUIC transport layer**.
+- `proxygen/lib/http/codec/HQFramer.h`, `HQUnidirectionalCodec.h` → **HTTP/3 codec components**, i.e., protocol parsing/encoding for HQ.
+- `folly/io/async/EventBase.h` → Asynchronous I/O event loop (common across many modules, not decisive alone).
+
+So this is clearly **HTTP/3-specific**, sitting at the intersection of:
+- QUIC transport (`transport` module candidate), and
+- HTTP protocol handling (`http_general` or `services`).
+
+But note: it's under `lib/http/session/`, not `lib/transport/`.
+
+---
+
+### 3. **Class & Functionality Summary**
+From the excerpt and function list:
+
+- `HQStreamDispatcherBase`: Inherits from `quic::QuicSocket::PeekCallback`, meaning it’s registered to peek at incoming QUIC stream data *before* full delivery — a common pattern for stream-type dispatching in HTTP/3.
+- Manages stream ownership, timeouts, and dispatches streams based on preface parsing:
+  - `parseUniStreamPreface`, `parseBidiStreamPreface`
+  - Dispatches control, push, request, bidi/uni WT (Write-Through?) streams.
+- Uses `HQFramer` and `HQUnidirectionalCodec` internally — these are **HTTP/3 codec utilities**.
+- Contains logic for:
+  - Stream classification (control, request, push, etc.)
+  - Timeout handling per stream (to avoid hanging unclaimed streams)
+  - Ownership tracking (`takeTemporaryOwnership`, `releaseOwnership`)
+- Callback interface (`CallbackBase`) abstracts away higher-level handling (e.g., passing to session or transaction layer).
+
+This is **not**:
+- DNS resolution → ❌ `dns`
+- Pool configuration → ❌ `pools`
+- SSL/TLS context → ❌ `ssl`
+- General utilities (e.g., `utils/`) → ❌ `general` (this is protocol-specific, not generic)
+- High-level server API (`httpserver`) → ❌ (this is internal session-level code)
+- Pure transport (e.g., socket, congestion control, packetization) → ❌ `transport` is *lower-level*; this operates *on top* of QUIC sockets, interpreting stream payloads as HTTP/3 frames.
+
+---
+
+### 4. **Module Candidate Comparison**
+
+| Module | Relevance |
+|--------|-----------|
+| `dns` | No — unrelated to DNS. |
+| `pools` | No — no backend pool logic. |
+| `ssl` | No — no TLS context or handshake logic. |
+| `general` | Low — this is not a utility; it's tightly coupled to HTTP/3 session semantics. |
+| `http_general` | ✅ Strong candidate: This module covers *common HTTP implementation under `lib/http/`*, including HTTP/2 and HTTP/3 protocol handling, session management, and codec integration. The path `lib/http/session/` aligns with this. |
+| `services` | Partial — `services` is more about server infrastructure (connection acceptance, worker threads), not stream dispatching within an HTTP session. |
+| `transport` | ❌ Misleading — although it uses QUIC APIs, it does *not* implement transport primitives; instead, it consumes QUIC streams to interpret HTTP/3 semantics. The `transport` module in Proxygen typically contains `QuicTransport`, `QuicSocketFactory`, etc., not session-level dispatchers. |
+
+Reference: In Proxygen’s architecture:
+- `http_general` includes `lib/http/codec/`, `lib/http/session/`, and core HTTP abstractions like `HTTPSession`, `HTTPTransaction`, `HQFramer`, etc.
+- `HQStreamDispatcher` is responsible for **dispatching QUIC streams into appropriate HTTP/3 stream types** — a core part of the HTTP/3 session layer, directly feeding into transaction creation and frame processing.
+
+Thus, this belongs squarely in the **HTTP protocol core layer**, specifically for HTTP/3.
+
+---
+
+### ✅ Final Decision
+
+**Assigned Module**: [`http_general`]

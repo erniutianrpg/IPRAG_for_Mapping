@@ -1,0 +1,45 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `folly/ScopeGuard.h` → generic utility (Folly)
+  - `proxygen/httpserver/ResponseHandler.h` → key clue: this is from `proxygen/httpserver/`, i.e., the *high-level HTTP server* layer.
+  - `<memory>` → standard
+- **Namespace**: `proxygen`
+- **Class**: `ResponseBuilder`
+- **Functions**: Fluent API for constructing and sending HTTP responses:
+  - `promise()` — sets up request metadata (URL, host, method) — used for *response to a promise-style request*, possibly for proxying or deferred responses.
+  - `status()`, `header()`, `body()`, `trailers()`, `send()`, `sendWithEOM()`, `closeConnection()`, `acceptUpgradeRequest()`, etc.
+  - Uses `ResponseHandler* txn` as underlying transaction handle.
+  - Internally uses `HTTPMessage`, `HTTPHeaders`, `folly::IOBuf`, `SCOPE_EXIT`.
+
+This class is clearly a **builder pattern wrapper** over `ResponseHandler`, providing a convenient, fluent interface for constructing and sending HTTP responses — typical of high-level server frameworks.
+
+### 2. **Key Observations**
+- The class lives in namespace `proxygen`, but includes from `proxygen/httpserver/ResponseHandler.h`. That strongly suggests it's part of the **`httpserver` module**, not lower-level `http_general` or `services`.
+- `ResponseHandler` is the core interface for handling an HTTP transaction on the server side in Proxygen’s high-level server API. It abstracts away the lower-level `HTTPTransaction` (from `http_general`) and provides a simpler callback-based interface.
+- `ResponseBuilder` is *not* part of the core protocol parsing/encoding (`http_general`), nor transport (`transport`), nor SSL (`ssl`), nor pools/sampling/services (which are more infrastructure-focused).
+- It is **not** in `general` (which is for utilities like `Timer`, `AsyncSocket`, etc., usually under `lib/utils/`). This is specifically for building HTTP responses — tightly coupled with `httpserver`.
+- The presence of `acceptUpgradeRequest`, `rejectUpgradeRequest`, `setEgressWebsocketHeaders` further confirms it's for building responses including WebSocket upgrades — a feature exposed in the high-level server API.
+
+### 3. **Module Comparison**
+| Module | Relevance |
+|--------|-----------|
+| **pools** | ❌ No relation to backend pools or service discovery. |
+| **sampling** | ❌ No sampling logic; no metrics/statistics code. |
+| **ssl** | ❌ No SSL/TLS context, certificates, or encryption logic. |
+| **general** | ⚠️ Partial: uses Folly utilities, but `ResponseBuilder` is not a generic utility — it's HTTP-server-specific. `general` is more for cross-cutting helpers (e.g., `ScopedEventBaseThread`, ` folly::SocketAddress` wrappers). Not a fit. |
+| **http_general** | ⚠️ Uses `HTTPMessage`, `HTTPHeaders`, but those are *used*, not defined here; this class builds on top of them via `ResponseHandler`, which is higher-level. `http_general` deals with raw transaction lifecycle, parsing, encoding — not builder APIs. |
+| **services** | ⚠️ `services/` handles connection acceptance, service execution, worker threads — not response construction. `ResponseHandler` is used *by* services, but `ResponseBuilder` is a convenience wrapper for application code using `httpserver`. |
+| **httpserver** | ✅ Strong match: `#include <proxygen/httpserver/ResponseHandler.h>`, fluent response-building API, designed for application developers writing HTTP servers using Proxygen’s high-level framework. This is exactly what `httpserver/` provides (e.g., `ResponseBuilder`, `RequestHandler`, `HTTPServer`, etc.). |
+| **transport** | ❌ No QUIC, socket, or transport-layer logic. |
+
+### 4. **Conclusion**
+The file is a header defining `ResponseBuilder`, a fluent helper class that wraps `ResponseHandler` (from `proxygen/httpserver/`) to simplify sending HTTP responses — precisely the kind of abstraction provided by the **`httpserver`** module.
+
+This is *not* a low-level component; it’s intended for end-user server logic (e.g., in a handler function, you’d do `ResponseBuilder(txn).status(200, "OK").body("hello").send()`).
+
+Thus:
+
+"The probability that this file belongs to module 'httpserver' is 98%."

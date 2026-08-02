@@ -1,0 +1,68 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- **File name**: `dcamera_sink_data_process.h`
+- **Language**: C/C++
+- **Includes**:
+  - `event_bus.h`, `dcamera_photo_output_event.h`, `dcamera_video_output_event.h` → event handling (photo/video output events)
+  - `icamera_sink_data_process.h` → interface for sink-side data processing
+  - `icamera_channel.h`, `idata_process_pipeline.h`, `image_common_type.h` → channel, pipeline, and image type definitions
+- **Class**: `DCameraSinkDataProcess`
+  - Inherits from:
+    - `ICameraSinkDataProcess` → indicates this is a *sink-side* data processor
+    - `EventSender`, `EventBusHandler<DCameraPhotoOutputEvent>`, `EventBusHandler<DCameraVideoOutputEvent>` → handles photo/video output events
+    - `std::enable_shared_from_this` → typical for shared ownership in async/event-driven contexts
+- **Key methods**:
+  - `StartCapture`, `StopCapture`, `FeedStream` → control and ingest of camera stream data
+  - `OnEvent(DCameraPhotoOutputEvent&)`, `OnEvent(DCameraVideoOutputEvent&)` → reacts to output events (e.g., photo taken, video frame ready)
+  - `OnProcessedVideoBuffer`, `OnError` → callbacks for processed video or errors
+  - `FeedStreamInner`, `GetPipelineCodecType`, `GetPipelineFormat` → internal helpers for feeding data and mapping formats/codecs to pipeline
+
+- **Member variables**:
+  - `dhId_`: device ID (distributed hardware ID)
+  - `captureInfo_`: capture configuration
+  - `eventBus_`: event bus for notifications
+  - `channel_`: camera channel (likely `ICameraChannel`, used for IPC/transport)
+  - `pipeline_`: `IDataProcessPipeline` — core data processing pipeline
+
+### 2. **Interpretation**
+This class:
+- Lives on the **sink side** (controlled device), as indicated by:
+  - Class name: `DCameraSinkDataProcess`
+  - Inheritance from `ICameraSinkDataProcess`
+  - Handling of `DCameraPhotoOutputEvent` / `DCameraVideoOutputEvent` — these are *output* events generated *after* local camera capture (i.e., on sink side)
+- It receives raw camera data (`FeedStream`), processes it (via `pipeline_`), and likely forwards it (or triggers encoding/transmission) — but note: it does *not* handle decoding or post-processing for display (that would be source-side).
+- It integrates with:
+  - Event bus (for notifying photo/video completion or errors)
+  - Data processing pipeline (`IDataProcessPipeline`) — suggests it orchestrates preprocessing steps before sending over channel
+  - Camera channel (`ICameraChannel`) — likely sends processed frames downstream (to source)
+
+So this is **not**:
+- `DistributedCameraSourceMgr`: That's source-side controller logic.
+- `ChannelCommon` / `ChannelSink`: These deal with transport/session layer (SoftBus), not data processing logic.
+- `CameraDataPostProcess`: Post-processing happens on *source* side (after receiving data); this is sink-side ingestion/prep.
+- `VirtualCameraHdf`: This is HDF/HDI layer — no indication of HDF interfaces here.
+- `utils`: Too generic; this is a concrete class with clear responsibilities.
+- `CameraServiceCommon`: Provides shared basic services (commands, metadata, etc.), but this class is focused on *data flow* and *pipeline orchestration*, not service abstraction.
+
+### 3. **Candidate Match: `CameraDataPreProcess`**
+Let’s re-express its description:
+> *"This module is responsible for the data preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow."*
+
+✅ Exactly matches:
+- Sink side (`DCameraSinkDataProcess`)
+- Preprocessing: It receives raw `DataBuffer` via `FeedStream`, uses `pipeline_`, maps formats/codecs (`GetPipelineCodecType`, `GetPipelineFormat`), and likely prepares data for encoding/transmission.
+- Integrates with event system to notify when photo/video is ready — consistent with pre-processing stage (e.g., after encoding completes, fire `DCameraVideoOutputEvent`).
+
+Also note: `ICameraSinkDataProcess` is likely the interface defined in `CameraDataPreProcess` module, and this class implements it.
+
+### 4. **Cross-check with other modules**
+- `DistributedCameraSinkMgr`: Described as responsible for *lifecycle, access control, controller, data processing, image/video output, event notification, IPC*. While overlapping, `DCameraSinkDataProcess` is more narrowly focused on *data processing* (specifically preprocessing), not full lifecycle/controller management. The manager would likely *own* or *use* this class, but not be the same module.
+- The presence of `IDataProcessPipeline` strongly ties it to the data processing pipeline infrastructure, which is exactly what `CameraDataPreProcess` provides.
+
+### ✅ Conclusion
+The file implements a sink-side data preprocessing component that ingests raw camera data, applies pipeline processing (format/codec mapping), and emits output events — matching **`CameraDataPreProcess`** precisely.
+
+---
+
+**Assigned Module**: [CameraDataPreProcess]

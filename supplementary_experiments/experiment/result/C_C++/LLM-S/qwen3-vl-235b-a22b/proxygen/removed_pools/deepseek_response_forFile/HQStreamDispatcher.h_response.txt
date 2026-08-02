@@ -1,0 +1,99 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. Key Observations from File Content**
+
+#### **Includes**
+- `quic/api/QuicSocket.h` → QUIC transport layer, specifically socket-level interaction.
+- `proxygen/lib/http/codec/HQFramer.h`, `HQUnidirectionalCodec.h` → HTTP/3 (HTTP over QUIC) framing and unidirectional stream decoding logic.
+- `folly/io/async/EventBase.h` → Asynchronous I/O event loop (used for timeouts, scheduling).
+
+These headers strongly indicate **HTTP/3 (HQ = HTTP/3 over QUIC)** protocol handling at the **transport + codec boundary**, specifically dealing with stream dispatching and ownership management.
+
+#### **Namespace**
+- `namespace proxygen { ... }` → Confirms this is part of Proxygen.
+
+#### **Types & Functions**
+- `HQStreamDispatcherBase`: Base class for dispatching streams in HQ (HTTP/3), inherits from `quic::QuicSocket::PeekCallback`.
+- `CallbackBase`, `DispatchTimeout`, `HQUniStreamDispatcher`, `HQBidiStreamDispatcher`: All related to **stream-type dispatching** — control, push, request, bidirectional, unidirectional streams — core to HTTP/3 semantics.
+- Functions like:
+  - `handleStream(...)`
+  - `parseUniStreamPreface(...)`
+  - `dispatchControlStream(...)`
+  - `dispatchRequestStream(...)`
+  - `takeTemporaryOwnership(...)`, `releaseOwnership(...)`, `dispatchTimeoutExpired(...)`  
+  → These implement **stream lifecycle management**, **preface parsing**, and **timeout-based stream rejection**, which are essential for HTTP/3 stream demultiplexing before full HTTP message processing begins.
+
+This is **not** about:
+- DNS resolution (`dns`)
+- Sampling (`sampling`)
+- SSL/TLS context (`ssl`)
+- General utilities (`general`) — though `EventBase` is used, the logic is not generic utility; it's tightly coupled to QUIC/HQ.
+- High-level server APIs (`httpserver`)
+- Service infrastructure (`services`)
+
+It *is* about:
+- **HTTP/3 stream dispatching on top of QUIC transport**, using HQ-specific codecs and framer.
+- It sits between raw QUIC stream data and higher-level HTTP transaction handling.
+
+#### **Location clues**
+The includes point to:
+- `proxygen/lib/http/codec/` → part of HTTP protocol implementation
+- `quic/api/` → external QUIC library (likely Folly/QUIC or Meta’s quic)
+→ This suggests the file belongs to the **HTTP/3 codec/dispatch layer**, which is part of the HTTP protocol stack but specifically for HTTP/3 (HQ).
+
+In Proxygen’s architecture:
+- `http_general` covers common HTTP implementation: HTTP/1.x, HTTP/2, and shared abstractions.
+- `transport` is explicitly described as: *"lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3"*, and responsible for *"working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket..."*
+
+But note: the file includes `proxygen/lib/http/codec/HQFramer.h` — that path is under `lib/http/codec/`, not `lib/transport/`. However, the *functionality* is stream dispatching *on top of QUIC*, which is a bridge between transport and HTTP layers.
+
+Let’s compare candidate modules more precisely:
+
+| Module | Relevance |
+|--------|-----------|
+| `dns` | ❌ No DNS-related code. |
+| `sampling` | ❌ No sampling logic. |
+| `ssl` | ❌ No SSL/TLS context or crypto. |
+| `general` | ⚠️ Uses `EventBase`, but logic is not generic — it's HQ-specific. Unlikely. |
+| `http_general` | ✅ Includes `proxygen/lib/http/codec/...`, deals with HTTP/3 framing/parsing. But `http_general` is described as "common HTTP implementation", including HTTP/2 and HTTP/3. HQ (HTTP/3) is part of HTTP protocol core. |
+| `services` | ❌ No service execution, connection acceptance, workers. |
+| `httpserver` | ❌ Not a high-level server API wrapper; no `HTTPServer`, `RequestHandler`, etc. |
+| `transport` | ✅ Explicitly mentions "QUIC / HTTP/3", "transport-layer support for HTTP/3/QUIC", and "stream dispatching" is a key part of transport-to-application handoff. Also, `HQStreamDispatcherBase` inherits from `quic::QuicSocket::PeekCallback`, i.e., directly integrates with QUIC socket peeking — a transport-level hook. |
+
+Now, critical nuance:
+- In Proxygen, the **HQ (HTTP/3) codec and dispatcher logic** lives in `proxygen/lib/http/codec/` and `proxygen/lib/http/session/`, but the *integration with QUIC transport* (e.g., `PeekCallback`, stream ownership, timeout management) is often considered part of the **transport layer** because it handles the boundary where raw QUIC streams become logical HTTP/3 streams.
+
+The class `HQStreamDispatcherBase` is clearly responsible for:
+- Receiving raw QUIC stream data via `PeekCallback`
+- Parsing prefaces
+- Dispatching to appropriate stream handlers (control, request, push, etc.)
+- Managing stream ownership and timeouts
+
+This is **not** pure HTTP message parsing (that would be in `http_general`), but rather **stream demultiplexing and lifecycle management** — which aligns best with the definition of the `transport` module:  
+> *"responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."*  
+And crucially: *"transport-layer support module for HTTP/3/QUIC scenarios"*.
+
+While the file resides logically under `http/codec/`, the *role* it plays is transport-to-HTTP bridging — and the candidate description for `transport` explicitly includes HTTP/3 stream handling.
+
+Also, note that `HQFramer.h` and `HQUnidirectionalCodec.h` are likely used by both transport and http layers, but the dispatcher base class here is the glue that connects QUIC socket events to HTTP semantics.
+
+---
+
+### **Conclusion**
+
+- Highest match: **`transport`** — because the file implements QUIC stream dispatching, ownership, timeouts, and integrates directly with `QuicSocket::PeekCallback`, which is a transport-level interface.
+- Second possibility: `http_general` — since it’s under `http/codec/`, but the functionality is more infrastructural than protocol-core (e.g., not parsing headers/bodies, but managing streams pre-parsing).
+- Given the explicit mention of QUIC/HTTP/3 in `transport`'s description and the direct use of `quic::QuicSocket`, **`transport` is the best fit**.
+
+Probability assessment:
+- `transport`: **95%**
+- `http_general`: **5%** (only due to path location; functionality doesn’t match “common HTTP” abstraction — it’s HQ-specific transport integration)
+- Others: ~0%
+
+---
+
+**Final Answer:**
+
+The probability that this file belongs to module 'transport' is 95%.

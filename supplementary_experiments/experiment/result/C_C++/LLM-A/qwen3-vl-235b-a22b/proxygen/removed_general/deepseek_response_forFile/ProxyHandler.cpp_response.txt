@@ -1,0 +1,40 @@
+Let’s analyze the file step by step:
+
+### 1. **File context and purpose**
+- The file defines `ProxyHandler`, a class that implements `RequestHandler` (from `proxygen/httpserver/RequestHandler.h`).
+- It handles HTTP requests (including `CONNECT` for tunneling), parses URLs, establishes upstream connections (via `AsyncSocket` or `connector_`), forwards request bodies and EOM, and manages proxy logic.
+- It uses:
+  - `proxygen/httpserver/RequestHandler.h` and `ResponseBuilder.h` → high-level HTTP server interface.
+  - `proxygen/lib/http/session/HTTPUpstreamSession.h` → low-level session handling for upstream (backend) HTTP connections.
+  - `folly/io/async/EventBaseManager.h`, `AsyncSocket`, etc. → async I/O infrastructure.
+  - `ProxyStats.h`, `ProxyHandler.h` → custom proxy-specific logic.
+
+### 2. **Key responsibilities of this code**
+- Implements a *reverse proxy* or *forward proxy* handler that:
+  - Receives an HTTP request from a client (`onRequest`, `onBody`, `onEOM`).
+  - Parses the target URL.
+  - Connects to an upstream server (either via raw socket for `CONNECT`, or via `connector_` which likely wraps `HTTPUpstreamSession`).
+  - Forwards data between downstream (client) and upstream (server).
+- This is **application-layer proxy logic**, built *on top of* core HTTP abstractions.
+
+### 3. **Compare with candidate modules**
+
+| Module | Relevance |
+|--------|-----------|
+| `dns` | ❌ No DNS resolution logic here (no `DNSResolver`, `HostResolver`, etc.). URL parsing is done via `URL`, but no actual resolution. |
+| `pools` | ❌ No backend pool configuration, no load balancing, no service discovery. Connection target is derived directly from URL. |
+| `sampling` | ❌ No sampling logic (e.g., no `SamplingRate`, `Sampler`). |
+| `ssl` | ❌ No SSL/TLS context setup, no `SSLContext`, `SecureTransport`, etc. Though `CONNECT` could be used for TLS tunnels, the handler itself doesn’t manage SSL — it just forwards bytes. |
+| `http_general` | ⚠️ Partial: uses `HTTPUpstreamSession`, which is under `proxygen/lib/http/`, but the file is not implementing core protocol parsing or session lifecycle management — it's using those abstractions to build a proxy. |
+| `services` | ⚠️ `proxygen/lib/services/` typically contains things like `ServiceHandler`, `ConnectionManager`, `Worker`, etc. This file is not in `lib/services`, and doesn’t manage connection acceptance or worker threads. It’s a per-request handler. |
+| `httpserver` | ✅ Strong match: The file includes `proxygen/httpserver/RequestHandler.h` and `ResponseBuilder.h`, and implements `RequestHandler`. `httpserver` is the high-level framework for building HTTP servers — and this `ProxyHandler` is a concrete implementation of a request handler that acts as a proxy. In Proxygen examples, such proxy handlers are part of the `httpserver` layer usage. |
+
+### 4. **Supporting evidence from reference patterns**
+- In Proxygen, `httpserver` provides the entry point for writing HTTP services: you implement `RequestHandler`, register it, and handle requests.
+- The presence of `ResponseBuilder(downstream_)` and `downstream_->pauseIngress()` confirms it's using the `httpserver`'s `HTTPServerTransport`/`HTTPTransaction` abstractions.
+- While it talks to upstream via `HTTPUpstreamSession`, that is *consumed* by this handler — the handler itself belongs to the server-side application logic, i.e., the `httpserver` module’s domain.
+
+### 5. **Conclusion**
+The file implements a `RequestHandler` for a proxy service using the `proxygen/httpserver` API. It is not core transport, not DNS, not SSL, not pooling — it's a high-level HTTP server component.
+
+**Assigned Module**: [`httpserver`]

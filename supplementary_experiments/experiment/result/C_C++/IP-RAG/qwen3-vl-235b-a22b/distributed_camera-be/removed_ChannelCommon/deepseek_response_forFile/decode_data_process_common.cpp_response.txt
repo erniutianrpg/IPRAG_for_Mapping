@@ -1,0 +1,86 @@
+Let’s analyze the file systematically:
+
+### 1. **File Path**
+```
+services\data_process\src\pipeline_node\multimedia_codec\decode_data_process_common.cpp
+```
+- Located under `data_process/src/pipeline_node/multimedia_codec/` — strongly suggests this is part of a **data processing pipeline**, specifically handling **multimedia decoding**.
+- The `_common` suffix implies it's a shared or reusable component, not tied exclusively to source or sink.
+
+### 2. **Includes**
+```cpp
+#include "decode_data_process.h"
+#include "distributed_hardware_log.h"
+#include "graphic_common_c.h"
+#include "convert_nv12_to_nv21.h"
+#include "dcamera_utils_tools.h"
+#include "decode_video_callback.h"
+```
+- `convert_nv12_to_nv21.h`: indicates **pixel format conversion**, common in video decoding/post-processing.
+- `dcamera_utils_tools.h`: generic utilities for distributed camera (likely from `utils` module).
+- `decode_video_callback.h`: callback interface for decoder events — typical in codec pipelines.
+- `graphic_common_c.h`: low-level graphics/image buffer handling (e.g., surface buffers, YUV planes).
+- No direct inclusion of source/sink manager headers (e.g., `DistributedCameraSourceMgr`, `ChannelSink`, etc.).
+
+### 3. **Namespace**
+```cpp
+namespace OHOS {
+namespace DistributedHardware {
+```
+- Standard namespace for distributed hardware components — consistent with all candidate modules.
+
+### 4. **Key Functions & Responsibilities**
+The class `DecodeDataProcess` implements:
+- Initialization and lifecycle management (`InitNode`, `ReleaseProcessNode`, destructor)
+- Codec setup: `InitDecoder`, `InitDecoderMetadataFormat`, `SetDecoderOutputSurface`
+- Input/output buffer handling: `FeedDecoderInputBuffer`, `OnInputBufferAvailable`, `OnOutputBufferAvailable`, `GetDecoderOutputBuffer`
+- Image copying & format conversion:  
+  - `CopyDecodedImage`, `CopyYUVPlaneByRow`, `CheckCopyImageInfo`, `IsCorrectImageUnitInfo`
+  - Explicit NV12→NV21 conversion (via included header)
+- Event handling: `OnEvent`, `OnError`, `OnOutputFormatChanged`
+- Pipeline integration: uses `eventBusDecode_`, `eventBusPipeline_`, handles `DCameraCodecEvent`
+- Config validation: `IsInDecoderRange`, `IsConvertible`, `GetSourceConfig`, `GetTargetConfig`
+
+Crucially:
+- It **decodes video data** (e.g., H.264/H.265 → raw frames), then copies/converts output to a surface buffer.
+- It is **not** responsible for:
+  - Camera control (no `CameraOperator`, `StreamOperator`, or HDF interfaces),
+  - Network transport (no SoftBus usage),
+  - Lifecycle/state machine of the full camera session (like `DistributedCameraSourceMgr`),
+  - Raw sensor input preprocessing (like `CameraDataPreProcess`),
+  - Final presentation/rendering on controller side (like `CameraDataPostProcess` may do).
+
+### 5. **Module Comparison**
+
+| Candidate Module | Fit? | Reason |
+|------------------|------|--------|
+| **DistributedCameraSourceMgr** | ❌ | Manages full source-side lifecycle, IPC, controller logic — this file is only a *node* in a pipeline, not the manager. |
+| **DistributedCameraSinkMgr** | ❌ | Same — this is not the sink manager; no access control, no command parsing from controller. |
+| **ChannelSource / ChannelSink** | ❌ | No SoftBus, no channel establishment logic. Pure local data processing. |
+| **CameraDataProcessCommon** | ✅ **Strong candidate** | Described as: *"provides common data processing frameworks, data processing pipeline interfaces, codecs, color space conversion..."* — exactly what this file does: decode node + YUV conversion + buffer handling, used in pipeline nodes. The path `pipeline_node/multimedia_codec/` matches this. Also, `_common` in filename aligns with "Common" in module name. |
+| **CameraDataPreProcess** | ❌ | Preprocess = before encoding/transmission (e.g., on sink side before sending). This is **decoding**, which happens *after* transmission — i.e., post-reception. So it’s more likely *post*-processing, but see next. |
+| **CameraDataPostProcess** | ⚠️ Possible | Defined as: *"decodes, converts formats, and processes frame rate, resolution... so that the controller can use distributed camera data as if using a local Camera."* That sounds very close. However, note: `CameraDataPostProcess` is described as being on the **source side (output side)** — i.e., where the controller receives and consumes data. But this file is part of a *pipeline node*, and the class `DecodeDataProcess` appears to be a reusable decoder component that could be used in either side depending on context. Importantly, the module description says *"on the source side or output side"*, while this file is named `decode_data_process_common.cpp` and resides under `data_process/src/pipeline_node/`, suggesting it's a **shared pipeline building block**, not tied to one side. |
+| **CameraServiceCommon** | ❌ | Focuses on commands, protocols, metadata, IPC proxies — not codec/data buffer manipulation.
+| **VirtualCameraHdf** | ❌ | HDF/HDI layer — this is pure C++ application-layer codec logic, no HDF interfaces.
+| **utils** | ❌ | While it uses utils, the file itself is a substantial processing node, not just helpers/buffers/constants.
+
+### 6. **Critical Distinction: Pre vs Post vs Common**
+- `CameraDataPreProcess`: runs on **sink** *before* encoding/transmission (e.g., crop, rotate, adjust FPS for upload).
+- `CameraDataPostProcess`: runs on **source** *after* receiving encoded stream (i.e., decode, convert, rescale for display/use).
+- But the module names suggest strict side assignment.
+
+However, the **file path** and **naming** (`*_common.cpp`, under `pipeline_node/multimedia_codec/`) strongly indicate this is a **reusable pipeline node**, not side-specific. The reference description for **CameraDataProcessCommon** explicitly includes:
+> *"codecs, color space conversion, frame-rate control, image types, and other common capabilities, supplying foundational components for data processing flows on both the source and sink sides."*
+
+This matches perfectly:
+- It implements a codec node (`DecodeDataProcess`)
+- Does color/format conversion (NV12→NV21)
+- Handles image unit info, alignment, buffer copying
+- Is designed to plug into a pipeline (uses event bus, callbacks)
+
+Also, note the function `DecodeDataProcess::ProcessData(...)` takes `inputBuffers` and produces outputs — classic pipeline node behavior.
+
+### ✅ Conclusion:
+The file is a **common multimedia decoding node** used within the data processing pipeline, intended to be shared across source/sink contexts. Therefore, the best-fitting module is:
+
+**Assigned Module**: [CameraDataProcessCommon]

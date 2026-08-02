@@ -1,0 +1,76 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `dcamera_video_surface_listener.h` → suggests this is a listener for video surface events (i.e., handling buffer availability from a Surface).
+  - `securec.h` → secure memory operations (e.g., `memcpy_s`), common in OHOS.
+  - `data_buffer.h` → custom data buffer abstraction.
+  - `distributed_camera_errno.h` → error codes specific to distributed camera.
+  - `distributed_hardware_log.h` → logging macros like `DHLOGI`, `DHLOGE`.
+- **Namespaces**: `OHOS::DistributedHardware`
+- **Function**: `DCameraVideoSurfaceListener::OnBufferAvailable()`
+  - This function:
+    - Acquires a buffer from a `Surface`.
+    - Reads raw pixel data (`GetVirAddr()`).
+    - Copies it into a `DataBuffer`.
+    - Invokes a `ResultCallback::OnVideoResult(dataBuffer)`.
+    - Releases the buffer.
+
+This is clearly a **sink-side component**, because:
+- It receives buffers from a `Surface` — typically, on the *controlled* (sink) device, the camera output is rendered to a `Surface`, and a listener (like this one) consumes those buffers.
+- The callback `OnVideoResult(dataBuffer)` suggests forwarding processed frame data (as `DataBuffer`) to an upper layer — likely for transmission or further processing.
+- No IPC sending logic here, but it *prepares* data for transmission (by packaging into `DataBuffer`), which aligns with preprocessing before channel transmission.
+
+### 2. **Module Comparison**
+
+#### ✅ **CameraDataPreProcess**
+> *"This module is responsible for the data preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow."*
+
+- This file:
+  - Runs on the **sink side** (controlled device).
+  - Takes raw `SurfaceBuffer` (from camera preview/stream output).
+  - Copies raw pixel data into a generic `DataBuffer`.
+  - Does no encoding, color conversion, or resolution scaling — just *raw buffer extraction*.
+  - Passes it to a callback (`OnVideoResult`) — likely feeding into the next stage (e.g., encoding, channel send).
+- This matches the definition of **preprocessing** — minimal transformation, just wrapping raw frame data for downstream use.
+
+#### ❌ **DistributedCameraSourceMgr**
+- Source-side lifecycle/controller logic. This file has no state machine, IPC service, or controller logic. Not matching.
+
+#### ❌ **ChannelCommon / ChannelSource / ChannelSink**
+- These deal with **channel/session/SoftBus communication**.
+- This file has **no network/IPC code**, no session management, no SoftBus calls.
+- It only deals with local buffer acquisition and callback — not channel transmission.
+- So not Channel modules.
+
+#### ❌ **CameraDataPostProcess**
+- Post-processing is on the **source side** (controller), e.g., decoding, format conversion, frame rate adjustment.
+- This is clearly on the **sink side** (buffer acquisition from camera Surface), so not post-process.
+
+#### ❌ **CameraServiceCommon**
+- Shared basic services: commands, protocols, metadata, open-camera info.
+- This file does not handle protocols, metadata, or camera control — only buffer handling.
+
+#### ❌ **VirtualCameraHdf**
+- HDF/HDI layer: Device, Provider, StreamOperator, IPC proxies.
+- This file uses `Surface` and `SurfaceBuffer`, which are **UI/rendering-layer abstractions**, not HDF-level drivers. Also no `HDF` or `IDevice` usage. So not this.
+
+#### ❌ **utils**
+- Provides *generic utilities*: error codes, constants, data buffers, local camera query/open/close.
+- While it includes `data_buffer.h` and error codes, this file is **not a utility** — it’s a concrete listener class with business logic (buffer acquisition + callback). Utilities would be header-only or stateless helpers.
+- Also, `DCameraVideoSurfaceListener` is a named, purpose-built class — not a generic util.
+
+### 3. **Key Evidence**
+- `OnBufferAvailable()` is a standard Android/OHOS Surface listener pattern — used when a producer (e.g., camera) makes a buffer available.
+- In distributed camera architecture, the **sink device** (controlled) uses a `Surface` as output target for camera stream, and a listener like this captures frames for transmission.
+- The use of `ResultCallback::OnVideoResult(dataBuffer)` strongly implies this is the *first step* in the sink-side data pipeline — i.e., **preprocessing** before encoding/transmission.
+
+### Conclusion
+The file implements a sink-side buffer listener that extracts raw frame data into a `DataBuffer` for downstream use — exactly what **CameraDataPreProcess** is defined to do.
+
+**Probability**: Very high.
+
+---
+
+The probability that this file belongs to module 'CameraDataPreProcess' is 95%.

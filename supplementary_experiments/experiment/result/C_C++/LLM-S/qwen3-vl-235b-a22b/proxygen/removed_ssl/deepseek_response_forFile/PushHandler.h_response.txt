@@ -1,0 +1,55 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File metadata**
+- **Language**: C/C++
+- **Includes**: `#include <proxygen/httpserver/RequestHandler.h>`
+  - This is a *strong signal* that the file belongs to or interacts closely with the `httpserver` module, since it directly includes a header from `proxygen/httpserver/`.
+- **Namespace**: `proxygen`
+- **Types**:
+  - `class PushHandler : public RequestHandler`
+  - `class InnerPushHandler : public HTTPPushTransactionHandler`
+- **Functions**: `getHandler()`
+- **Raw excerpt** shows:
+  - `PushHandler` inherits from `RequestHandler`, which is part of the high-level HTTP server API (used for handling incoming requests).
+  - It implements `onRequest`, `onBody`, `onEOM`, etc., but marks them as `LOG(FATAL) << "Unreachable"` — indicating this handler is *not* meant to handle normal request bodies; instead, it's used for **HTTP push** (i.e., server-initiated pushes in HTTP/2).
+  - The inner class `InnerPushHandler` implements `HTTPPushTransactionHandler`, which is the interface for handling *pushed* responses (e.g., when the server pushes resources preemptively).
+  - It delegates push transaction events back to the outer `PushHandler`, which then cleans itself up (`delete this`) on completion/error — typical pattern for one-shot handlers in Proxygen’s server framework.
+
+### 2. **Module analysis**
+
+#### ✅ `httpserver`
+- The `httpserver` module provides high-level APIs for building HTTP servers.
+- Key components include:
+  - `RequestHandler`: base class for user-defined request handlers.
+  - Support for HTTP/2 server push via `HTTPPushTransactionHandler`.
+- The file:
+  - Includes `RequestHandler.h` directly.
+  - Derives from `RequestHandler`.
+  - Implements push-specific logic using `HTTPPushTransactionHandler`.
+- This is *exactly* the kind of code you’d find in `proxygen/httpserver/` — specifically, a utility or internal handler for supporting HTTP/2 push in the high-level server API.
+
+#### ❌ `http_general`
+- This module is lower-level: protocol parsing, encoding/decoding, transaction/session management *inside* `lib/http/`.
+- While `HTTPPushTransactionHandler` lives in `lib/http/`, the *usage* here is via a high-level `RequestHandler`, and the file is structured as a server-side handler, not a core protocol component.
+- Also, no inclusion of headers like `HTTPMessage.h`, `HTTPSession.h`, `HTTPTransaction.h` — only `RequestHandler.h`.
+
+#### ❌ `services`
+- `services` deals with connection management, worker threads, service execution — more infrastructural.
+- This file does *not* deal with connection acceptance, threading, or service registration. It’s a per-request handler.
+
+#### ❌ `transport`, `dns`, `pools`, `sampling`, `general`
+- None of these are relevant:
+  - No QUIC/UDP/socket code → not `transport`.
+  - No DNS resolution → not `dns`.
+  - No pool configuration or backend selection → not `pools`.
+  - No sampling logic → not `sampling`.
+  - While `general` covers utils, this is not a generic utility — it’s tightly coupled to `httpserver`'s handler model.
+
+### 3. **Conclusion**
+The file is clearly part of the **high-level HTTP server framework**, implementing an HTTP/2 push handler that integrates with `RequestHandler`. It lives in the conceptual domain of `proxygen/httpserver/`, likely as an internal helper (e.g., used by `HTTPServer` or `PushController`), but its inclusion path and inheritance hierarchy confirm it belongs to the `httpserver` module.
+
+> Note: In Facebook’s Proxygen repo, files like `PushHandler.h` indeed reside under `proxygen/httpserver/` (e.g., used in `HTTPServer.cpp` for handling push promises).
+
+---
+
+**The probability that this file belongs to module 'httpserver' is 98%.**

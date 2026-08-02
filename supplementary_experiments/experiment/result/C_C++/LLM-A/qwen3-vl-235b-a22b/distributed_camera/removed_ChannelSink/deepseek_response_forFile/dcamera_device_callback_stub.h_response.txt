@@ -1,0 +1,55 @@
+Let’s analyze the file content step by step and compare it with the candidate modules.
+
+### File Content Summary:
+- **Language**: C/C++
+- **Includes**:
+  - `icamera_device_callback.h` → interface for camera device callbacks
+  - `iremote_stub.h`, `message_parcel.h`, `parcel.h` → IPC (Inter-Process Communication) infrastructure, specifically OHOS’s RPC stub mechanism
+- **Macro**: `DISTRIBUTED_CAMERA_DEVICE_CALLBACK_CLIENT_STUB_H` → indicates this is a *client-side stub* for a callback interface
+- **Namespace**: `OHOS::DistributedHardware`
+- **Class**: `DCameraDeviceCallbackStub`, derived from `IRemoteStub<ICameraDeviceCallback>`
+- **Functions**:
+  - Destructor: `~DCameraDeviceCallbackStub()`
+  - `OnRemoteRequest(...)` — standard OHOS RPC stub handler to dispatch remote calls
+
+This class is a **stub implementation** that receives remote IPC requests (from the *source side*, i.e., controller) and forwards them to the local callback implementation on the *sink side* (controlled device). Specifically:
+- It implements the server-side stub for the `ICameraDeviceCallback` interface.
+- In OHOS IPC patterns, `IRemoteStub<T>` is used on the *server* side (i.e., where the actual implementation lives) to receive calls from the client (proxy).
+- However, the header name `*_CLIENT_STUB_H` is confusing — but note: in OHOS, the naming convention sometimes uses “ClientStub” to mean “the stub that the *client* uses to send requests”, but here the class inherits `IRemoteStub<...>`, which is used on the *server* side to handle incoming calls. Let’s double-check:
+
+In OHOS:
+- `IRemoteProxy<T>` → used on client side to make remote calls.
+- `IRemoteStub<T>` → used on server side to receive and dispatch remote calls.
+
+Since `DCameraDeviceCallbackStub : public IRemoteStub<ICameraDeviceCallback>`, this is a **server-side stub**, meaning it runs on the *sink side* (controlled device), receiving callback invocations (e.g., `OnCameraStatusChanged`, `OnError`, etc.) that were originally registered by the source side.
+
+The purpose of this stub is to allow the sink side to receive callbacks from the source side — e.g., when the source wants to notify the sink of an event (though typically callbacks go sink→source; but in distributed camera, some callbacks like device status updates may be pushed from source to sink, or more likely: the sink registers a callback proxy with the source, and the source invokes it via IPC — so the sink must provide a stub to receive those calls).
+
+But more concretely: This class is part of the **IPC callback mechanism** between source and sink, specifically enabling the *sink* to expose a callback interface that the *source* can invoke remotely.
+
+Now let’s match to candidate modules:
+
+- **DistributedCameraSourceMgr**: Handles *source-side* lifecycle, controller, IPC service, and **callback management** — but callback *management* here likely means *registering* callbacks (i.e., sending proxy to sink), not implementing the stub. The stub itself is not part of SourceMgr.
+
+- **DistributedCameraSinkMgr**: Responsible for *sink-side* lifecycle, access control, controller, data processing, **event notification**, and **IPC services**. Crucially, it says: “enabling the controlled side to receive commands from the controller and use the local camera…”. Receiving commands includes handling IPC calls — and **callback stubs are part of the IPC service layer on the sink side**. Since this stub is used to receive remote callback invocations (which are a type of command/event), it fits best under **SinkMgr**, which owns the sink-side IPC endpoints.
+
+- **ChannelCommon / ChannelSource**: These are about *channel-layer* (SoftBus session, transport), not about high-level callback interfaces. This stub is at the *service interface* level, not channel abstraction.
+
+- **CameraServiceCommon**: Provides shared basic service capabilities, including “basic commands, protocols, camera information, … and controller interfaces”. While it mentions “controller interfaces”, the stub here is specifically for *callback* handling, not core service commands. Also, `ICameraDeviceCallback` is a callback interface, not a primary service interface.
+
+- **VirtualCameraHdf**: Operates at HDF/HDI layer — this file is pure OHOS IPC stub, no HDF references. Not a match.
+
+- **utils**: General utilities — this is a specific IPC stub class, not a utility.
+
+Key insight: In distributed camera architecture:
+- The sink side registers a callback (e.g., `ICameraDeviceCallback`) with the source.
+- The source holds a proxy to that callback.
+- When the source wants to notify the sink (e.g., “start preview requested”), it invokes the proxy → IPC call → lands on `DCameraDeviceCallbackStub::OnRemoteRequest()` on the sink.
+- Therefore, this stub is implemented and owned by the **sink-side manager**, i.e., `DistributedCameraSinkMgr`.
+
+Also, the namespace `OHOS::DistributedHardware` and class name `DCameraDeviceCallbackStub` align with the sink-side module’s responsibility for handling remote callbacks.
+
+### Conclusion:
+The file implements a server-side IPC stub for camera device callbacks, running on the *sink side*, and is thus part of the **DistributedCameraSinkMgr** module.
+
+- **Assigned Module**: [DistributedCameraSinkMgr]

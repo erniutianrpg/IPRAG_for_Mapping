@@ -1,0 +1,95 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `proxygen/lib/http/session/HTTPSessionAcceptor.h`
+  - `proxygen/lib/http/session/HTTPDefaultSessionCodecFactory.h`
+- **Namespace**: `proxygen`
+- **Key Functions**:
+  - `HTTPSessionAcceptor::onNewConnection(...)`: Core logic for accepting new connections, creating codecs, initializing sessions.
+  - `HTTPSessionAcceptor::getErrorPage(...)`: Error page handling.
+  - `HTTPSessionAcceptor::dropIdleConnections(...)`: Idle connection management.
+  - Constructor/destructor of `HTTPSessionAcceptor`.
+- **Raw Excerpt Highlights**:
+  - Uses `HTTPCodecFactory`, `HTTPDefaultSessionCodecFactory`, `HTTPDownstreamSession`.
+  - Creates `HTTPDownstreamSession` on new connection.
+  - Interacts with `SocketAddress`, `AsyncTransport`, `wangle::SecureTransportType`, `TransportInfo`.
+  - Manages session lifecycle, codec selection, local/peer address handling.
+  - Relies on `HTTPAcceptor` (base class), `SimpleController`, `TransactionTimeoutSet`.
+
+This is clearly a **session acceptor** that handles incoming TCP (or TLS) connections, selects appropriate HTTP codec (e.g., HTTP/1.1, HTTP/2), and spawns downstream HTTP sessions — i.e., the *server-side connection-to-session bridge*.
+
+---
+
+### **2. Module Comparison**
+
+#### ✅ **services**
+> *"This module mainly corresponds to proxygen/lib/services/ and is used for connection management and server-side related code. On top of the low-level HTTP abstractions, it provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration."*
+
+- `HTTPSessionAcceptor` lives in `proxygen/lib/http/session/`, but its role is **connection acceptance → session creation**, which is exactly what the `services` module does: bridging transport-level connections to higher-level HTTP sessions.
+- In Proxygen’s architecture:
+  - `lib/http/` contains core protocol logic (parsing, codecs, sessions).
+  - `lib/services/` contains acceptors, controllers, service runners — the *server orchestration layer*.
+- However, note: `HTTPSessionAcceptor` is *not* in `lib/services/`, but its responsibilities align tightly with `services`. Let’s verify other modules first.
+
+#### 🟡 **http_general**
+> *"This module mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management..."*
+
+- This includes `HTTPSession`, `HTTPCodec`, `HTTPTransaction`, etc.
+- `HTTPSessionAcceptor` is part of session *creation*, but it’s not doing parsing/encoding itself — it’s orchestrating session setup using those components.
+- The `http_general` module typically covers *per-session* logic, not *acceptance* logic.
+- Also, `HTTPSessionAcceptor` inherits from `HTTPAcceptor`, which is more infrastructural/server-side than pure protocol.
+
+#### ❌ **dns**, **pools**, **ssl**, **transport**
+- No DNS resolution (`dns`) — no use of resolvers or DNS queries.
+- No pool configuration or backend selection (`pools`) — this is frontend acceptor, not load balancing.
+- SSL/TLS is referenced via `wangle::SecureTransportType`, `sock->getSecurityProtocol()`, but no SSL context creation, certificate handling, or TLS handshake logic — just *awareness* of security type. So not core `ssl`.
+- `transport` is for QUIC/HTTP3 lower-layer transport — this code uses `folly::AsyncTransport`, not QUIC sockets or datagrams. So not `transport`.
+
+#### ❌ **general**
+> *"proxygen/lib/utils/ and some common auxiliary capabilities"*
+- This file is not utility code; it’s domain-specific server infrastructure. Not `general`.
+
+#### ❌ **httpserver**
+> *"proxygen/httpserver/ — high-level APIs for building simple C++ HTTP servers"*
+- This is a *library* used by applications (e.g., `HTTPServer`, `RequestHandler`). `HTTPSessionAcceptor` is internal infrastructure, not a public-facing API. Not `httpserver`.
+
+---
+
+### **3. Key Architectural Insight**
+In Proxygen’s source tree:
+- `proxygen/lib/http/session/HTTPSessionAcceptor.h` is indeed part of the **HTTP session layer**, but its purpose is to *accept connections and instantiate sessions* — a server-side coordination role.
+- Looking at actual Proxygen repo structure (public knowledge):
+  - `lib/services/` contains `Service`, `GenericWorker`, `Server`, `Acceptors` like `HTTPSessionAcceptor` (though sometimes colocated in `http/session` for cohesion).
+  - In practice, `HTTPSessionAcceptor` is considered part of the **server infrastructure**, i.e., the `services` module — especially since it:
+    - Accepts connections (`onNewConnection`)
+    - Manages idle connections (`dropIdleConnections`)
+    - Integrates with controllers, timeouts, configs
+    - Is used by `HTTPServer` (in `httpserver/`) but is *not* part of the high-level wrapper
+
+Also, the presence of:
+- `AcceptorConfiguration`
+- `SimpleController`
+- `TransactionTimeoutSet`
+- Integration with `wangle::SecureTransportType`
+
+—all point to **server-side service orchestration**, not raw protocol handling.
+
+---
+
+### **4. Final Assessment**
+
+| Module | Fit Reasoning | Likelihood |
+|--------|----------------|------------|
+| **services** | Direct match: connection acceptance, session creation, controller integration, idle management — core server infrastructure. | ✅ **High** |
+| **http_general** | Partial: uses HTTP session/codec types, but acceptor is *orchestrator*, not protocol core. | Medium-Low |
+| Others | No relevant functionality. | Very Low |
+
+Given the responsibilities and architectural role, **this file belongs most strongly to the `services` module**.
+
+---
+
+**The probability that this file belongs to module 'services' is 95%.**

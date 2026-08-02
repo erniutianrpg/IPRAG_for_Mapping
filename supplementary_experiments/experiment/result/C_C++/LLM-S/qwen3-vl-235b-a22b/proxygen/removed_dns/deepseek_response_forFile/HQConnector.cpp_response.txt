@@ -1,0 +1,68 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **File path (implied)**: `proxygen/lib/http/HQConnector.h` (from `#include <proxygen/lib/http/HQConnector.h>`)
+- **Class name**: `HQConnector`
+  - “HQ” stands for **HTTP/3 over QUIC** (as in *HTTP/3* = *HTTP over QUIC*, often abbreviated HQ in Proxygen).
+- **Key responsibilities observed**:
+  - Manages connection setup for HTTP/3 (QUIC-based) clients.
+  - Uses `quic::QuicClientTransport`, `FizzClientQuicHandshakeContext`, `FollyQuicAsyncUDPSocket`, `FollyQuicEventBase`.
+  - Handles transport settings, PSK cache, TLS context (`FizzClientContext`, `CertificateVerifier`), socket options, SNI, QLogger, etc.
+  - Integrates with `HQSession`, `H3EarlyDataHandler` — both HTTP/3-specific components.
+  - Lives under `proxygen/lib/http/`, but interacts heavily with QUIC transport layer.
+
+---
+
+### **2. Module Candidate Analysis**
+
+#### ✅ **transport**
+> *"This module mainly corresponds to lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3. It is Proxygen's transport-layer support module for HTTP/3/QUIC scenarios, responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."*
+
+- The file directly uses:
+  - `quic::QuicSocket`, `quic::FollyQuicAsyncUDPSocket`, `quic::FollyQuicEventBase`
+  - `quic::TransportSettings`, `quic::QuicPskCache`, `quic::QLogger`, `quic::LoopDetectorCallback`
+  - Handshake via `FizzClientQuicHandshakeContext`
+- It abstracts the *client-side QUIC transport establishment* — exactly what a transport-layer connector should do.
+- Although the header is in `proxygen/lib/http/`, the *functionality* is transport-oriented: it’s not parsing HTTP frames or managing transactions, but setting up the underlying QUIC connection that will later carry HTTP/3 traffic.
+- In Proxygen’s architecture, `HQConnector` is the bridge between HTTP session logic (`HQSession`) and the QUIC transport layer — i.e., it belongs to the **transport abstraction layer for HTTP/3**, not core HTTP protocol logic.
+
+#### ❌ **http_general**
+> *"Common HTTP implementation under proxygen/lib/http/: HTTP parsing, encoding/decoding, session management, transaction management, HTTP/2 & HTTP/3 protocol capabilities."*
+
+- While `HQSession` and `H3EarlyDataHandler` are part of HTTP/3 protocol handling, `HQConnector` itself does **not** handle:
+  - Frame decoding/encoding
+  - Stream multiplexing
+  - Request/response lifecycle
+  - Transaction state machines
+- Instead, it *creates and configures* the QUIC transport *before* handing off to `HQSession`. So it’s one level below `http_general`.
+
+#### ❌ **ssl**
+> *"SSL/TLS context and statistics-related capabilities..."*
+
+- Though it uses Fizz (TLS library) and certificate verifier, it’s only *consuming* SSL/TLS context — not implementing or managing SSL internals. This is a client-side handshake configuration, not an SSL module per se.
+
+#### ❌ **general**, **sampling**, **pools**, **services**, **httpserver**
+- None of these match:
+  - Not utilities (`general`)
+  - No sampling logic (`sampling`)
+  - Not about backend pools (`pools`)
+  - Not server-side infrastructure (`services`, `httpserver`)
+
+---
+
+### **3. Key Evidence Supporting `transport`**
+- The class name `HQConnector` suggests a *connector* — i.e., transport establishment.
+- It lives in `proxygen/lib/http/`, but Proxygen organizes HTTP/3 transport code *under http/* due to tight coupling with HTTP session, yet architecturally it serves the transport role.
+- In Facebook’s open-source Proxygen, `HQConnector` is indeed part of the HTTP/3 transport stack — it wraps QUIC client creation and configures the transport before passing to `HQSession`.
+- Includes from `quic/...` dominate the dependencies — far more than pure HTTP headers.
+- Functions like `connect()`, `setTransportSettings()`, `setQuicPskCache()` are all transport configuration APIs.
+
+---
+
+### **Conclusion**
+The file implements the client-side QUIC transport initialization for HTTP/3, acting as a bridge between HTTP session logic and the QUIC stack. This aligns precisely with the definition of the **transport** module.
+
+> The probability that this file belongs to module 'transport' is **95%**.  
+> (Remaining 5% uncertainty due to placement under `proxygen/lib/http/`, but functionality is unambiguously transport-layer.)

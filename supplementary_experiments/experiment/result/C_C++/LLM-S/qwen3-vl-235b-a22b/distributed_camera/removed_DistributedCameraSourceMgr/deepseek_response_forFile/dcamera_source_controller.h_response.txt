@@ -1,0 +1,146 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **File Summary**
+- **File name**: `dcamera_source_controller.h` (inferred from macro `OHOS_DCAMERA_SOURCE_CONTROLLER_H`)
+- **Class**: `DCameraSourceController`
+- **Inheritance**:
+  - `public ICameraController`
+  - `public EventSender`
+  - `public std::enable_shared_from_this<DCameraSourceController>`
+- **Key responsibilities (from public methods)**:
+  - `StartCapture`, `StopCapture`, `UpdateSettings`, `GetCameraInfo`, `OpenChannel`, `CloseChannel`, `Init`, `UnInit`: standard camera controller operations.
+  - `ChannelNeg`: channel negotiation — implies coordination with remote side.
+  - `DCameraNotify`: event notification (e.g., state changes, errors).
+  - `OnSessionState`, `OnSessionError`, `OnDataReceived`: callbacks for session state, errors, and data — suggests it’s *receiving* events/data from a remote channel.
+  - `HandleMetaDataResult`: metadata handling.
+- **Member variables**:
+  - `std::shared_ptr<ICameraChannel> channel_`
+  - `std::shared_ptr<ICameraChannelListener> listener_`
+  - `std::shared_ptr<DCameraSourceStateMachine> stateMachine_`
+  - `std::shared_ptr<EventBus> eventBus_`
+  - `devId_`, `dhId_`, `indexs_`, `isInit`, etc.
+
+This class is clearly on the **controller side** (i.e., the *source* side in distributed camera architecture), acting as the local interface to control a remote camera (on sink side). It coordinates:
+- Lifecycle (`Init`, `UnInit`)
+- Channel management (`OpenChannel`, `CloseChannel`, `ChannelNeg`)
+- Capture control (`StartCapture`, `StopCapture`)
+- Settings & info queries
+- Event handling (session state, errors, received data)
+- State machine integration
+
+It inherits `ICameraController`, which is likely the abstract interface for controlling cameras — consistent with being the *controller* part of a distributed camera system.
+
+Also note:  
+- Includes `dcamera_source_state_machine.h` → indicates it's tightly coupled with source-side state management.  
+- Includes `icamera_channel_listener.h`, `icamera_channel.h`, `idistributed_camera_provider.h` → shows interaction with channel layer and provider abstraction.  
+- Uses `EventBus` for internal event dispatching.  
+- Namespace: `OHOS::DistributedHardware` — standard for distributed hardware modules in OpenHarmony.
+
+Now let’s evaluate each candidate:
+
+---
+
+### **1. DistributedCameraSinkMgr**
+- Focus: **sink side** (controlled side), lifecycle, access control, data output, IPC services.
+- This file is clearly **source/controller side**, not sink.  
+❌ **Low match** — ~5%
+
+---
+
+### **2. ChannelCommon**
+- Focus: common channel-layer capabilities — SoftBus adaptation, session mgmt, interfaces, listeners.
+- While this class *uses* channel interfaces (`ICameraChannel`, `ICameraChannelListener`), it is **not itself a channel implementation**; it’s a higher-level controller that *orchestrates* channel usage.
+- No evidence it implements SoftBus or raw session logic — instead, it delegates to `stateMachine_`, `channel_`, `eventBus_`.
+❌ **Medium-low match** - ~20%
+
+---
+
+### **3. ChannelSource**
+> *"responsible for the controller-side channel implementation. It establishes connections with the controlled side through SoftBus, sends camera control commands on the controller side, and receives image information returned by the controlled side."*
+
+- This matches **very closely**:
+  - Controller-side ✅
+  - Uses `ICameraChannel`, `ICameraChannelListener` → channel abstraction
+  - `ChannelNeg`, `OpenChannel`, `CloseChannel` → channel setup/negotiation
+  - `OnDataReceived`, `OnSessionState`, `OnSessionError` → receiving data/events from remote sink
+  - Tightly coupled with `DCameraSourceStateMachine` (source-side state machine)
+  - Name `DCameraSourceController` aligns with “ChannelSource” naming convention.
+
+⚠️ One nuance: The module name says “channel implementation”, but this class seems more like a *controller* that uses the channel — however, in distributed camera architecture, the “ChannelSource” module often includes the top-level controller logic that integrates channel + state machine + event bus.
+
+✅ **Strong match** — ~90%
+
+---
+
+### **4. ChannelSink**
+- Focus: **sink side** channel implementation.
+- This class is *receiving* data/events, but it’s doing so as the **controller**, not the sink. The sink would be *sending* data to this controller.
+- Also, no indication it implements server-side session endpoints or handles incoming commands as a service.
+❌ **Very low match** — ~5%
+
+---
+
+### **5. CameraDataProcessCommon**
+- Focus: common data processing frameworks, codecs, color space, frame-rate control — *pipeline-level* processing.
+- This class does **not** process frames directly; it handles control, channel, and events. `OnDataReceived` just forwards buffers — no decoding/format conversion here.
+❌ **Low match** — ~10%
+
+---
+
+### **6. CameraDataPreProcess**
+- Focus: preprocessing on **sink/input side** before transmission/encoding.
+- Again, this is source/controller side; no preprocessing logic visible.
+❌ **No match** — ~5%
+
+---
+
+### **7. CameraDataPostProcess**
+- Focus: post-processing on **source/output side** — decoding, format conversion, resolution/frame-rate adjustment.
+- While this class is on the source side, its methods are about *control*, not *data transformation*. `OnDataReceived` just accepts buffers — no decode/conversion shown.
+- Post-processing would involve `Decoder`, `FrameConverter`, etc., not `DCameraSourceController`.
+❌ **Low match** — ~15%
+
+---
+
+### **8. CameraServiceCommon**
+> *"provides shared basic service capabilities for the source and sink sides... including basic commands, protocols, camera information, channel information, events, Metadata settings, open-camera information, and controller interfaces."*
+
+- This class *uses* many of those shared types (`DCameraCaptureInfo`, `DCameraSettings`, `DCameraEvent`, `DCameraIndex`, `DCameraOpenInfo`, `DCameraInfo`) — suggesting it depends on `CameraServiceCommon`.
+- However, it is **not a shared utility module** — it’s a concrete implementation class with state, lifecycle, and behavior specific to the *source controller*.
+- Typically, `CameraServiceCommon` would contain headers like `dcamera_info.h`, `dcamera_event.h`, `icamera_controller.h`, etc., but not the controller implementation itself.
+- Since `DCameraSourceController` inherits `ICameraController`, and `ICameraController` likely lives in `CameraServiceCommon`, this class *depends on* that module but is not *part of* it.
+
+🟡 **Moderate match as dependency, but not ownership** — ~30%
+
+---
+
+### **9. VirtualCameraHdf**
+- Focus: HDF/HDI layer virtual camera device implementation — Host, Provider, Device, StreamOperator, IPC proxies.
+- This is a high-level C++ controller, not an HDF driver or HDI proxy. No mention of `HDF`, `StreamOperator`, `DeviceAdapter`, etc.
+❌ **No match** — ~0%
+
+---
+
+### **10. utils**
+- Focus: common utilities — buffers, indexes, error codes, local camera helpers.
+- While it uses `DataBuffer`, `DCameraIndex`, etc., the class itself is not a utility — it’s a core controller with complex state and behavior.
+- Utilities are usually header-only, stateless, or simple helper classes — not stateful controllers with state machines and event buses.
+❌ **Low match** — ~10%
+
+---
+
+### ✅ Final Assessment
+
+The strongest match is **ChannelSource**, because:
+- It’s explicitly named `SourceController`.
+- It resides on the controller/source side.
+- It manages channel negotiation, session events, data reception, and integrates with source-side state machine — exactly what the `ChannelSource` module description states.
+- In OpenHarmony’s distributed camera architecture, the `ChannelSource` module typically contains the top-level controller that binds channel, state machine, and event bus — matching this file precisely.
+
+Other modules are either on the wrong side (sink), too low-level (utils, common), or focused on data processing rather than control.
+
+---
+
+**The probability that this file belongs to module 'ChannelSource' is 90%.**

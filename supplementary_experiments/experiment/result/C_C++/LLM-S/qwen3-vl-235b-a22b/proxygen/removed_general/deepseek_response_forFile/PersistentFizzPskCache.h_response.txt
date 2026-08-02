@@ -1,0 +1,68 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. Key Observations from File Content**
+
+#### **Includes**
+- `fizz/backend/openssl/certificate/CertUtils.h` → Fizz (Facebook’s TLS library) + OpenSSL certificate utilities.
+- `fizz/client/PskCache.h`, `fizz/client/PskSerializationUtils.h` → Fizz client-side PSK (Pre-Shared Key) caching & serialization logic.
+- `wangle/client/persistence/FilePersistentCache.h` → Wangle (Facebook’s networking library) persistent file-based cache.
+
+→ Strong signal: **PSK handling**, **TLS session resumption**, **persistent storage** of cryptographic state.
+
+#### **Namespaces**
+- `folly`: Facebook’s core C++ library (used for `Optional`, `ByteRange`, etc.).
+- `proxygen`: The main Proxygen namespace.
+
+#### **Types**
+- `struct PersistentCachedPsk`: A struct holding serialized PSK data + usage counter.
+- `class PersistentFizzPskCache`: A concrete implementation of `fizz::client::PskCache`, backed by a file-persistent cache (`wangle::FilePersistentCache`).
+
+#### **Functions**
+- Implements `PskCache` interface methods:
+  - `getPsk()`, `peekPsk()`, `putPsk()`, `removePsk()` — standard PSK cache operations.
+  - Usage tracking (`getPskUses`, `setMaxPskUses`) — limits reuse of PSKs (security best practice).
+  - Serialization/deserialization using Fizz’s `serializePsk`/`deserializePsk`.
+  - Integration with `fizz::openssl::certificateSerializer()` — ties into OpenSSL-backed certificate handling.
+
+→ This is clearly about **persisting TLS session resumption state (PSKs)** across restarts, specifically for **Fizz-based TLS clients**.
+
+#### **Context**
+- Fizz is used for TLS in Proxygen (especially for HTTP/3/QUIC where TLS 1.3 PSK-based session resumption is critical).
+- PSK caches are essential for QUIC connection migration and fast resumption.
+- `wangle::FilePersistentCache` implies disk-backed persistence (e.g., for long-lived clients or proxies that want to survive restarts).
+
+---
+
+### **2. Candidate Module Analysis**
+
+| Module | Relevance |
+|--------|-----------|
+| **dns** | ❌ No DNS resolution logic; no `Resolver`, `DnsClient`, etc. |
+| **pools** | ❌ No server pool config, backend list, load balancing. |
+| **sampling** | ❌ No sampling logic (e.g., rate limiting, probabilistic decisions). |
+| **ssl** | ⚠️ Partial: deals with TLS/PSK, but this is *not* about SSL context creation, stats, or handshake logic — it's about *caching* PSKs persistently. The `ssl` module typically handles `SSLContext`, `TLSSession`, etc., not persistent PSK storage. |
+| **http_general** | ❌ Not about HTTP parsing, encoding, sessions, transactions, or HTTP/2/3 framing. |
+| **services** | ❌ Server-side infrastructure (acceptors, workers); this is client-side PSK caching. |
+| **httpserver** | ❌ High-level HTTP server APIs — irrelevant here. |
+| **transport** | ✅✅✅ **Strong match**: Per description: *"transport-layer support module for HTTP/3/QUIC scenarios, responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."*<br>→ PSK cache is explicitly listed.<br>→ Fizz + QUIC + persistent PSK storage is core to HTTP/3 transport layer.<br>→ `PersistentFizzPskCache` is exactly the kind of utility needed for QUIC client resumption across restarts. |
+
+Also note:
+- In Proxygen, the `transport` module includes QUIC-related code (e.g., `quic/` subdirs), and Fizz integration lives there.
+- `wangle::FilePersistentCache` is often used in transport-layer clients (e.g., QUIC clients needing persistent state).
+- The class inherits from `fizz::client::PskCache`, which is used during TLS handshakes — but the *persistence* aspect is transport-layer concern, not core SSL/TLS engine.
+
+---
+
+### **3. Conclusion**
+
+This file implements a **persistent PSK cache for Fizz-based TLS clients**, specifically designed to support **session resumption in QUIC/HTTP/3 contexts**, leveraging file-backed persistence via Wangle.
+
+That aligns **exactly** with the scope of the **transport** module.
+
+Other modules lack any overlap.
+
+---
+
+**The probability that this file belongs to module 'transport' is 98%.**

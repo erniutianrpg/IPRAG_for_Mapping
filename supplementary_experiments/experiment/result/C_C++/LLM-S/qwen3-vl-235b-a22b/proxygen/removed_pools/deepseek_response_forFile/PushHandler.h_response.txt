@@ -1,0 +1,63 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File metadata**
+- **Language**: C/C++
+- **Includes**: `#include <proxygen/httpserver/RequestHandler.h>`
+  - This is a *strong signal* that the file belongs to the **httpserver** module, since it directly includes a header from `proxygen/httpserver/`.
+- **Namespace**: `proxygen`
+- **Types**:
+  - `class PushHandler` — inherits from `RequestHandler`
+  - `class InnerPushHandler` — inherits from `HTTPPushTransactionHandler`
+- **Functions**: `getHandler()`
+- **Raw excerpt** shows:
+  - `PushHandler : public RequestHandler`
+  - Implements HTTP request lifecycle methods (`onRequest`, `onBody`, `onEOM`, etc.) but marks them as `LOG(FATAL) << "Unreachable"` — indicating this handler is not meant for regular HTTP requests, but rather for *push* (i.e., server push in HTTP/2).
+  - It delegates push transaction handling to an inner class `InnerPushHandler`, which implements `HTTPPushTransactionHandler`.
+  - The `PushHandler` deletes itself on `requestComplete()` or `onError()` — typical pattern for one-shot handlers in server-side HTTP handling.
+
+### 2. **Understanding the role of `PushHandler`**
+- In Proxygen, `RequestHandler` is the base class for user-defined handlers in the high-level HTTP server framework (`proxygen/httpserver/`).
+- `HTTPPushTransactionHandler` is part of the *HTTP protocol layer* (`proxygen/lib/http/`) — specifically for handling HTTP/2 server push transactions.
+- However, the fact that this class:
+  - Is defined in a file that includes `RequestHandler.h` (from `httpserver/`),
+  - Inherits from `RequestHandler`,
+  - Is intended to be used as a handler in the HTTP server framework (e.g., returned from ` onRequest()` or via routing),
+  - And wraps a low-level push transaction handler,
+  
+  strongly suggests this is a **high-level adapter** that bridges the `httpserver` API with the lower-level `http` push capabilities.
+
+This pattern is common in `httpserver/`: e.g., `ProxyHandler`, `StaticFileHandler`, `PushHandler` — all are thin wrappers that implement `RequestHandler` and delegate to underlying HTTP semantics.
+
+### 3. **Module comparison**
+
+| Module | Relevance |
+|--------|-----------|
+| **dns** | ❌ No DNS-related code or headers. |
+| **sampling** | ❌ No sampling logic or metrics. |
+| **ssl** | ❌ No SSL/TLS context, certificates, or crypto. |
+| **general** | ⚠️ Possible, but `general` is for utils (e.g., ` folly`, `ScopedEventBaseThread`, helpers). This is a concrete handler, not a utility. |
+| **http_general** | ⚠️ `http_general` covers core HTTP abstractions like `HTTPMessage`, `HTTPTransaction`, `HTTPCodec`. But `RequestHandler` is *not* part of `lib/http/` — it's in `httpserver/`. Also, `PushHandler` is not a protocol implementation; it's a server-side handler. |
+| **services** | ⚠️ `services/` deals with service execution, connection pools, worker threads — not per-request handlers like this. |
+| **httpserver** | ✅ Strong match: includes `RequestHandler.h`, inherits `RequestHandler`, designed for use in HTTP server applications (e.g., as a handler registered with `HTTPServer::start()`). The name `PushHandler` matches naming conventions in `httpserver/` (e.g., `EchoHandler`, `StaticFileHandler`). |
+| **transport** | ❌ No QUIC, socket, or transport-layer code. |
+
+### 4. **Confirming with Proxygen structure**
+In real Proxygen repo:
+- `proxygen/httpserver/RequestHandler.h` defines `RequestHandler`.
+- `PushHandler` is indeed part of the `httpserver` module — used to initiate HTTP/2 server push from a request handler.
+- The pattern of wrapping `HTTPPushTransactionHandler` inside a `RequestHandler` is standard for enabling push from high-level server logic.
+
+Thus, despite using `HTTPPushTransactionHandler` (which lives in `lib/http/`), the *file’s purpose and location* (implied by include path and inheritance) place it squarely in the **httpserver** module.
+
+---
+
+### Final assessment:
+
+- **httpserver**: Direct inclusion of `RequestHandler.h`, inheritance from `RequestHandler`, high-level handler role → **very high confidence**.
+- Other modules: no direct evidence.
+
+**Probability estimation**:
+- Given the include path and design intent, this is almost certainly part of `httpserver`.
+- In practice, such files reside under `proxygen/httpserver/` (e.g., `PushHandler.h` would be there).
+
+> The probability that this file belongs to module 'httpserver' is 98%.

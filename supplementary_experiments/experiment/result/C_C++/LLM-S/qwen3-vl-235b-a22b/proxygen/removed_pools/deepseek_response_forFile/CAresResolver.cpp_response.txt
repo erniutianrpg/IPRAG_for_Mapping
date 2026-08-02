@@ -1,0 +1,88 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `proxygen/lib/dns/CAresResolver.h` → Strong signal: this is *the* DNS resolver implementation using c-ares.
+  - Folly async utilities (`EventHandler`, `HHWheelTimer`, `EventBase`, `SocketAddress`) — used for event-driven I/O, common in network code.
+  - `glog/logging.h`, `folly/Conv.h`, `proxygen/lib/utils/Time.h`, `<utility>` — standard utility includes.
+- **Macros**: `ARES_TO_RCODE` — c-ares-specific status-to-RCODE mapping.
+- **Namespaces**: `detail`, `proxygen` — consistent with Proxygen internals.
+- **Types**:
+  - `HostentDeleter`, `AresDataDeleter` — RAII helpers for c-ares memory management.
+  - `NullStatsCollector` — a dummy stats collector for DNS resolution (used when no stats collector is provided).
+  - Multiple definitions of `CAresResolver` class — clearly the core type.
+  - Structs like `ares_txt_reply`, `ares_srv_reply`, `ares_mx_reply` — c-ares reply types for DNS record types (TXT, SRV, MX).
+- **Functions**:
+  - Many `CAresResolver::` methods: `resolveHostname`, `resolveAddress`, `resolveMailExchange`, `resolveLiterals`, `query`, `dnsSocketReady`, `processAresEvents`, etc.
+  - Also `Query::resolve`, `Query::cancelResolutionImpl`, `Query::fail` — per-query lifecycle management.
+  - Stats collection hooks: `noteCAresQueryStarted`, `recordSocketOpened`, etc.
+  - Global c-ares init/destroy: `initGlobal()`, `destroyGlobal()`.
+
+The excerpt shows the **implementation of `CAresResolver`**, which is a concrete DNS resolver using the c-ares library. It handles:
+- Asynchronous DNS lookups (hostname, address, MX, SRV, TXT).
+- Integration with `EventBase` for event loop integration.
+- Timeout handling via `HHWheelTimer`.
+- Statistics collection (optional).
+- Memory safety via custom deleters for c-ares data structures.
+
+---
+
+### **2. Candidate Module Evaluation**
+
+#### ✅ **dns**
+- **Definition**: *"mainly responsible for DNS resolution-related functionality... domain-name resolution support module in Proxygen before network connections are established."*
+- **Evidence**:
+  - File path: `proxygen/lib/dns/CAresResolver.h` → directly under `dns/`.
+  - Core functionality: DNS resolution (A, AAAA, MX, SRV, TXT), using c-ares.
+  - Uses `DNSResolver::ResolutionCallback`, `RecordType`, `SocketAddress`, etc. — all DNS-domain abstractions.
+  - No HTTP parsing, no transport logic, no SSL, no server infrastructure.
+- **Conclusion**: This is *exactly* what the `dns` module is for.
+
+#### ❌ **sampling**
+- Definition: *"lightweight common sampling support module"*
+- Evidence: There is *some* sampling logic (`sampleActiveQueries`, `sampleOpenSockets`), but these are internal instrumentation hooks tied to DNS resolution performance, not a standalone sampling framework. The module is not about generic sampling — it's DNS-specific telemetry.
+- Not a match.
+
+#### ❌ **ssl**
+- No SSL/TLS context, no certificates, no TLS handshake logic, no OpenSSL/cipher usage.
+- Not relevant.
+
+#### ❌ **general**
+- `general` = `proxygen/lib/utils/` + common auxiliaries.
+- While this file uses utilities from `utils/` (e.g., `Time.h`), the *primary purpose* is DNS resolution, not general utilities.
+- The file lives in `lib/dns/`, not `lib/utils/`.
+- So: auxiliary use of utils ≠ belonging to `general`.
+
+#### ❌ **http_general**
+- This is for HTTP protocol core: parsing, encoding, sessions, transactions, HTTP/2/3.
+- This file does *not* handle HTTP messages, headers, streams, or frames.
+- It may be *used by* HTTP clients/servers (e.g., to resolve hostnames before connecting), but it is not part of HTTP protocol logic itself.
+- Not a match.
+
+#### ❌ **services**
+- Server-side infrastructure: connection acceptance, workers, service execution.
+- This is client-side DNS resolution; no server logic here.
+- Not a match.
+
+#### ❌ **httpserver**
+- High-level HTTP server APIs (e.g., `HTTPServer`, `RequestHandler`).
+- This is low-level DNS resolver — unrelated.
+
+#### ❌ **transport**
+- QUIC / HTTP/3 transport layer.
+- No QUIC, no datagrams, no socket-level transport beyond DNS UDP/TCP sockets (which are abstracted by c-ares).
+- Not transport-layer code.
+
+---
+
+### **3. Final Assessment**
+The file is the **implementation of `CAresResolver`**, which resides in `proxygen/lib/dns/`, implements DNS resolution using c-ares, integrates with Folly’s event loop, and provides resolution for hostnames, addresses, MX, SRV, TXT records — exactly matching the definition of the **dns** module.
+
+There is no ambiguity: this is *the* DNS resolution module.
+
+---
+
+**The probability that this file belongs to module 'dns' is 99%.**

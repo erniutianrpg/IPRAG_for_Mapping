@@ -1,0 +1,70 @@
+Let’s analyze the file content step by step and compare it with the candidate modules.
+
+### File Content Summary:
+- **Language**: C/C++
+- **Includes**:
+  - `dcamera_video_callback.h` → suggests this is a callback interface for video frames/events.
+  - `distributed_camera_constants.h` → common constants (e.g., error codes, event types).
+  - `distributed_hardware_log.h` → logging utilities.
+- **Namespaces**: `OHOS::DistributedHardware`
+- **Functions**:
+  - `DCameraVideoCallback::OnFrameStarted()`
+  - `DCameraVideoCallback::OnFrameEnded(const int32_t frameCount)`
+  - `DCameraVideoCallback::OnError(const int32_t errorCode)`
+
+The class `DCameraVideoCallback` implements a callback interface that:
+- Logs frame start/end events.
+- On error, constructs a `DCameraEvent`, sets event type/result (`DCAMERA_MESSAGE`, `DCAMERA_EVENT_CAMERA_ERROR`), and forwards it via a `StateCallback` (via `callback_->OnStateChanged(event)`).
+
+This is clearly a **callback handler** used to notify higher-level components (likely state managers or controllers) about video frame lifecycle events and errors — not directly involved in data transmission, channel management, preprocessing/postprocessing, or device abstraction.
+
+### Candidate Module Analysis:
+
+1. **DistributedCameraSourceMgr**  
+   - Responsible for *lifecycle, state machine, controller, input stream, data processing, IPC service, and callback management on the source side*.  
+   - Key phrase: **"callback management on the source side"**.  
+   - The `DCameraVideoCallback` appears to be a concrete callback implementation used by the source-side manager to report frame and error events to its state callback.  
+   - The `StateCallback` passed into the constructor is likely owned/managed by the Source Manager (or its state machine).  
+   - This fits well: the callback is part of the source-side control flow, handling frame/event notifications that feed into state transitions (e.g., error → state change).
+
+2. **ChannelCommon / ChannelSource / ChannelSink**  
+   - These deal with *channel establishment, session management, command/data transmission* over SoftBus.  
+   - This file does **not** involve network/session logic, IPC, or channel interfaces — only local callback invocation.  
+   - ❌ Not a match.
+
+3. **CameraDataProcessCommon / CameraDataPreProcess / CameraDataPostProcess**  
+   - These are about *data pipelines*, codecs, format conversion, frame-rate control — i.e., actual image/video data manipulation.  
+   - This file handles *event notification*, not pixel/frame data processing.  
+   - ❌ Not a match.
+
+4. **CameraServiceCommon**  
+   - Provides shared basic service capabilities: commands, protocols, camera info, events, metadata, etc.  
+   - While it mentions "events", the file is not defining generic event structures or protocols — it's implementing a specific callback class tied to video frame lifecycle.  
+   - Also, the `DCameraEvent` here seems to be a local event object used for state callbacks, not a cross-layer protocol event.  
+   - Less likely than SourceMgr.
+
+5. **VirtualCameraHdf**  
+   - HDF/HDI layer, virtual device implementation, stream operators, metadata at hardware abstraction level.  
+   - This is high-level application/callback logic, not driver/HDI code.  
+   - ❌ Not a match.
+
+6. **utils**  
+   - Described as providing *common utilities, buffers, constants, error codes, and general support*, including *"preview/photo/video callback handling"*.  
+   - Note: It explicitly says: *"including ... preview/photo/video callback handling"*.  
+   - However, `utils` is usually for *generic*, reusable helpers — not a class like `DCameraVideoCallback` that is tightly coupled to distributed camera state management.  
+   - The presence of `StateCallback` and `DCameraEvent` suggests integration with a state machine/controller, not a standalone utility.
+
+### Critical Clue:
+- The constructor takes `std::shared_ptr<StateCallback> callback`.
+- In `OnError`, it creates a `DCameraEvent`, sets `eventType_ = DCAMERA_MESSAGE`, `eventResult_ = DCAMERA_EVENT_CAMERA_ERROR`, and calls `callback_->OnStateChanged(event)`.
+- This pattern matches how a **source-side manager** would propagate internal events (like camera errors) up to its controller/state machine — exactly what `DistributedCameraSourceMgr` is described to do.
+
+Also, the header `dcamera_video_callback.h` likely defines the interface that `DistributedCameraSourceMgr` uses or owns.
+
+### Reference Example Reasoning (from prompt):
+Though no explicit examples were given in the prompt, the description of `DistributedCameraSourceMgr` includes “callback management on the source side”, and this file is literally a callback implementation used on the source side for video frames/errors.
+
+### Conclusion:
+The file implements a video callback used by the **source-side controller** to receive frame and error notifications — directly supporting the responsibilities of `DistributedCameraSourceMgr`.
+
+- **Assigned Module**: [DistributedCameraSourceMgr]

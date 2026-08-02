@@ -1,0 +1,86 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- **File name (implied)**: `dcamera_video_surface_listener.cpp` (based on include `dcamera_video_surface_listener.h`)
+- **Namespace**: `OHOS::DistributedHardware`
+- **Class**: `DCameraVideoSurfaceListener`
+- **Key function**: `OnBufferAvailable()` — a callback invoked when a new video buffer is available from a `Surface`.
+- **Functionality**:
+  - Acquires a `SurfaceBuffer` from a `Surface`.
+  - Validates buffer metadata (width, height, size, address).
+  - Copies valid image data into a `DataBuffer` (using `memcpy_s`).
+  - Invokes a `ResultCallback::OnVideoResult(dataBuffer)` — i.e., delivers processed frame data upward.
+  - Releases the buffer.
+- **Includes**:
+  - `dcamera_video_surface_listener.h`: self-header.
+  - `securec.h`: secure memory operations (`memcpy_s`).
+  - `data_buffer.h`: uses `DataBuffer` for encapsulating raw image data.
+  - `distributed_camera_errno.h`: error codes.
+  - `distributed_hardware_log.h`: logging (`DHLOGI`, `DHLOGE`).
+
+This is clearly a **sink-side** component: it listens to a local `Surface` (e.g., from camera preview output), pulls frames, packages them into `DataBuffer`, and forwards them via a callback — typical of **data ingestion from hardware → pipeline** on the *controlled device* (i.e., sink side).
+
+---
+
+### 2. **Module Matching**
+
+#### ✅ **DistributedCameraSinkMgr**
+- Responsible for: lifecycle, access control, controller, **data processing**, **image/video output**, event notification, IPC services on the **sink side**.
+- The `DCameraVideoSurfaceListener` is likely part of the sink’s *data acquisition path*: it receives buffers from the camera framework (via Surface), processes them minimally (copy, validation), and feeds to a callback — which would be consumed by `DistributedCameraSinkMgr`’s data processing or IPC layer.
+- However, `SinkMgr` is more high-level (orchestrator), while this is a low-level listener/callback handler. Likely *used by* SinkMgr, but not necessarily *part of* it directly.
+
+#### ✅ **CameraDataPreProcess**
+> *"responsible for the data preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow."*
+
+- This matches **perfectly**:
+  - It runs on the **sink side**.
+  - It takes raw camera output (via `SurfaceBuffer`) — i.e., “returned by the camera framework”.
+  - Performs minimal preprocessing: validation, copy into `DataBuffer` (standardized container), then passes to callback — exactly what preprocessing pipelines do before handing off to encoding/transmission.
+  - Uses `DataBuffer`, which is a common abstraction in data processing layers.
+  - Not doing encoding, format conversion, or resolution scaling yet — just safe extraction and packaging → classic *preprocessing*.
+
+#### ❌ **CameraDataPostProcess**
+- Runs on **source side** (controller side) — this is sink-side → mismatch.
+
+#### ❌ **ChannelSink / ChannelCommon**
+- These deal with **network transport** (SoftBus, sessions, channel listeners). This code has no network I/O, no session handling, no SoftBus calls — only local surface buffer handling → not channel layer.
+
+#### ❌ **VirtualCameraHdf**
+- HDF/HDI layer: deals with device drivers, stream operators, metadata, HDI interfaces. This is higher-level C++ user-space code using `Surface` (AOSP-style graphics interface), not HDF driver code → mismatch.
+
+#### ❌ **DistributedCameraSourceMgr**
+- Source side (controller) — this is clearly sink-side → mismatch.
+
+#### ❌ **CameraServiceCommon / utils**
+- `utils` includes "data buffers, constants, error codes, general support", and explicitly mentions "preview/photo/video callback handling".
+  - This file uses `DataBuffer`, error codes, logging, and handles a video callback — could fit in `utils`.
+  - However, `utils` is typically *stateless helpers*, whereas `DCameraVideoSurfaceListener` is a concrete class with state (`surface_`, `callback_`) and lifecycle (constructor, buffer acquisition loop) — suggesting it's part of a *pipeline stage*, not a utility.
+  - Also, `utils` is too generic; the naming `dcamera_video_surface_listener` suggests a dedicated role in the data path, not a generic helper.
+
+Between `CameraDataPreProcess` and `utils`, the stronger fit is **CameraDataPreProcess**, because:
+- It’s specifically for *preprocessing on sink side*.
+- The operation (acquire → validate → copy → forward) is exactly the first step in a preprocessing pipeline.
+- `DataBuffer` is likely defined in `CameraDataProcessCommon`, and used by `PreProcess`.
+
+Also note: `CameraDataProcessCommon` provides *frameworks and interfaces*, but this file implements a concrete listener — so it’s more likely part of `CameraDataPreProcess`, which implements the pipeline.
+
+---
+
+### 3. **Confidence Assessment**
+
+- **CameraDataPreProcess**: Strong match — location (sink), role (ingest & prepare raw frames), use of `DataBuffer`, callback-driven delivery.  
+  → **95% probability**
+
+- **utils**: Possible, but too generic; this is a structured component with state and behavior, not a utility function or constant set.  
+  → ~30%
+
+- **DistributedCameraSinkMgr**: Could own this class, but SinkMgr is typically a manager/controller; this is a leaf worker. Unlikely to be *in* SinkMgr source dir — more likely a dependency.  
+  → ~40%
+
+All others are clearly mismatched.
+
+---
+
+### Final Answer:
+
+The probability that this file belongs to module 'CameraDataPreProcess' is 95%.

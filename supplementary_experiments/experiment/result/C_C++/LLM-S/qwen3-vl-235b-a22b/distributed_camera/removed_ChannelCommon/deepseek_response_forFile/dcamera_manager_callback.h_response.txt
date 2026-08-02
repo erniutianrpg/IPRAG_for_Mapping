@@ -1,0 +1,78 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+### File Content Summary:
+- **Language**: C/C++
+- **Header guard**: `OHOS_DCAMERA_MANAGER_CALLBACK_H`
+- **Includes**: `"camera_manager.h"` → suggests dependency on standard camera manager interface (`CameraStandard::CameraManagerCallback`)
+- **Namespaces**: `OHOS::DistributedHardware` → clearly part of OHOS distributed hardware subsystem
+- **Class**: `DCameraManagerCallback`, inherits from `CameraStandard::CameraManagerCallback`
+- **Functions**:
+  - `OnCameraStatusChanged(...)`: callback for camera status changes (e.g., open/close, error)
+  - `OnFlashlightStatusChanged(...)`: callback for flashlight status changes
+- **Key observation**: This is a *callback interface* used to receive asynchronous notifications about camera/flashlight state changes from the camera framework — specifically, it extends the standard OHOS CameraStandard callback, but in the context of *distributed* cameras.
+
+This is **not** a service implementation, nor a channel, nor data processing logic. It's a **callback listener** that would be registered with a camera manager (likely on the sink side, where the physical camera resides) to notify the distributed camera system about local camera status events.
+
+Now evaluate each candidate:
+
+---
+
+#### **DistributedCameraSourceMgr**
+- Handles *controller-side* lifecycle, IPC, callback management.
+- But callbacks like `OnCameraStatusChanged` are typically triggered on the *sink* (device with physical camera), not source (controller). The controller doesn’t directly observe local camera status unless forwarded via IPC — but this class inherits from `CameraStandard::CameraManagerCallback`, implying it’s meant to be registered *with the local camera manager*, i.e., on the device where the camera hardware resides.
+- So unlikely to be SourceMgr (which usually deals with remote callbacks, not direct camera framework callbacks).
+
+#### **DistributedCameraSinkMgr**
+- Responsible for lifecycle, access control, controller, data processing, **event notification**, and IPC services on the *sink side* (controlled side).
+- Specifically mentions **event notification** — and camera status/flashlight status are core hardware events.
+- Since this class is a callback derived from `CameraStandard::CameraManagerCallback`, it would be instantiated and registered by the sink manager to listen to local camera events (e.g., when camera opens/closes or flashlight toggles).
+- Strong match: this callback is likely owned/used by `DistributedCameraSinkMgr`.
+
+#### **ChannelSource / ChannelSink**
+- These are transport-layer modules (SoftBus communication). They handle command/data transfer, not direct camera framework callbacks.
+- No indication of SoftBus, IPC stubs, or network protocol here.
+- ❌ Unlikely.
+
+#### **CameraDataProcessCommon / PreProcess / PostProcess**
+- These deal with image/video data pipelines (encoding, decoding, format conversion, etc.).
+- This file has no data processing logic — only status event callbacks.
+- ❌ Not a match.
+
+#### **CameraServiceCommon**
+- Provides shared basic service capabilities: commands, protocols, camera info, events, metadata, etc.
+- While “events” are mentioned, this module is more about *shared definitions and interfaces*, not concrete callback implementations.
+- However, note: this header defines a concrete class (`DCameraManagerCallback`) that implements a callback — not just a definition. That suggests it's part of a *manager* module, not a pure common utility.
+- Possible, but less likely than SinkMgr, because `CameraServiceCommon` would typically contain *abstract* interfaces or structs, not a class inheriting from `CameraStandard::CameraManagerCallback`.
+
+#### **VirtualCameraHdf**
+- Implements HDF/HDI layer virtual camera devices, including Device, StreamOperator, Metadata, and IPC proxies/callbacks.
+- This class is not at the HDF level; it’s at the application/framework layer (`OHOS::DistributedHardware`), and inherits from `CameraStandard::CameraManagerCallback`, which is part of the CameraStandard API (higher-level than HDF).
+- Also, no mention of HDF, Device, Provider, etc.
+- ❌ Unlikely.
+
+#### **utils**
+- Provides utilities: buffers, constants, error codes, local camera query/open/close, and *preview/photo/video callback handling*.
+- Note: “preview/photo/video callback handling” — but those are typically `CameraStandard::CameraObserver` or `CameraStandard::CameraCaptureCallback`, not `CameraManagerCallback`.
+- `CameraManagerCallback` is specifically for *manager-level events* (camera status, flashlight status), not frame capture.
+- Still, utils *could* contain such helper callback classes.
+- However, the namespace `OHOS::DistributedHardware` strongly suggests this is part of the distributed camera *core* module, not generic utils.
+
+---
+
+### Key Discriminator:
+- The class name: `DCameraManagerCallback`
+- Inheritance: `public CameraStandard::CameraManagerCallback`
+- Purpose: To receive *local camera status events* on the device hosting the camera.
+- In distributed camera architecture, the **sink side** (controlled device) owns the physical camera and must register such callbacks with the local camera manager to react to hardware changes (e.g., if camera is disconnected, notify controller via IPC).
+- Therefore, this callback is almost certainly used and owned by **DistributedCameraSinkMgr**.
+
+### Confidence:
+- Very high alignment with `DistributedCameraSinkMgr`’s responsibilities (event notification on sink side).
+- No other module fits as well.
+
+---
+
+**Final Assessment:**
+
+The probability that this file belongs to module **DistributedCameraSinkMgr** is **95%**.  
+(The remaining 5% accounts for possibility it's in `CameraServiceCommon` if the project structure separates callback interfaces into common, but given the concrete inheritance and namespace, SinkMgr is overwhelmingly more likely.)

@@ -1,0 +1,78 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `dcamera_video_surface_listener.h` → suggests this is a listener for video surface events (i.e., buffer availability from a Surface).
+  - `securec.h` → secure memory operations (e.g., `memcpy_s`)
+  - `data_buffer.h` → data buffer abstraction
+  - `distributed_camera_errno.h` → error codes
+  - `distributed_hardware_log.h` → logging
+- Namespace: `OHOS::DistributedHardware`
+- Function: `DCameraVideoSurfaceListener::OnBufferAvailable()`
+- Core logic:
+  - Listens for buffer availability on a `Surface`.
+  - Acquires a `SurfaceBuffer`, validates its properties (width, height, size, address),
+  - Copies raw pixel data into a `DataBuffer`,
+  - Invokes a callback (`ResultCallback::OnVideoResult`) with the copied data,
+  - Releases the buffer.
+
+This is clearly a **sink-side** component that:
+- Receives video frames from a local camera (via `Surface` — likely from CameraService or HAL),
+- Processes them (copies raw data into a generic `DataBuffer`),
+- Delivers them via a callback — presumably to be sent over the channel (e.g., to the controller/source side).
+
+### 2. **Key Observations**
+- The class `DCameraVideoSurfaceListener` is a *listener* tied to a `Surface`, which is typical in Android/HarmonyOS for receiving frames from camera preview/video output.
+- It does **not** handle:
+  - Channel communication (no SoftBus, session, IPC logic),
+  - Encoding/decoding,
+  - Frame rate/resolution conversion (post-processing),
+  - Camera control commands (open/close/start/stop),
+  - HDF/HDI device implementation.
+- It performs **minimal preprocessing**: just copying raw YUV/RGB data into a `DataBuffer`, with basic validation.
+- The use of `ResultCallback::OnVideoResult(dataBuffer)` indicates this is feeding data into a pipeline — likely the *input* side of the sink (i.e., before transmission or encoding), i.e., **preprocessing** stage.
+
+### 3. **Module Comparison**
+Let’s evaluate each candidate:
+
+- **DistributedCameraSinkMgr**: Manages lifecycle, access control, controller, data processing, image/video output, event notification, IPC.  
+  → This file is *not* managing lifecycle or IPC; it's a low-level listener. Too high-level.
+
+- **ChannelCommon / ChannelSource / ChannelSink**: These are about *channel communication* (SoftBus, sessions, transport).  
+  → No channel code here — no session, no SoftBus, no packetization. So **not** these.
+
+- **CameraDataProcessCommon**: Provides common frameworks, codecs, color space conversion, frame-rate control, etc.  
+  → This file does *not* do color conversion, frame-rate control, or codec work. Only raw copy. Not a match.
+
+- **CameraDataPreProcess**: *"responsible for the data preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow."*  
+  ✅ This fits well:  
+  - It runs on the **sink side**,  
+  - It processes raw image data from the camera framework (`SurfaceBuffer` → `DataBuffer`),  
+  - It happens *before* transmission/encoding (callback likely feeds into channel/encoder),  
+  - Minimal but essential preprocessing (validation + copy).
+
+- **CameraDataPostProcess**: Source-side, decoding, format conversion — not applicable here.
+
+- **CameraServiceCommon**: Shared basic service capabilities (commands, protocols, metadata, open-camera info).  
+  → This is not a service interface; it's a concrete listener implementation.
+
+- **VirtualCameraHdf**: HDF/HDI layer implementation — no HDF interfaces, no Device/Provider/StreamOperator here.
+
+- **utils**: Provides utilities like data buffers, error codes, constants, and *local camera query/open/close/stream acquisition and callback handling*.  
+  → The file uses `DataBuffer`, error codes, logging — but more importantly, it implements a specific *callback handler* for video surface buffers. The description says utils includes “preview/photo/video callback handling”.  
+  However, note: `utils` is for *generic support*, while this is a *dedicated listener class* tightly coupled to distributed camera video flow — likely part of a larger preprocessing pipeline, not a general utility.
+
+Between **CameraDataPreProcess** and **utils**, which is better?
+
+- `CameraDataPreProcess` explicitly targets the *preprocessing pipeline on the sink side* — exactly what this does: takes raw camera output (`SurfaceBuffer`) and prepares it (copy + validate) for downstream use (transmission/encoding).
+- `utils` is more for *shared helpers* (e.g., `DataBuffer` class itself might live there), but this file is a *consumer* of those helpers, implementing domain-specific logic.
+
+Also, the class name `DCameraVideoSurfaceListener` and namespace `DistributedHardware` suggest it belongs to the distributed camera subsystem’s *sink-side data ingestion/preprocessing* layer.
+
+### ✅ Conclusion:
+The file implements a sink-side video buffer listener that preprocesses raw camera frames before they enter the transmission pipeline — matching the definition of **CameraDataPreProcess**.
+
+---
+
+**Assigned Module**: [CameraDataPreProcess]

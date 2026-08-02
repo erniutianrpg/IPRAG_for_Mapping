@@ -1,0 +1,56 @@
+Let’s analyze the file step by step:
+
+### 1. **File content summary**
+- **Language**: C/C++
+- **Includes**:
+  - `folly/Conv.h`: Folly utility for string conversion (general utility).
+  - `proxygen/lib/http/codec/HTTP1xCodec.h`: Core HTTP/1.x codec from Proxygen’s HTTP layer.
+- **Namespace**: `proxygen`
+- **Key types**:
+  - `RFC1867Codec`: A class that inherits from `HTTPCodec::Callback`, implementing parsing logic for multipart/form-data (RFC 1867), i.e., HTTP POST form uploads with file fields.
+  - Nested `Callback` interface for handling field start/data/end, errors — typical for streaming upload parsing.
+  - `enum class ParserState`: internal state machine for parsing multipart boundaries.
+- **Functions**:
+  - Implements HTTP codec callback methods (`onMessageBegin`, `onHeadersComplete`, etc.) — overrides from `HTTPCodec::Callback`.
+  - `onIngress()`, `onIngressEOM()`: ingest raw data and end-of-message handling.
+  - `readToBoundary()`: low-level boundary scanning.
+  - Uses `HTTP1xCodec headerParser_` to parse headers *within* the multipart body (i.e., parses the inner HTTP-like headers of each part).
+  - Manages buffering (`IOBufQueue`), state tracking, boundary detection.
+
+### 2. **What is this file doing?**
+This is a **multipart/form-data parser** that sits *on top of* the HTTP codec layer. It processes incoming HTTP request bodies that are `multipart/form-data`, extracting fields and files incrementally (streaming), and invoking callbacks as parts are parsed.
+
+It is **not**:
+- A DNS resolver → no DNS-related code.
+- A pool or service configuration → no backend list, load balancing, or service registration.
+- SSL/TLS related → no crypto, certs, TLS contexts.
+- Transport-layer (QUIC/HTTP3) → uses `HTTP1xCodec`, not QUIC-specific types.
+- A high-level server framework (`httpserver`) → it's a low-level codec/parser, not an endpoint or handler API.
+
+It **is**:
+- Part of the **HTTP protocol processing stack**, specifically handling a *content-type-specific decoding* (multipart) that extends the base HTTP codec.
+- Located logically under `proxygen/lib/http/codec/` (based on include path and functionality).
+- Reuses core HTTP abstractions (`HTTPCodec`, `HTTPMessage`, `HTTP1xCodec`), and implements parsing logic per RFC 1867.
+
+### 3. **Compare with candidate modules**
+
+| Module | Fit? | Reason |
+|--------|------|--------|
+| `dns` | ❌ | No DNS resolution logic. |
+| `pools` | ❌ | No pool/backend config. |
+| `ssl` | ❌ | No TLS/crypto. |
+| `general` | ⚠️ Partial | Contains utilities, but this is *protocol-specific* parsing, not generic utils like `ScopeGuard`, `Timer`, etc. `general` is more for `utils/`, not `http/codec/`. |
+| `http_general` | ✅ Strong fit | Defined as: *"common HTTP implementation under proxygen/lib/http/", "responsible for HTTP protocol parsing, encoding/decoding..."*. RFC 1867 parsing is a *specialized HTTP body decoding* task — exactly what belongs in `http_general`. The inclusion of `HTTP1xCodec.h` confirms it’s in the HTTP core layer. |
+| `services` | ❌ | Server-side infrastructure (e.g., `RequestHandler`, `ServerTransport`). This is codec-level, not service/connection management. |
+| `httpserver` | ❌ | High-level server APIs (e.g., `HTTPServer`, `ResponseHandler`). This is lower-level. |
+| `transport` | ❌ | QUIC/HTTP3 transport; this is HTTP/1.x over TCP, using `HTTP1xCodec`. |
+
+### 4. **Reference examples guidance**
+Although no explicit reference examples were provided in the prompt, the module definitions themselves strongly indicate that any code under `proxygen/lib/http/codec/` dealing with HTTP message parsing (including content-type-specific decoders like multipart) belongs to `http_general`.
+
+Indeed, in real-world Proxygen, `RFC1867Codec.h` lives in `proxygen/lib/http/codec/`, and that directory falls under the “HTTP general” layer.
+
+---
+
+### ✅ Final Decision:
+**Assigned Module**: [http_general]

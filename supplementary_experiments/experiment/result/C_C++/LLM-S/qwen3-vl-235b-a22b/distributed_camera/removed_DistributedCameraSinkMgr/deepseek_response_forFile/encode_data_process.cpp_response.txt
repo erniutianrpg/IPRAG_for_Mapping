@@ -1,0 +1,87 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **File name**: `encode_data_process.h` (implied from `#include "encode_data_process.h"` and class name `EncodeDataProcess`)
+- **Language**: C/C++
+- **Namespace**: `OHOS::DistributedHardware`
+- **Class**: `EncodeDataProcess`
+- **Key responsibilities observed**:
+  - Initializes/destroys an encoder node (`InitNode`, `~EncodeDataProcess`, `ReleaseProcessNode`)
+  - Validates input/output video configs (`IsInEncoderRange`, `IsConvertible`)
+  - Configures encoder metadata & bitrate (`InitEncoderMetadataFormat`, `InitEncoderBitrateFormat`)
+  - Handles encoder lifecycle: input/output buffer callbacks (`OnInputBufferAvailable`, `OnOutputBufferAvailable`, `OnOutputFormatChanged`, `OnError`)
+  - Processes data buffers (`ProcessData`, `FeedEncoderInputBuffer`, `GetEncoderInputSurfaceBuffer`, `GetEncoderOutputBuffer`)
+  - Uses Media framework APIs: `Media::AVCodecBufferInfo`, `Media::Format`, `Media::AVCodecBufferFlag`
+  - Uses `DataBuffer`, `std::shared_ptr<DataBuffer>`, suggesting a pipeline of buffer-based data flow
+  - Contains bitrate table mapping resolution → bitrate — typical for video encoding configuration
+  - Logging tag: `"DCDP_NODE_ENCODEC"` → likely stands for *Distributed Camera Data Process – Encode Node*
+
+---
+
+### **2. Key Clues for Module Mapping**
+
+#### ✅ **Encoding-specific logic**
+- The entire class is about **video encoding**: initializing encoder, feeding input buffers, handling output buffers, bitrate/format config.
+- This is *not* about channel communication (rules out `ChannelCommon`, `ChannelSource`, `ChannelSink`).
+- Not about virtual device/HDF implementation (`VirtualCameraHdf` is too low-level; no HDF interfaces here).
+- Not about service-level command handling (`CameraServiceCommon` deals with IPC commands, not encoding).
+- Not about source-side lifecycle/controller (`DistributedCameraSourceMgr` is broader; this is one node in a pipeline).
+
+#### ✅ **Data processing pipeline role**
+- Class handles `ProcessData(std::vector<std::shared_ptr<DataBuffer>>& inputBuffers)` → clearly part of a **data processing pipeline**
+- Uses `DataBuffer`, `EncodeDone`, `FeedEncoderInputBuffer`, etc. — standard pattern in media pipelines where raw frames are fed into encoder.
+- It's a *node* in a pipeline: `EncodeDataProcess` implies it's one stage (encoding) among possibly others (e.g., resize, format convert, encode).
+
+#### ✅ **Shared across source/sink?**
+- The encoder would typically run on the **sink side** (controlled device), where raw camera frames are captured and need to be encoded before transmission.
+  - But note: `CameraDataPostProcess` is described as *source-side post-processing* (i.e., after receiving encoded data — decoding, format conversion for local use). So **encoding is not post-processing on source**.
+  - Conversely, `CameraDataPreProcess` is described as *sink-side preprocessing* — “processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow”.
+    - That suggests **preprocessing happens before encoding**, so encoding itself is *after* preprocessing — possibly its own module or part of a common framework.
+
+#### ✅ **Closest match: `CameraDataProcessCommon`**
+Let’s re-read its description:
+
+> **CameraDataProcessCommon**: This module provides common data processing frameworks, data processing pipeline interfaces, codecs, color space conversion, frame-rate control, image types, and other common capabilities, supplying foundational components for data processing flows on both the source and sink sides.
+
+- ✅ “codecs” — this file implements encoder node using Media codec API.
+- ✅ “data processing pipeline interfaces” — `ProcessData`, buffer callbacks, node lifecycle.
+- ✅ “common capabilities” — bitrate table, config validation, reusable encoder setup logic.
+- ✅ Used on *both* sides? While encoding is sink-side, the *framework* (e.g., `EncodeDataProcess`) could be reused or shared — and indeed the namespace is `DistributedHardware`, not tied to source/sink specifically.
+- The class is not tied to IPC, SoftBus, HDF, or high-level service logic — it’s a **pipeline node**.
+
+#### ❌ Why not others?
+- `CameraDataPreProcess`: Preprocessing = before encoding (e.g., crop, rotate, format convert). This file does *encoding*, not preprocessing.
+- `CameraDataPostProcess`: Postprocessing = after decode (on source side). This is encoding (on sink side).
+- `DistributedCameraSourceMgr`: Too high-level (lifecycle, controller, IPC service). This is a single processing node.
+- `utils`: Provides buffers, constants, error codes — but this file uses those (e.g., `DCAMERA_OK`, `DataBuffer`) and adds significant encoding logic — goes beyond utility.
+- `VirtualCameraHdf`: No HDF/HDI interfaces (no `IDevice`, `IHdi`, `HdfDeviceObject`, etc.) — this is higher-level media codec usage.
+
+---
+
+### **3. Supporting Evidence from Includes**
+- `encode_data_process.h` → self
+- `encode_video_callback.h` → callback interface for encoder events (standard in media pipelines)
+- `dcamera_utils_tools.h` → likely from `utils` module, but used as helper
+- `graphic_common_c.h`, `display_type.h` → graphics-related types (e.g., resolution, format), common in processing pipelines
+- `distributed_hardware_log.h` → standard logging for DH modules
+- No SoftBus, IPC, HDF, or service headers → rules out channel/service/HDF modules
+
+The inclusion of `Media::AVCodecBufferInfo`, `Media::Format`, etc. confirms it’s using OHOS Media framework for encoding — exactly what a *common data processing module* would do.
+
+---
+
+### **Conclusion**
+This file implements a **reusable encoder node** within a data processing pipeline, using common media APIs and shared utilities. It fits best under:
+
+> **CameraDataProcessCommon** — because it provides codec (encoding) capability and pipeline node abstraction, intended for reuse across source/sink data flows.
+
+Probability estimation:
+- Strong alignment with `CameraDataProcessCommon` (core responsibility: codecs + pipeline nodes)
+- No better match among candidates
+- Minor usage of `utils` helpers doesn’t override primary role
+
+---
+
+**The probability that this file belongs to module 'CameraDataProcessCommon' is 95%.**

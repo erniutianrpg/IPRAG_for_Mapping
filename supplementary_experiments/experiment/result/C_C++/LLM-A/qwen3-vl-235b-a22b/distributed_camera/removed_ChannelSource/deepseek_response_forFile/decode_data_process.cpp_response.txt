@@ -1,0 +1,65 @@
+Let’s analyze the file content step by step to determine which module it belongs to.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `decode_data_process.h`
+  - `distributed_hardware_log.h`
+  - `graphic_common_c.h`
+  - `convert_nv12_to_nv21.h`
+  - `dcamera_utils_tools.h`
+  - `decode_video_callback.h`
+- Namespaces: `OHOS::DistributedHardware`
+- Functions/Classes:
+  - `DecodeDataProcess` class with methods for:
+    - Initialization (`InitNode`, `InitDecoder`, `InitCodecEvent`)
+    - Decoding logic (`FeedDecoderInputBuffer`, `OnInputBufferAvailable`, `OnOutputBufferAvailable`, `OnOutputFormatChanged`, `OnEvent`, `OnError`)
+    - Data processing: `ProcessData`, `CopyDecodedImage`, `CopyYUVPlaneByRow`, `CheckCopyImageInfo`, `IsCorrectImageUnitInfo`
+    - Format conversion & validation: `IsConvertible`, `IsInDecoderRange`, `GetAlignedHeight`
+    - Output handling: `PostOutputDataBuffers`, `DecodeDone`
+  - `DecodeSurfaceListener` (callback listener for surface buffer availability)
+- Raw excerpt shows destructor and `InitNode()` implementation — clearly a **decoder node** in a data pipeline that:
+  - Validates source/target video configs
+  - Initializes a video decoder (likely Media Codec API)
+  - Handles codec events, input/output buffers
+  - Copies decoded YUV image data (e.g., NV12 → NV21 conversion via included header)
+  - Posts output buffers downstream
+
+### 2. **Key Clues**
+- The class is named `DecodeDataProcess`, and its purpose is to **decode video streams** received over the distributed channel.
+- It operates on `DataBuffer`s, uses `Surface`/`SurfaceBuffer` for output (indicating rendering or further processing), and handles media codec callbacks — typical of **post-processing on the source side**, where raw encoded video from sink must be decoded before use by the controller app.
+- It includes `convert_nv12_to_nv21.h`, implying color format conversion — part of post-processing.
+- Uses `DCameraCodecEvent`, `EventBus`, and integrates into a pipeline (`eventBusPipeline_`) — suggests it's part of a modular data processing pipeline.
+- The namespace `OHOS::DistributedHardware` aligns with distributed camera architecture.
+
+### 3. **Compare with Candidate Modules**
+
+| Module | Relevance |
+|--------|-----------|
+| **DistributedCameraSourceMgr** | Manages lifecycle, IPC, controller, *input stream*, and **data processing** on the *source* side. But this is too high-level; `DecodeDataProcess` is a *component* inside data processing, not the manager itself. |
+| **DistributedCameraSinkMgr** | Sink-side manager — but this code is doing *decoding*, which happens on the *source* side (controller side) after receiving encoded frames from sink. So unlikely. |
+| **ChannelCommon / ChannelSink** | These are about communication channels (SoftBus, sessions). This file does *not* handle network/session logic — only local decoding/data transformation. ❌ |
+| **CameraDataProcessCommon** | Provides *common* frameworks, codecs, color space conversion, etc. This file implements a concrete decoder node with specific logic (NV12→NV21, config validation, codec event handling). While it uses common utilities, it’s more specialized than “common framework”. Possible, but let’s compare further. |
+| **CameraDataPreProcess** | Preprocessing on *sink side* (before encoding/transmission). This is *decoding*, i.e., post-reception — so opposite side. ❌ |
+| **CameraDataPostProcess** | ✅ **Strong match**: "responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution... so that the controller can use distributed camera data as if using a local Camera." Exactly what `DecodeDataProcess` does: decode incoming encoded video, convert formats (NV12→NV21), align dimensions, output usable buffers. |
+| **CameraServiceCommon** | Shared basic services (commands, protocols, metadata). This is not protocol-level — it’s actual data transformation. ❌ |
+| **VirtualCameraHdf** | HDF/HDI layer virtual device implementation. This is higher-level application logic, not driver/HDI. ❌ |
+| **utils** | General utilities (buffers, error codes, tools). While it includes `dcamera_utils_tools.h`, the core logic here is not utility — it’s a full processing node. ❌ |
+
+### 4. **Confirming with Reference Logic**
+The description of **CameraDataPostProcess** explicitly says:
+> "It decodes, converts formats, and processes frame rate, resolution, and related properties of received image data so that the controller can use distributed camera data as if using a local Camera."
+
+This matches perfectly:
+- `DecodeDataProcess::ProcessData()` receives input buffers (encoded video from sink).
+- It initializes a decoder (`InitDecoder`), feeds input, handles output buffers.
+- It copies/converts decoded YUV (`CopyDecodedImage`, `CopyYUVPlaneByRow`, includes `convert_nv12_to_nv21.h`).
+- Outputs processed buffers via `PostOutputDataBuffers`.
+- Runs on source side (controller side), as evidenced by usage of `Surface` for display/rendering and integration into pipeline leading to controller consumption.
+
+### ✅ Conclusion
+The file implements a **video decoding and format conversion node** in the **post-processing pipeline on the source side**, which is precisely the responsibility of the **CameraDataPostProcess** module.
+
+---
+
+**Assigned Module**: [CameraDataPostProcess]

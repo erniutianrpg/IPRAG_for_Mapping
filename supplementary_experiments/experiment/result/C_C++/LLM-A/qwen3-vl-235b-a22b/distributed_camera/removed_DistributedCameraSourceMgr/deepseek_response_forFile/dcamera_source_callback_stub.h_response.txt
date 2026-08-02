@@ -1,0 +1,54 @@
+Let’s analyze the file content step by step and compare it with the candidate modules.
+
+### File Content Summary:
+- **Language**: C/C++
+- **Includes**:
+  - `<map>` — standard library container.
+  - `"iremote_stub.h"` — indicates this is an IPC stub (Remote Procedure Call stub) based on OHOS’s IRemoteStub framework.
+  - `"idcamera_source_callback.h"` — interface for a camera source callback (likely defines `IDCameraSourceCallback`).
+- **Macro**: `OHOS_DCAMERA_SOURCE_CALLBACK_STUB_H` — header guard, clearly indicating this is a *stub* for a *source-side callback*.
+- **Namespaces**: `OHOS::DistributedHardware` — standard namespace for distributed hardware components in OpenHarmony.
+- **Class**: `DCameraSourceCallbackStub`, inherits from `IRemoteStub<IDCameraSourceCallback>`.
+  - This means it implements the server-side (stub) of a remote callback interface used by the *source side* (i.e., the controller side) to receive callbacks from the sink side.
+  - Functions:
+    - Constructor/destructor.
+    - `OnRemoteRequest()` — core IPC dispatch function (overrides base class), handles incoming remote calls.
+    - `NotifyRegResultInner()`, `NotifyUnregResultInner()` — internal handlers for registration/unregistration result notifications.
+    - Uses a `std::map<uint32_t, DCameraFunc>` to map remote request codes to handler functions — typical for stub dispatching.
+
+### Key Insight:
+This class is a **callback stub** that runs on the **source side** (controller side), receiving asynchronous notifications (e.g., registration results) from the **sink side** (controlled side). It is part of the **IPC mechanism** used to notify the source about events occurring on the sink (e.g., success/failure of registering a camera source).
+
+Now compare with candidate modules:
+
+- **DistributedCameraSinkMgr**: Focuses on *sink-side* lifecycle, access control, data output, event notification, and IPC *services* — but this is a *callback stub on the source side*, not a manager on the sink. ❌
+- **ChannelCommon**: Provides common channel-layer capabilities (SoftBus, sessions, interfaces). While IPC is involved, this is not a generic channel layer component—it's a specific callback stub tied to camera source functionality. ❌
+- **ChannelSource**: Responsible for *controller-side channel implementation*, including sending commands and receiving image info. This stub receives *callback notifications* (like reg/unreg results), which are control-plane messages—not image data—but still part of the control channel on the source side. This is promising. Let’s hold.
+- **ChannelSink**: Sink-side channel implementation — this is *not* sink-side (it’s a stub for callbacks *received by* source), so ❌.
+- **CameraDataProcessCommon / PreProcess / PostProcess**: These deal with image/data processing pipelines — no image/data handling here; purely IPC/callback logic. ❌
+- **CameraServiceCommon**: Provides shared basic service capabilities: basic commands, protocols, camera info, events, metadata, controller interfaces. Callbacks like registration results are *events* or *controller-facing notifications*. However, this module is more about *shared service logic*, not IPC stubs per se.
+- **VirtualCameraHdf**: HDF/HDI layer virtual camera device implementation — this is higher-level IPC stub, not HDF driver layer. ❌
+- **utils**: General utilities, buffers, error codes, local camera callbacks — but this is a *remote* callback stub using IRemoteStub, not a local callback (e.g., preview/photo callback). So likely not utils.
+
+### Critical Distinction:
+In OpenHarmony’s Distributed Camera architecture:
+- The **source side (controller)** registers a callback (e.g., `IDCameraSourceCallback`) with the sink side.
+- The sink side then invokes methods on that callback remotely (e.g., `NotifyRegResult()`).
+- To enable that, the source side must provide a *stub* (`DCameraSourceCallbackStub`) that implements `IRemoteStub<IDCameraSourceCallback>` to receive those remote calls.
+
+Thus, this stub belongs to the **source-side control channel infrastructure**, specifically for handling remote callbacks from the sink.
+
+Looking again at **ChannelSource**:
+> *"This module is responsible for the controller-side channel implementation. It establishes connections with the controlled side through SoftBus, sends camera control commands on the controller side, and receives image information returned by the controlled side."*
+
+While it says “receives image information”, in practice, the channel also carries control-plane messages—including callbacks like registration results. Moreover, callback stubs like this are typically part of the channel implementation on the source side to support bidirectional communication (even if callbacks are one-way).
+
+Also note: `IDCameraSourceCallback` is a *callback interface defined for the source*, meaning the sink calls into the source — so the stub lives on the source, and is tightly coupled with the source’s channel logic.
+
+There is no separate "CallbackManager" or "SourceCallback" module listed — among the options, **ChannelSource** is the best fit because:
+- It’s controller-side (source).
+- It handles IPC communication (including remote callbacks).
+- The stub is part of enabling the source to receive remote notifications from the sink — a necessary part of the channel’s control plane.
+
+### Conclusion:
+✅ **Assigned Module**: [ChannelSource]

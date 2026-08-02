@@ -1,0 +1,48 @@
+Let’s analyze the file `proxygen/lib/http/session/HQDownstreamSession.cpp` step by step.
+
+### 1. **File Path and Context**
+- Path: `proxygen/lib/http/session/HQDownstreamSession.cpp`
+  - This is under `proxygen/lib/http/session/`, indicating it's part of the HTTP session layer.
+  - The prefix `HQ` stands for **HTTP/3 over QUIC**, specifically using the **H3 (HTTP/3) framing** as defined in the IETF draft (e.g., `hq::PushId`, `quic::StreamId`, `hq::PushId`, etc.).
+  - `DownstreamSession` implies this is a *server-side* session handling incoming connections from clients — i.e., the server receives requests and may push responses (including server push).
+
+### 2. **Key Content Observations**
+From the excerpt and function list:
+- Uses `quic::StreamId`, `hq::PushId`, `HQEgressPushStream`, `createCodec(streamId)`, `egressPushStreams_`, etc. → clearly tied to **HTTP/3 (H3)** and **QUIC transport**.
+- Implements core session behavior:
+  - `onTransportReady()`, `onFullHandshakeDone()`, `onWriteCipherAvailable()` → integration with QUIC/TLS transport lifecycle.
+  - `setupOnHeadersComplete()`, `newPushedTransaction()`, `createEgressPushStream()`, `pushAllowedByGoaway()` → HTTP semantics, especially **server push** in HTTP/3.
+  - `isDetachable()`, `attachThreadLocals()`, `detachThreadLocals()` are stubs that log FATAL — indicating this class is *not* meant to be used upstream (i.e., not for client-side proxying), reinforcing it’s a **downstream (server) session**.
+- Includes only `HQDownstreamSession.h`, no external transport or SSL headers directly — but uses types from `quic::`, `hq::`, implying dependency on transport-layer abstractions.
+
+### 3. **Candidate Module Comparison**
+
+| Module | Relevance |
+|--------|-----------|
+| `pools` | ❌ No backend pool logic; not related to service discovery or load balancing. |
+| `sampling` | ❌ No sampling logic present. |
+| `ssl` | ⚠️ TLS handshake callbacks (`onFullHandshakeDone`) exist, but SSL context is passed in and not managed here — SSL is handled elsewhere (e.g., in transport or connection setup). Not the primary responsibility. |
+| `general` | ⚠️ Contains utilities, but this is not a utility; it’s a concrete session implementation with protocol-specific logic. |
+| `http_general` | ✅ Strong candidate: resides under `proxygen/lib/http/`, handles HTTP session state, transaction handling, headers, push — core HTTP protocol layer. However, note: `http_general` is described as “common HTTP implementation … responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3.” So HQ (HTTP/3) fits here. |
+| `services` | ⚠️ Described as “server-side infrastructure such as service execution, connection acceptance, worker threads, service configuration.” While this is server-side, `HQDownstreamSession` is *lower-level* than services — it’s a session object, not a service executor or acceptor. |
+| `transport` | ✅ Also strong: described as “transport-layer support module for HTTP/3/QUIC scenarios, responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket…” But note: the file is under `lib/http/session/`, not `lib/transport/`. The use of `quic::StreamId`, `hq::PushId`, and codec creation suggests tight coupling with transport, yet the class itself implements *HTTP session semantics* over that transport — i.e., it bridges transport and HTTP layers. |
+
+### 4. **Critical Distinction: Where does HQ belong?**
+- In Proxygen architecture:
+  - `lib/transport/` contains QUIC transport primitives (e.g., `QuicSocket`, `QuicConnection`, `QuicStream`, etc.).
+  - `lib/http/session/` contains session implementations like `HTTPDownstreamSession`, `HTTPUpstreamSession`, and now `HQDownstreamSession` — these are *protocol sessions* that sit *on top* of transport, interpreting QUIC streams as HTTP transactions.
+  - The `hq` namespace and H3 framing logic are part of the **HTTP layer**, not raw transport. For example:
+    - `createEgressPushStream()` manages push IDs and maps them to QUIC streams — this is HTTP/3 *session* logic.
+    - `setupOnHeadersComplete()` is pure HTTP transaction wiring.
+    - The class inherits from (implied) `HTTPSession` or similar, and integrates with `HTTPTransaction`, `HTTPMessage`, `HTTPCodec`.
+
+This matches the definition of **`http_general`**, which explicitly includes “protocol-related capabilities such as HTTP/2 and HTTP/3”.
+
+The `transport` module would contain things like `HQCodec`, `HQFrameCodec`, `QuicStreamTransport`, etc., but *not* the session orchestration logic.
+
+Also, reference examples (though none provided) would likely place `HTTP2Session.cpp`, `HTTPDownstreamSession.cpp` under `http_general`; by analogy, `HQDownstreamSession.cpp` belongs there too.
+
+### 5. **Conclusion**
+The file implements the **HTTP/3 downstream session** — a concrete session type handling HTTP semantics (transactions, headers, push) over QUIC. It lives in `lib/http/session/`, and its responsibilities align precisely with the `http_general` module’s description: core HTTP protocol layer including HTTP/3.
+
+> ✅ **Assigned Module**: [http_general]

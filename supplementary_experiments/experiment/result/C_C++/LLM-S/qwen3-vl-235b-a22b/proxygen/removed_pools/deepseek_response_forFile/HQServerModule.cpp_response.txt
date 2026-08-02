@@ -1,0 +1,115 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `folly/portability/GFlags.h` → generic utility (Folly flags)
+  - `proxygen/httpserver/samples/hq/FizzContext.h` → SSL/TLS context setup (Fizz = Facebook’s TLS library)
+  - `proxygen/httpserver/samples/hq/H2Server.h` → HTTP/2 server component
+  - `proxygen/httpserver/samples/hq/HQServerModule.h` → HQ (HTTP/3 over QUIC) server module
+  - `proxygen/httpserver/samples/hq/SampleHandlers.h` → request handlers for sample server
+  - `proxygen/lib/http/session/HQSession.h` → HQ session (QUIC-based HTTP session)
+
+- **Namespaces**:
+  - `proxygen` — top-level namespace for Proxygen
+  - `quic::samples` + use of `quic::QuicTransportStatsCallbackFactory`, `HQSession`, `sendKnob` → strongly tied to **QUIC/HTTP/3 transport layer**
+
+- **Functions**:
+  - `sendKnobFrame(HQSession*, ...)` → sends a custom QUIC “knob” frame (a QUIC extension mechanism for application-layer signaling); uses `HQSession::sendKnob()` — this is *QUIC transport-level* functionality.
+  - `startServer(...)` → orchestrates:
+    - `H2Server::run()` (HTTP/2 server)
+    - `HQServer` construction (HTTP/3/QUIC server)
+    - Fizz context creation (TLS)
+    - Starts server on local address
+    - Uses `onTransportReadyFn` to trigger action when QUIC transport is ready
+  - `localAddress(...)` → utility call (but not core logic)
+
+- **Raw excerpt highlights**:
+  - Use of `HQSession`, `sendKnob`, `quic::BufPtr`, `quic::QuicTransportStatsCallbackFactory`
+  - Server built using `HQServer`, which is clearly an HTTP/3/QUIC server wrapper
+  - Sample code under `proxygen/httpserver/samples/hq/` — indicates this is a **sample HTTP/3 server**, using QUIC transport.
+
+---
+
+### **2. Module Matching**
+
+#### ✅ **transport**
+- Definition: *"lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3... responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."*
+- Evidence:
+  - Direct use of `HQSession`, which is part of `proxygen/lib/http/session/HQSession.h` — but note: `HQSession` itself wraps QUIC transport (it's a session abstraction over QUIC).
+  - `sendKnobFrame` calls `session->sendKnob(...)`, which is a QUIC extension frame (knob frames are part of QUIC transport extensions, not HTTP semantics).
+  - Use of `quic::QuicTransportStatsCallbackFactory` — explicitly transport stats.
+  - The server is built around `HQServer`, which is a QUIC-based server (not pure HTTP/2).
+  - Although located in `httpserver/samples/hq/`, the *functionality* is deeply tied to QUIC transport behavior (e.g., transport-ready callback, sending transport-level frames).
+  - Samples often live in higher-level directories (`httpserver/samples`) but implement transport-layer logic — the *content* determines module, not just path.
+
+→ Strong match.
+
+#### ⚠️ **httpserver**
+- Definition: *"wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers... high-level HTTP server framework."*
+- Evidence:
+  - File is in `proxygen/httpserver/samples/hq/`, so path-wise it's under `httpserver`.
+  - Uses `H2Server`, `HQServer`, and `Dispatcher` — all high-level server abstractions.
+  - But crucially, it’s not just HTTP — it’s specifically HTTP/3 over QUIC, and the core logic (`sendKnobFrame`, transport-ready hook) is *beyond* standard HTTP server concerns; it’s transport customization.
+  - `httpserver` typically abstracts away transport details; here, transport is being directly manipulated.
+
+→ Partial match (due to location and server setup), but the *logic* goes deeper than typical `httpserver` usage.
+
+#### ⚠️ **http_general**
+- Definition: *"common HTTP implementation under proxygen/lib/http/... HTTP protocol parsing, encoding/decoding, session management..."*
+- Evidence:
+  - Uses `HQSession.h`, but `HQSession` is more transport-aware than pure HTTP session (it inherits from `HTTPSession`, but adds QUIC-specific behavior).
+  - No HTTP message parsing/encoding logic here — all about server startup and transport hooks.
+  - Not focused on HTTP semantics (headers, bodies, methods), but on transport readiness and QUIC extensions.
+
+→ Weak match.
+
+#### ❌ **ssl**
+- Only uses Fizz context creation (`createFizzServerContext...`), but that’s just one part — not the focus. SSL is a dependency, not the module’s purpose here.
+
+#### ❌ **services**, **general**, **sampling**, **dns**
+- No evidence of service orchestration (e.g., worker pools, connection acceptance loops beyond `HQServer::start`), no utils-only logic, no sampling, no DNS resolution.
+
+---
+
+### **3. Key Discriminator: `sendKnobFrame`**
+This function is the most telling:
+- Knob frames are a **QUIC transport extension** (used for application-defined signaling at transport layer).
+- It directly calls `HQSession::sendKnob()`, which interfaces with the underlying QUIC transport stack.
+- This is *not* HTTP-level — it’s transport-level customization.
+- Such functionality belongs squarely in the **transport** module’s domain.
+
+Even though the file lives in `httpserver/samples`, the *architectural responsibility* of the code is transport-layer extension for QUIC/HTTP/3.
+
+In Proxygen’s architecture:
+- `proxygen/lib/transport/` contains QUIC transport primitives.
+- `proxygen/lib/http/session/HQSession.h` is part of the HTTP layer but tightly coupled to transport.
+- Sample code that exercises transport extensions (like knob frames) is best classified under **transport**, because it demonstrates or uses transport capabilities.
+
+---
+
+### **Conclusion**
+
+- Highest alignment: **transport**
+- Secondary (location-based): **httpserver**
+- But per instruction: *“analyze the given file's content and package, and compare it with the listed candidate modules”* — content > path
+
+Thus:
+
+**The probability that this file belongs to module 'transport' is 95%.**  
+(The remaining 5% reflects that it's a sample under httpserver/, but the logic is transport-focused.)
+
+Other modules:
+- httpserver: ~40% (due to location and server wrapper usage, but not core responsibility)
+- http_general: ~20%
+- ssl: ~10%
+- others: <5%
+
+But per required format, only the top module with justification.
+
+---
+
+**Final Answer**:
+The probability that this file belongs to module 'transport' is 95%.

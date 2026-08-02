@@ -1,0 +1,58 @@
+Let’s analyze the file content step by step to determine which module it most likely belongs to.
+
+---
+
+### **1. File Metadata Summary**
+- **Language**: C/C++
+- **Includes**:
+  - `proxygen/lib/http/codec/HTTP2Framer.h` → clearly HTTP/2 framing logic
+  - `proxygen/lib/http/codec/CodecUtil.h` → HTTP codec utilities
+  - `folly/tracing/ScopedTraceSection.h` → tracing support (auxiliary)
+  - `<array>` → standard library, no module signal
+- **Namespaces**: `folly`, `proxygen`
+- **Functions** (key ones):
+  - `writePadding`, `computeLengthAndType`, `writeFrameHeader`, `parseUint31`, `parseErrorCode`, `skipPriority`, `isValidFrameType`, `frameAffectsCompression`, `frameHasPadding`, `parseRFC9218Priority`, `writeSettings`, `writeCertificateRequest`, `writeCertificate`, etc.
+  - All are low-level **HTTP/2 frame encoding/decoding**, header construction, padding, priority, settings, certificate exchange (for HTTP/2 TLS handshake extensions like ALTS or early data?).
+- **Raw excerpt** shows:
+  - Constants like `kMinExperimentalFrameType`, `DefaultPriority`, `kZeroPad`
+  - Implementation of `writeFrameHeader`, which writes the 9-byte HTTP/2 frame header + optional padding byte + payload
+  - Uses `IOBufQueue`, `Cursor`, `QueueAppender` — standard Proxygen I/O abstractions for efficient zero-copy framing
+  - References to `FrameType`, `FrameHeader`, `SettingPair`, `PriorityUpdate`, `RFC9218Priority` — all HTTP/2 protocol constructs
+
+This is **clearly HTTP/2 framing and codec logic**, i.e., the *binary wire format* layer of HTTP/2: how frames are serialized/deserialized, validated, and constructed.
+
+---
+
+### **2. Candidate Module Analysis**
+
+| Module | Relevance |
+|--------|-----------|
+| **pools** | ❌ No relation to backend pools or service discovery. |
+| **sampling** | ❌ No sampling logic; no probabilistic decisions or rate limiting. |
+| **ssl** | ⚠️ Partial: `writeCertificateRequest`/`writeCertificate` suggest TLS-related frames (e.g., for HTTP/2 certificate exchange in QUIC or TLS 1.3 early data), but these are *still framed as HTTP/2 frames*, not SSL/TLS handshake logic per se. The core of the file is framing, not crypto or context management. Not primary. |
+| **general** | ⚠️ Some utility helpers (`ScopedTraceSection`, `CodecUtil.h`) live here, but this file is deeply protocol-specific (HTTP/2), not generic utils. Too narrow for “general”. |
+| **http_general** | ✅ **Strong match**: This module is defined as *"common HTTP implementation under proxygen/lib/http/", responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3.*<br>Specifically, `HTTP2Framer.h` and `CodecUtil.h` are under `proxygen/lib/http/codec/`, which falls squarely under `http_general`. The functions implement HTTP/2 frame serialization/deserialization — exactly what “codec” means in this context. |
+| **services** | ❌ Server-side infrastructure (connection acceptance, workers). This file has no server lifecycle or connection management logic. |
+| **httpserver** | ❌ High-level server API wrapper; this is low-level framing code used *by* httpserver, not part of it. |
+| **transport** | ⚠️ Transport layer (QUIC/HTTP/3). While HTTP/2 can be carried over TCP or QUIC, this file deals with HTTP/2 *framing*, not transport sockets, datagrams, or QUIC streams. It’s above transport. Also, no QUIC-specific types (e.g., `QuicStream`, `QuicPacket`). |
+
+---
+
+### **3. Key Evidence Supporting `http_general`**
+- Path in includes: `proxygen/lib/http/codec/HTTP2Framer.h` → directory `proxygen/lib/http/codec/` is canonical location for HTTP framing/encoding logic.
+- Functions are all about:
+  - Frame header construction (`writeFrameHeader`)
+  - Padding, priority, settings, error codes — all defined in [RFC 7540](https://datatracker.ietf.org/doc/html/rfc7540) and [RFC 9218](https://datatracker.ietf.org/doc/html/rfc9218) (priority update)
+  - Parsing/writing binary frames using `Cursor` and `IOBufQueue` — standard Proxygen codec pattern
+- No transport-layer concerns (no socket ops, no QUIC packets, no congestion control)
+- No service orchestration (no request routing, no worker threads)
+
+Thus, this file implements the **HTTP/2 codec layer**, which is a core component of `http_general`.
+
+---
+
+### **Final Assessment**
+The file is a low-level HTTP/2 framing utility implementing serialization/deserialization of HTTP/2 frames — precisely the responsibility of the `http_general` module.
+
+> The probability that this file belongs to module 'http_general' is **95%**.  
+> (Remaining 5% uncertainty due to minor overlap with `ssl` for certificate-related frames, but those are still framed as HTTP/2 frames and implemented in the codec layer, not SSL context management.)

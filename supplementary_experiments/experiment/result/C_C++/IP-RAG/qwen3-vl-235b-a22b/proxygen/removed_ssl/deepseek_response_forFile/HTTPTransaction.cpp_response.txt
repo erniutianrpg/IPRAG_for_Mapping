@@ -1,0 +1,68 @@
+Let’s analyze the file `proxygen/lib/http/session/HTTPTransaction.cpp` step by step, using the provided context.
+
+---
+
+### 1. **File Path and Location**
+- Path: `proxygen/lib/http/session/HTTPTransaction.cpp`
+- This is under `proxygen/lib/http/session/`, which strongly suggests it belongs to the HTTP protocol layer — specifically handling *transactions* (i.e., individual request/response exchanges) within an HTTP session.
+
+---
+
+### 2. **Includes Analysis**
+The includes reveal key dependencies:
+- `proxygen/lib/http/session/HTTPTransaction.h` → self-header, confirms this is implementation of `HTTPTransaction`.
+- `proxygen/lib/http/HTTPHeaderSize.h`, `RFC2616.h` → HTTP header parsing and standards compliance.
+- `proxygen/lib/http/codec/webtransport/WebTransportFramer.h`, `HTTPWebTransport.h` → WebTransport support (a modern HTTP extension, still part of HTTP semantics).
+- `proxygen/lib/http/session/HTTPSessionStats.h` → stats tracking per transaction/session.
+- `folly/io/async/EventBaseManager.h`, `glog/logging.h`, `folly/tracing/ScopedTraceSection.h` → async I/O and logging infrastructure (common in Proxygen core).
+- No includes from `dns`, `pools`, `services`, `httpserver`, or `transport` (e.g., no QUIC-specific headers like `quic/` or `transport/`).
+
+So: **This is not transport-layer (QUIC/HTTP3)**, nor is it high-level server framework (`httpserver`) or service orchestration (`services`). It's deeply embedded in the HTTP protocol logic.
+
+---
+
+### 3. **Functionality Observed**
+From the function list and excerpt:
+- Implements state machine callbacks for ingress/egress events:  
+  `onIngressHeadersComplete`, `onIngressBody`, `onEgressTimeout`, etc.
+- Handles HTTP message parsing, chunked encoding, trailers, upgrades (e.g., WebSockets, WebTransport), EOM (end-of-message), aborts, rate limiting.
+- Manages content-length validation, window updates (likely for HTTP/2 flow control), byte-level tracking for egress.
+- Uses `HTTPTransactionIngressSM` / `HTTPTransactionEgressSM` — clearly a state-machine-driven transaction handler.
+- Supports both HTTP/1.x and HTTP/2 semantics (e.g., `onIngressWindowUpdate`, `onEgressHeaderFirstByte`, etc.), and even WebTransport datagrams.
+
+This is the **core transaction abstraction** that sits between:
+- The codec layer (which decodes raw bytes into messages/events), and
+- The session/connection layer (which manages multiple transactions over one connection).
+
+It is *not* a utility (`general`), because it's not generic helpers — it's protocol-specific and central to HTTP semantics.
+
+It is *not* `httpserver`, because that module wraps this layer for end-user server APIs (like `RequestHandler`, `HTTPServer`, etc.). This is lower-level.
+
+It is *not* `services`, which deals with connection acceptance, worker threads, service registration — higher than transaction.
+
+It is *not* `transport`, because there's no QUIC or socket-level code here; it assumes a transport already delivers framed events.
+
+---
+
+### 4. **Candidate Module Matching**
+Let’s re-express candidate definitions:
+
+> **http_general**: This module mainly corresponds to the common HTTP implementation under `proxygen/lib/http/`. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3.
+
+✅ This matches *exactly*:
+- Location: `proxygen/lib/http/session/` is under `proxygen/lib/http/`.
+- Responsibility: transaction management, ingress/egress state machines, header/body/trailer processing, EOM handling, error propagation — all core HTTP transaction semantics.
+- Includes other `lib/http/` components (headers, RFC2616, WebTransport framer), reinforcing it’s part of the HTTP core.
+
+Note: While `session` is a subdirectory, the candidate `http_general` explicitly says it covers “common HTTP implementation under `proxygen/lib/http/`”, including *transaction management* — and `HTTPTransaction` is the canonical transaction class.
+
+Other modules are clearly mismatched:
+- `general`: too generic; used for utils like `Timer`, `ScopeGuard`, etc., not protocol logic.
+- `transport`: only for QUIC/HTTP3 transport layer — this file has no transport-specific code.
+- `dns`, `pools`, `sampling`, `services`, `httpserver`: all operate at different layers.
+
+---
+
+### ✅ Final Decision
+
+**Assigned Module**: [http_general]

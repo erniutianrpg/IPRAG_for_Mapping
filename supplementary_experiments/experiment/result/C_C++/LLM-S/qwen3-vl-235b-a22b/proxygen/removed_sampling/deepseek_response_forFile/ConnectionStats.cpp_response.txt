@@ -1,0 +1,50 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File metadata**
+- **Language**: C/C++
+- **Includes**: `proxygen/lib/http/stats/ConnectionStats.h`
+  - This is a strong signal: the header is under `proxygen/lib/http/stats/`, which suggests it belongs to HTTP-related statistics, not transport, DNS, SSL, or pools.
+- **Namespaces**: `facebook`, `proxygen` — standard for Proxygen codebase.
+- **Functions**:
+  - All functions are about recording connection-level metrics: open/close, request/response, bytes transferred, duration, etc.
+  - Specifically: `MinimalConnectionStats::record*`, `TLConnectionStats::recordResponse`.
+  - Uses `fb303` (Facebook’s stats collection library) for counters and quantiles (`SUM`, `kP50_P95_P99`, etc.).
+  - The class `MinimalConnectionStats` initializes stats with prefixes like `_req`, `_egress_bytes`, `_conn_duration`, `_tcp_conn`, etc.
+  - `TLConnectionStats` inherits from `MinimalConnectionStats` and adds response-code-specific tracking.
+
+### 2. **What does this code do?**
+- It implements *connection-level telemetry/statistics* for HTTP connections.
+- It tracks:
+  - Connection counts (current/new, TCP vs logical)
+  - Request/response counts
+  - Bytes in/out (including body-only)
+  - Duration
+  - Response codes (especially 503 + Retry-After for upstream load shedding)
+- It is *not* involved in:
+  - DNS resolution → ❌ not `dns`
+  - Backend pool configuration → ❌ not `pools`
+  - SSL/TLS context setup or crypto → ❌ not `ssl`
+  - Transport-layer (QUIC, sockets, datagrams) → ❌ not `transport`
+  - Server lifecycle, worker threads, service execution → ❌ not `services`
+  - High-level HTTP server API (e.g., `HTTPServer`, `RequestHandler`) → ❌ not `httpserver`
+- It *is* tightly coupled with HTTP semantics (request/response, status codes, headers like `Retry-After`), and lives under `proxygen/lib/http/stats/`.
+
+### 3. **Module mapping analysis**
+- **`general`**: Covers `proxygen/lib/utils/` and generic utilities. While stats could be considered “utility”, this is *HTTP-specific* stats (e.g., response codes, request/response pairing, body bytes). Not generic enough for `general`.
+- **`http_general`**: Defined as *"common HTTP implementation under proxygen/lib/http/", responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3.*  
+  - Stats are part of the HTTP layer infrastructure — they’re used by HTTP sessions/transactions to report behavior.
+  - `ConnectionStats` is used by HTTP connections (e.g., `HTTPSession`, `HTTPTransaction`) to emit metrics.
+  - The path `proxygen/lib/http/stats/` falls directly under `http/`, aligning with `http_general`.
+  - Other modules like `services` or `httpserver` *consume* these stats but don’t define them.
+
+> Note: There is no dedicated “stats” module listed, so we must assign to the closest architectural layer. In Proxygen’s structure, stats under `lib/http/stats/` are considered part of the core HTTP layer — i.e., `http_general`.
+
+### 4. **Confidence assessment**
+- Strong evidence: include path, namespace, function semantics (HTTP request/response, status codes), use of HTTP-specific concepts (e.g., `Retry-After`, `503`, body bytes vs total bytes), inheritance pattern used by HTTP connection classes.
+- No evidence for any other module.
+
+### Final judgment:
+The file implements HTTP connection telemetry and belongs squarely in the HTTP core layer.
+
+**The probability that this file belongs to module 'http_general' is 98%.**  
+(The remaining 2% accounts for possible ambiguity if a future refactoring moves stats to a separate module — but per current architecture and given candidates, `http_general` is definitive.)

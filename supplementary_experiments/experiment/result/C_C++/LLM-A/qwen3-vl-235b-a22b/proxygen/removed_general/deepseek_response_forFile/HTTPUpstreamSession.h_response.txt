@@ -1,0 +1,70 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `folly/io/async/SSLContext.h` → SSL/TLS context (but used, not defining core SSL logic)
+  - `proxygen/lib/http/codec/compress/HeaderCodec.h` → HTTP header compression (part of HTTP codec layer)
+  - `proxygen/lib/http/session/HTTPSession.h` → Core HTTP session base class
+  - `proxygen/lib/http/session/HTTPSessionStats.h` → Stats for HTTP sessions
+
+- Namespace: `proxygen`
+- Types:
+  - `HTTPSessionStats` (forward-declared, defined elsewhere)
+  - `HTTPUpstreamSession` — a concrete subclass of `HTTPSession`
+
+- Functions: All are methods of `HTTPUpstreamSession`, including:
+  - Constructor(s) with transport, codec, addresses, timer, etc.
+  - Session lifecycle (`startNow`, `drain`, `isClosing`, `isReusable`, `isReplaySafe`)
+  - Transaction creation (`newTransaction`, `newTransactionWithError`)
+  - Thread-local attachment/detachment (for event base, SSL context, stats, filters, controller)
+  - Priority handling (`getHTTPPriority`)
+  - Internal helpers like `setupOnHeadersComplete`, `getTransactionTimeoutHandler`, SSL context attach/detach
+
+- Key observation: `HTTPUpstreamSession` inherits from `HTTPSession`, and implements *upstream* (i.e., client-side) HTTP session behavior — e.g., used when Proxygen acts as an HTTP client (e.g., in a proxy or service making outbound requests).
+
+This is **not** server-side (so likely not `httpserver` or `services`), nor is it transport-layer (no QUIC, no socket-level I/O), nor DNS/pools/sampling.
+
+### 2. **Module Comparison**
+
+#### ✅ `http_general`
+> *"This module mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+- The file is in `proxygen/lib/http/session/`, which is part of the core HTTP layer.
+- `HTTPSession` and `HTTPUpstreamSession` are central to session management.
+- It uses `HTTPCodec`, `HeaderCodec`, `HTTPTransaction`, `HTTPMessage`, all core HTTP protocol abstractions.
+- `HTTPUpstreamSession` is specifically the *client-side* session implementation — still part of the general HTTP layer (as opposed to server-specific infrastructure like `services` or `httpserver`).
+- Though it uses SSL context, it does **not implement SSL logic** — just consumes it (so not `ssl` module).
+- Not about pools, DNS, sampling, or transport (QUIC).
+
+#### ❌ `services`
+> *"used for connection management and server-side related code... service execution, connection acceptance, worker threads..."*
+
+- This is upstream/client-side session, not server-side. No connection acceptance, no service execution logic here.
+
+#### ❌ `httpserver`
+> *"wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers"*
+
+- This is not a high-level server API; it’s a low-level session class used internally, especially for outbound connections.
+
+#### ❌ `transport`
+> *"lower-level transport capabilities... QUIC / HTTP/3... socket, datagram, token/PSK cache"*
+
+- No QUIC, no transport-specific types (e.g., `QuicTransport`, `DatagramTransport`). Uses `folly::AsyncTransport`, but that’s generic — not QUIC-specific.
+
+#### ❌ `ssl`
+> *"SSL/TLS context and statistics-related capabilities"*
+
+- While it *uses* `SSLContext`, it doesn’t define or manage SSL handshake, certificates, cipher suites, etc. Just attaches/detaches context — not the core SSL module.
+
+#### ❌ `dns`, `pools`, `sampling`
+- No DNS resolution, pool configuration, or sampling logic present.
+
+### 3. **Conclusion**
+The file defines `HTTPUpstreamSession`, a core session type in the HTTP protocol stack, inheriting from `HTTPSession`, and residing in `proxygen/lib/http/session/`. This fits squarely under the **`http_general`** module, which covers the core HTTP layer including session and transaction management — both upstream (client) and downstream (server) variants.
+
+Note: Proxygen distinguishes `HTTPUpstreamSession` (client-side) and `HTTPDownstreamSession` (server-side), but both belong to the same `http_general` layer.
+
+---
+
+**Assigned Module**: [http_general]

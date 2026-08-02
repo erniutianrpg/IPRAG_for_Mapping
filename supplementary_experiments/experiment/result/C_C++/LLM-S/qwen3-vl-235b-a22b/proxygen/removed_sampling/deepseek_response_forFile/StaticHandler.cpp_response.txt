@@ -1,0 +1,80 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `"StaticHandler.h"` → custom header, likely part of a static file-serving handler.
+  - `folly/FileUtil.h`, `folly/executors/GlobalExecutor.h`, `folly/io/async/EventBaseManager.h` → Folly utilities for I/O, executors, event loops.
+  - `proxygen/httpserver/ResponseBuilder.h` → high-level HTTP response construction API.
+  - `proxygen/lib/utils/SafePathUtils.h` → utility for safe path resolution (prevents directory traversal).
+- **Namespaces**: `StaticService`, `proxygen`
+- **Functions**:
+  - `StaticHandler::onRequest(...)`: handles incoming HTTP request (GET only), validates method, resolves path safely, opens file, sends 200, schedules async read.
+  - `StaticHandler::readFile(...)`: reads file in chunks using `folly::readNoInt`, sends body chunks via `ResponseBuilder`, handles EOF/error.
+  - `StaticHandler::onEgressPaused()` / `onEgressResumed()`: flow control callbacks for backpressure.
+- **Raw excerpt**: Implements a simple static file server handler that serves files from disk, with safe path handling, async I/O on CPU executor, and egress flow control.
+
+---
+
+### **2. Key Observations**
+
+#### ✅ High-level HTTP server usage:
+- Uses `ResponseBuilder` from `proxygen/httpserver/ResponseBuilder.h` — this is a **high-level API**, not low-level HTTP parsing or transport.
+- Handles full HTTP request lifecycle: `onRequest`, sends status/body/EOM, respects egress pause/resume — typical of **server-side handlers** in an HTTP server framework.
+
+#### ✅ Belongs to a *service* layer:
+- The class `StaticHandler` is clearly a concrete service implementation (serving static files), not core protocol logic.
+- It lives in namespace `StaticService`, suggesting it's an application-level or example service built *on top* of Proxygen’s server infrastructure.
+
+#### ✅ Not core HTTP protocol (`http_general`):
+- No parsing of headers/bodies, no HTTP/2/3 framing, no session management — just uses `HTTPMessage` as input and `ResponseBuilder` as output.
+- So it’s *using* the HTTP abstractions, not implementing them.
+
+#### ✅ Not transport, SSL, DNS, pools:
+- No QUIC/UDP/socket handling → rules out `transport`.
+- No SSL context setup or TLS stats → rules out `ssl`.
+- No DNS resolution → rules out `dns`.
+- No backend pool configuration or service discovery → rules out `pools`.
+
+#### ✅ Not general utils (`general`):
+- While it uses `SafePathUtils.h` (which *is* under `proxygen/lib/utils/`), the bulk of the logic is not utility code — it’s a full handler with business logic (file serving). So `general` is too generic; this is more specific.
+
+#### ✅ Strong match for `httpserver`:
+- `proxygen/httpserver/` is explicitly designed for building **high-level HTTP servers**.
+- `ResponseBuilder` is a hallmark of `httpserver`.
+- The pattern of deriving from `RequestHandler` (implied by `onRequest`, `onEgressPaused`, etc.) is standard in `httpserver` examples (e.g., `StaticHandler` is a known example in Proxygen’s `httpserver` docs/examples).
+- Static file serving is a canonical use case for `httpserver`.
+
+#### ✅ Also plausible for `services`?
+- `services` corresponds to `proxygen/lib/services/`, which includes connection management, worker threads, service execution.
+- However, `StaticHandler` is not managing connections or workers — it’s a per-request handler.
+- In Proxygen’s architecture, `httpserver` sits *on top* of `services`, and handlers like `StaticHandler` are typically placed in `httpserver`-level examples or user code — not in `lib/services/`.
+
+Looking at Proxygen’s actual repo structure (known from open-source):
+- `proxygen/httpserver/` contains `ResponseBuilder.h`, `RequestHandler.h`, and examples like `StaticHandler.cpp`.
+- Indeed, there is a well-known `StaticHandler` example in `proxygen/httpserver/examples/` that matches this exact code pattern.
+
+---
+
+### **3. Module Mapping Confidence**
+
+| Module | Match Reasoning | Confidence |
+|--------|------------------|------------|
+| `dns` | No DNS usage | 0% |
+| `pools` | No backend pooling | 0% |
+| `ssl` | No TLS/SSL context | 0% |
+| `general` | Uses one util (`SafePathUtils`), but main logic is not utility code | ~15% |
+| `http_general` | Uses HTTP abstractions but does not implement protocol logic | ~20% |
+| `services` | Not managing connections/workers; handler is per-request, not infra | ~30% |
+| `httpserver` | Direct use of `ResponseBuilder`, implements `RequestHandler`-like interface, classic static file server example in this module | **95%** |
+| `transport` | No transport-layer code | 0% |
+
+---
+
+### ✅ Final Judgment
+
+The file implements a static file-serving HTTP handler using `proxygen/httpserver`’s high-level APIs (`ResponseBuilder`, request/response lifecycle callbacks), and matches known examples in that module. It is *not* core protocol, transport, or infrastructure — it’s a user-facing server component.
+
+**The probability that this file belongs to module 'httpserver' is 95%.**

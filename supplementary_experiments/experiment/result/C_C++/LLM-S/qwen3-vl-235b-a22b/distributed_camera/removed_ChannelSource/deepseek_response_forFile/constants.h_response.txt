@@ -1,0 +1,133 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **File Summary**
+- **File name**: `DISTRIBUTED_CONSTANTS_H` (header file)
+- **Language**: C/C++
+- **Includes**: `<vector>`, `"types.h"` → standard library + local types header
+- **Macros**: `DISTRIBUTED_CONSTANTS_H` → typical include guard
+- **Namespaces**: `OHOS::DistributedHardware` → clearly part of OpenHarmony Distributed Hardware subsystem
+- **Content**:
+  - **Constants**: numeric constants for dimensions, timeouts, buffer sizes, FPS ranges, encoding strings, etc.
+  - **Enums**:
+    - `DCameraBufferUsage`: bitflags for buffer usage (SW read/write, DMA) — relates to memory/buffer management in camera data flow.
+    - `_DCSceneType` (aliased as `DCSceneType`): `PREVIEW`, `VIDEO`, `PHOTO` — scene modes for camera use cases.
+    - `Ret` (error codes: `RC_OK`, `RC_ERROR`) — generic return codes.
+  - **Struct**: `DCResolution` with comparison operators — used for resolution handling (e.g., selecting/validating resolutions).
+  - **Using alias**: `RetCode = uint32_t`
+  - **Vector constant**: `DEFAULT_FMT_VEC` (empty, but intended for format pairs — likely resolution/format mapping).
+  - **Encoding type strings**: H.264, H.265, JPEG — codec identifiers used in encoding pipeline.
+  - **No functions**, only declarations — pure constants/enums/types.
+
+This is a **constants and types definition header**, not business logic or implementation. It defines shared primitives used across multiple modules.
+
+---
+
+### **Module-by-Module Evaluation**
+
+#### 1. **DistributedCameraSourceMgr**
+- Focus: lifecycle, controller, IPC, callbacks on *source* (controller) side.
+- Needs constants? Yes — e.g., buffer size, FPS, resolution limits — but this file is too generic; it doesn’t contain source-specific logic (e.g., state machine enums, IPC message IDs).
+- ✅ Some constants used here may be consumed by SourceMgr, but not exclusive.
+
+#### 2. **DistributedCameraSinkMgr**
+- Similar to SourceMgr but on sink side.
+- Same reasoning: uses constants, but not defined *by* SinkMgr.
+
+#### 3. **ChannelCommon**
+- Focus: SoftBus, session/channel interfaces.
+- Constants like `BUFFER_QUEUE_SIZE`, `WAIT_OPEN_TIMEOUT_SEC`, `DEVID_MAX_LENGTH` are relevant for channel/session setup.
+- However, camera-specific enums (`DCameraBufferUsage`, `DCSceneType`, `DCResolution`) go beyond pure channel layer — they’re camera-data oriented.
+- ❌ Too camera-centric for pure channel abstraction.
+
+#### 4. **ChannelSink**
+- Sink-side channel implementation.
+- Again, uses some constants, but this header is not tied to channel protocol implementation details (e.g., no message IDs, session keys, etc.).
+
+#### 5. **CameraDataProcessCommon**
+- Focus: common data processing frameworks — codecs, color space, frame rate, image types, pipelines.
+- This matches **very well**:
+  - `DCameraBufferUsage` → used in buffer allocation for processing pipelines.
+  - `DCSceneType` → determines processing mode (preview/video/photo).
+  - `DCResolution` → core to resolution negotiation & scaling in preprocessing/postprocessing.
+  - Encoding strings (`H264`, `H265`) → used by codecs in data processing.
+  - Constants like `MAX_SUPPORT_PREVIEW_WIDTH`, `MIN/MAX_FPS`, `BUFFER_QUEUE_SIZE` → directly feed into data pipeline configuration.
+- This is a *shared* header used by both pre/post-processing modules — exactly what “Common” implies.
+
+#### 6. **CameraDataPreProcess**
+- Sink-side preprocessing.
+- Would *use* these constants, but unlikely to *define* them — especially global ones like `STAR_SEPARATOR`, `YUV_WIDTH_RATIO`, etc., which are cross-cutting.
+- PreProcess would depend on this, but not own it.
+
+#### 7. **CameraDataPostProcess**
+- Source-side postprocessing.
+- Same as above — consumer, not owner.
+
+#### 8. **CameraServiceCommon**
+- Shared basic service capabilities: commands, protocols, camera info, metadata, open-camera info.
+- Includes “camera information”, “channel information", “Metadata settings” — could overlap.
+- But note: this file has **no protocol definitions**, no command enums, no metadata keys — only low-level constants and types.
+- Less likely than `CameraDataProcessCommon`, because service layer tends to be higher-level (e.g., `CameraInfo`, `CameraStatus`, `CommandId`), while this is more about *data representation and constraints*.
+
+#### 9. **VirtualCameraHdf**
+- HDF/HDI layer virtual camera device implementation.
+- Involves device/operator/metadata at driver level.
+- While `DCResolution`, `DCameraBufferUsage` might be used in HDF driver, this header lacks HDF-specific constructs (e.g., `HDF_STATUS`, `HDI_*`, `StreamOperator`, `DeviceNode`).
+- Unlikely to be owned by HDF module — too generic.
+
+#### 10. **utils**
+- Described as: *"common distributed camera utilities, data buffers, indexes, constants, error codes, and general support capabilities..."*
+- Explicitly mentions: **constants**, **error codes**, **data buffers**, **general support**.
+- Contains:
+  - Error codes (`Ret`)
+  - Buffer usage flags (`DCameraBufferUsage`)
+  - Resolution struct (`DCResolution`)
+  - Constants (`BUFFER_QUEUE_SIZE`, `MAX_SUPPORT_*`, etc.)
+- This fits **perfectly** — the description literally matches the content.
+
+Wait — now we have two strong candidates:
+- `CameraDataProcessCommon`
+- `utils`
+
+Let’s differentiate:
+
+| Feature | `utils` (per description) | `CameraDataProcessCommon` |
+|--------|----------------------------|---------------------------|
+| Scope | General support: constants, error codes, buffers, indexes | Data processing pipeline: codecs, color space, frame rate, image types |
+| File content | ✅ All match: constants, enums, structs, error codes | ✅ Also matches many items |
+| Key differentiator | “utilities related to CameraClient/CameraOperator”, “local camera query, open, close…” — implies client-facing utility layer | Focused on *pipeline* internals (pre/post), not client APIs |
+
+But note:  
+- The file defines `DCameraBufferUsage`, `DCSceneType`, `DCResolution` — these are **not** generic utilities like `StringUtils` or `TimeUtils`. They are *domain-specific* to distributed camera data handling.
+- However, the module `utils` explicitly says: *"constants, error codes, and general support capabilities related to CameraClient/CameraOperator"*, and this header is named `DISTRIBUTED_CONSTANTS_H` — strongly suggesting it belongs in a `utils` folder.
+
+In OpenHarmony codebase conventions:
+- `_constants.h` files are typically placed under `utils/` or `common/` directories, not under functional modules like `DataProcess`.
+- The namespace `OHOS::DistributedHardware` is broad, and `utils` is described as providing *shared* capabilities across source/sink — exactly what this header does.
+
+Also, `CameraDataProcessCommon` likely includes *interfaces* and *pipelines*, not just raw constants. A constants-only header is more foundational — i.e., utility.
+
+Let’s check redundancy:
+- If this were in `CameraDataProcessCommon`, then `CameraDataPreProcess` and `CameraDataPostProcess` would both include it — fine.
+- But if it's in `utils`, then *all* modules (SourceMgr, SinkMgr, Channel, DataProcess) can include it — which is more appropriate for truly shared constants.
+
+Given the **explicit mention of “constants” in the `utils` module description**, and the file being purely constants/types (no pipeline logic), the best fit is:
+
+> ✅ **utils**
+
+Probability: Very high
+
+Other modules are *users* of this header, but not its owner.
+
+---
+
+### Final Assessment
+
+- **utils**: Direct match — module description explicitly includes "constants", "error codes", "general support", and the file is a pure constants/types header.
+- **CameraDataProcessCommon**: Strong secondary candidate, but less precise — that module likely builds *on top* of utils, not defines the base constants.
+- All others: Lower relevance — they consume such constants but don’t define them.
+
+---
+
+**The probability that this file belongs to module 'utils' is 95%.**

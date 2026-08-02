@@ -1,0 +1,62 @@
+Let’s analyze the file content step by step to determine which module it belongs to.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `dcamera_pipeline_sink.h` → suggests this is a *sink-side* pipeline implementation.
+  - `distributed_hardware_log.h` → standard logging for distributed hardware.
+  - `encode_data_process.h` → indicates involvement of encoding (e.g., video encoding) as part of data processing.
+- Namespace: `OHOS::DistributedHardware`
+- Class: `DCameraPipelineSink`
+- Key functions:
+  - `CreateDataProcessPipeline(...)`: creates a data processing pipeline on the sink side.
+  - `InitDCameraPipNodes(...)`: initializes pipeline nodes, specifically pushes an `EncodeDataProcess` node.
+  - `ProcessData(...)`, `OnProcessedVideoBuffer(...)`, `OnError(...)`: callbacks and data handling in the pipeline.
+  - `IsInRange(...)`: validates video config parameters (frame rate, width/height).
+  - Uses `pipNodeRanks_` (a vector of shared pointers to data process nodes), with `EncodeDataProcess` being added — clearly a *data processing pipeline*.
+- Destructor destroys the pipeline if active.
+- Only supports `PipelineType::VIDEO`; explicitly rejects JPEG or other types.
+
+### 2. **Key Observations**
+- This class is named `DCameraPipelineSink`, indicating it's on the **sink side** (i.e., the *controlled device*, where camera data originates).
+- It builds and manages a **data processing pipeline** (specifically for video), including encoding (`EncodeDataProcess`).
+- It does **not** handle:
+  - Channel establishment (SoftBus, session management) → not `ChannelSink`.
+  - IPC service, controller logic, lifecycle/state machine → not `DistributedCameraSourceMgr`.
+  - Decoding or post-processing on the *source* side → not `CameraDataPostProcess`.
+  - Virtual camera/HDF device implementation → not `VirtualCameraHdf`.
+  - General utilities → not `utils`.
+
+### 3. **Candidate Module Matching**
+Let’s evaluate relevant candidates:
+
+#### ✅ **CameraDataProcessCommon**
+> *"This module provides common data processing frameworks, data processing pipeline interfaces, codecs, color space conversion, frame-rate control, image types, and other common capabilities, supplying foundational components for data processing flows on both the source and sink sides."*
+
+- The file implements a **pipeline framework** (`pipNodeRanks_`, node initialization, error handling, listener callbacks).
+- It uses `EncodeDataProcess`, suggesting it leverages codec-related components.
+- It's *sink-side specific*, but the description says “on both the source and sink sides” — so common pipeline infrastructure can be used on sink side.
+- However, note: `CameraDataProcessCommon` is described as providing *interfaces and frameworks*, not concrete sink-specific pipeline implementations.
+
+#### ✅ **CameraDataPreProcess**
+> *"This module is responsible for the data preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow."*
+
+- This matches well:
+  - It's on the **sink side**.
+  - It processes data *before transmission* — here, it's building a pipeline that includes `EncodeDataProcess`, i.e., encoding (which would happen before sending over channel).
+  - The pipeline is initialized from camera output (`sourceConfig`, `targetConfig`) and prepares data for downstream (likely transmission).
+  - `IsInRange` validates configs — typical pre-processing constraint checking.
+  - The class name `DCameraPipelineSink` strongly implies it's part of the *pre-transmission* processing on the sink.
+
+Compare with `CameraDataPostProcess`: that’s for *source side* (after receiving data), decoding, format conversion, etc. This file is clearly *not* that.
+
+#### ❌ Other modules:
+- `ChannelSink`: deals with SoftBus, sessions, command reception — no evidence of that here.
+- `DistributedCameraSourceMgr`: source-side controller logic — this is sink-side.
+- `VirtualCameraHdf`: HDF/HDI layer device implementation — this is higher-level pipeline logic.
+- `utils`: too generic; this is a structured pipeline class, not utility helpers.
+
+### 4. **Conclusion**
+The file implements a **sink-side data preprocessing pipeline**, specifically for video, involving encoding and config validation — exactly what `CameraDataPreProcess` is defined to do.
+
+> **Assigned Module**: [CameraDataPreProcess]

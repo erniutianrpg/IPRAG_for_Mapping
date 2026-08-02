@@ -1,0 +1,100 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **File name (inferred)**: `dcamera_source_input.h` (from macro `OHOS_DCAMERA_SOURCE_INPUT_H`)
+- **Language**: C/C++
+- **Includes**:
+  - `icamera_channel.h`, `icamera_channel_listener.h`, `icamera_input.h`, `icamera_source_data_process.h`  
+    → Indicates interaction with camera channels, listeners, input interface, and *source-side* data processing.
+  - `event_bus.h`, `event_sender.h`  
+    → Event-driven architecture; likely for internal event dispatching (e.g., session state, errors, data).
+- **Namespace**: `OHOS::DistributedHardware`
+- **Class**: `DCameraSourceInput`, inherits from:
+  - `ICameraInput` → core input interface (controller side)
+  - `EventSender` → sends events (e.g., to controller or other components)
+  - `std::enable_shared_from_this<DCameraSourceInput>` → shared ownership, typical in async/event-driven systems
+
+- **Key Methods**:
+  - Lifecycle: `Init()`, `UnInit()`
+  - Stream management: `ConfigStreams`, `ReleaseStreams`, `ReleaseAllStreams`
+  - Capture control: `StartCapture`, `StopCapture`
+  - Channel control: `OpenChannel`, `CloseChannel`
+  - Settings update: `UpdateSettings`
+  - Callbacks (observer pattern):
+    - `OnSessionState`, `OnSessionError`, `OnDataReceived`  
+      → These are *notifications from the channel/listener/data process*, implying this class is a *receiver* of events from lower layers (e.g., channel or data processor), and likely forwards them upward (via EventBus/EventSender).
+
+- **Private members**:
+  - `channels_`, `listeners_`, `dataProcess_` — maps per stream type (`DCStreamType`) to:
+    - `ICameraChannel`: abstract channel interface (likely IPC/SoftBus channel)
+    - `ICameraChannelListener`: listener for channel events
+    - `ICameraSourceDataProcess`: *source-side* data processing component
+  - `eventBus_`: used to publish events (e.g., capture started, error, data received)
+  - `isCapture_`, `isInit`, mutex → state management for concurrency
+
+→ This class acts as the **central coordinator on the source (controller) side** that:
+- Accepts high-level commands (e.g., `StartCapture`, `ConfigStreams`)
+- Orchestrates underlying channel + data processing components
+- Handles incoming events (session state, errors, data) from those components
+- Publishes events upward (e.g., to CameraClient or Controller)
+
+This matches the **DistributedCameraSourceMgr** description exactly:
+
+> *"This module is responsible for lifecycle, state machine, controller, input stream, data processing, IPC service, and callback management on the source side, namely the controller side..."*
+
+Note: While `DCameraSourceInput` is a *class*, not the full manager, in modular architecture, such a class is typically the core implementation inside the `DistributedCameraSourceMgr` module (e.g., `SourceInput.cpp/h` lives under `DistributedCameraSourceMgr`). The naming (`SourceInput`) and responsibilities align tightly with the *input stream & coordination* part of the source manager.
+
+---
+
+### **Elimination of Other Modules**
+
+- **DistributedCameraSinkMgr**: This is sink-side (controlled device). But this class is clearly on the *source* side (inherits `ICameraInput`, uses `ICameraSourceDataProcess`, manages *outgoing* capture commands). ❌
+
+- **ChannelSource**: This would be lower-level — just the SoftBus channel abstraction (e.g., `ICameraChannel` implementation). But this class *uses* `ICameraChannel`, doesn’t implement it. It’s a higher-level orchestrator. ❌
+
+- **ChannelSink**: Sink-side channel — irrelevant here. ❌
+
+- **CameraDataProcessCommon**: Provides *common interfaces/pipelines*, but this class uses `ICameraSourceDataProcess`, implying it’s a consumer, not the framework itself. Also, no codec/format conversion logic here. ❌
+
+- **CameraDataPreProcess**: Preprocessing on *sink/input side* — but this is source-side, and `ICameraSourceDataProcess` suggests it’s *source*-side processing (e.g., before sending to sink? Actually, no — in distributed camera, “source” = controller, so source-side data processing would be *post-receive*, i.e., post-processing. Wait — let’s clarify.)
+
+⚠️ Important nuance: In OHOS Distributed Camera:
+- **Source side** = controller device (user’s phone/tablet) — *requests* camera usage.
+- **Sink side** = controlled device (e.g., another phone’s camera) — *provides* camera data.
+
+So:
+- `DCameraSourceInput` runs on the **controller**, and receives data *from* the sink via channels.
+- Therefore, when it receives `OnDataReceived`, it’s receiving raw image data from the sink — and then likely forwards it to `ICameraSourceDataProcess` for *post-processing* (decoding, format conversion, etc.) before delivering to app.
+
+But note: the class itself does **not** implement data processing — it holds a map to `ICameraSourceDataProcess` instances. So it’s the *manager* that coordinates data processing, not the processor.
+
+Thus, it still fits **DistributedCameraSourceMgr**, which explicitly includes “data processing” *management* (not implementation), and “callback management”.
+
+- **CameraDataPostProcess**: This would be the actual processing logic (e.g., decode, resize). But this file contains no such logic — only orchestration and callbacks. So unlikely to be this module alone. ❌
+
+- **CameraServiceCommon**: Provides shared basics (protocols, metadata, etc.). This class uses those (e.g., `DCStreamInfo`, `DCCaptureInfo`, `DCameraSettings`), but it’s not defining them — it’s using them. So it’s a *consumer*, not part of the common utilities layer. ❌
+
+- **VirtualCameraHdf**: HDF/HDI layer — this is pure C++ application/service layer, no HDF interfaces visible (no `IHDI`, `DeviceManager`, etc.). ❌
+
+- **utils**: Contains buffers, constants, helpers. This class is complex, stateful, and orchestrates multiple subsystems — far beyond utility. ❌
+
+---
+
+### **Conclusion**
+The file defines `DCameraSourceInput`, a central coordinator on the **source (controller) side** that:
+- Manages camera input lifecycle,
+- Controls streams/channels,
+- Integrates with event bus,
+- Delegates to channel & data processing components,
+- Handles callbacks from lower layers.
+
+This is the *core input handler* within the **DistributedCameraSourceMgr** module.
+
+Probability: **95%** — very high confidence. The only reason not 100% is that in some architectures, `SourceInput` could be a sub-component, but all candidate modules point to `DistributedCameraSourceMgr` as the only one covering *source-side input + coordination + lifecycle + callback management*.
+
+---
+
+**Final Answer**:
+The probability that this file belongs to module 'DistributedCameraSourceMgr' is 95%.

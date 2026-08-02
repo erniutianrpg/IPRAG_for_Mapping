@@ -1,0 +1,72 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `dcamera_video_surface_listener.h` → suggests this is a listener for video surface buffer availability.
+  - `securec.h` → secure memory operations (e.g., `memcpy_s`)
+  - `data_buffer.h` → data buffer abstraction (used to copy frame data)
+  - `distributed_camera_errno.h` → error codes
+  - `distributed_hardware_log.h` → logging macros like `DHLOGI`, `DHLOGE`
+- Namespace: `OHOS::DistributedHardware`
+- Function: `DCameraVideoSurfaceListener::OnBufferAvailable()`
+  - This function is called when a new buffer is available from a `Surface`.
+  - It:
+    - Acquires a `SurfaceBuffer` from the `Surface`
+    - Copies its pixel data into a `DataBuffer`
+    - Invokes a callback (`callback_->OnVideoResult(dataBuffer)`) with the copied data
+
+This is clearly part of the **sink side** (controlled device), where camera frames are captured, read from a `Surface`, and then passed upward (likely to be encoded and sent over the channel to the source/controller).
+
+### 2. **Key Observations**
+- The class `DCameraVideoSurfaceListener` is listening for buffer availability on a `Surface`. In OHOS, `Surface` is typically used for rendering or video output — here, it's being used as an input surface for camera preview/video frames (i.e., the camera HAL or camera service writes frames into this surface).
+- It copies raw pixel data (`width * height * 4` → likely RGBA or ABGR) into a `DataBuffer`, which is a generic container for transmission.
+- Then it calls `callback_->OnVideoResult(dataBuffer)` — this implies it's feeding processed frame data into a pipeline (likely encoding/transmission).
+- No IPC/channel logic directly here; it's purely about **receiving frame buffers from a Surface and handing them off via a callback**.
+
+### 3. **Module Matching**
+
+Let’s evaluate candidates:
+
+- **DistributedCameraSourceMgr**: Source side (controller). This is sink-side logic → ❌  
+- **DistributedCameraSinkMgr**: Sink side lifecycle, controller, data processing, image/video output, event notification. This function is part of the sink side’s data acquisition path — but is it *manager* level? It’s more granular: a listener that handles buffer acquisition and forwards data. Could be under SinkMgr, but let’s see finer-grained modules.
+- **ChannelCommon / ChannelSink**: These deal with SoftBus session, channel communication. This code does **not** involve network/session/channel handling — only local buffer acquisition and callback. So ❌
+- **CameraDataProcessCommon**: Provides common data processing frameworks, pipelines, codecs, etc. This is not a framework — it’s a concrete listener implementation. Not generic enough. ❌
+- **CameraDataPreProcess**: *"responsible for the data preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow."*  
+  ✅ This fits well:
+  - It’s on the **sink side**.
+  - It processes raw image data from the camera framework (via `SurfaceBuffer`).
+  - It copies data into a `DataBuffer` — a preprocessing step before encoding/transmission.
+  - It feeds the result to a callback — likely the next stage (e.g., encoder or channel sender).
+- **CameraDataPostProcess**: Source side — ❌
+- **CameraServiceCommon**: Shared basic services (commands, protocols, metadata). This is not protocol-level — it’s concrete buffer handling. ❌
+- **VirtualCameraHdf**: HDF/HDI layer — this is higher-level (C++ app/service layer), not HDF driver. No HDF interfaces used here. ❌
+- **utils**: Provides utilities like `DataBuffer`, error codes, logging — and indeed, this file uses `DataBuffer`, `distributed_camera_errno.h`, `distributed_hardware_log.h`. But note: `utils` is described as including *"local camera query, open, close, stream acquisition, and preview/photo/video callback handling"*.  
+  The function `OnBufferAvailable()` is a **callback handler** for video buffer availability — exactly what `utils` says it includes.
+
+Now we must decide between:
+- `CameraDataPreProcess` (preprocessing pipeline on sink side)
+- `utils` (general utilities, including callback handling)
+
+Let’s re-read the `utils` description:
+> *"including local camera query, open, close, stream acquisition, and preview/photo/video callback handling."*
+
+The function here is a **video callback handler** (`OnBufferAvailable`) that acquires and copies frame data — precisely “preview/photo/video callback handling”.
+
+Also, the class `DCameraVideoSurfaceListener` is likely a helper/utility class, not part of a full pipeline module. It doesn’t do format conversion, scaling, or encoding — just safe copying and forwarding.
+
+Moreover, the includes are all utility-like: `data_buffer.h`, `securec.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` — all typical in `utils`.
+
+In contrast, `CameraDataPreProcess` would likely include things like:
+- Color space conversion
+- Resolution scaling
+- Frame dropping
+- Timestamp alignment
+- Integration with codec pipelines
+
+This code does **none** of that — just raw memcpy and callback.
+
+### 4. **Conclusion**
+The file implements a low-level video buffer listener that handles callback-based frame acquisition and safe copying — fitting best under the **utils** module, which explicitly includes “preview/photo/video callback handling” and provides `DataBuffer`, error codes, and logging.
+
+✅ **Assigned Module**: [utils]

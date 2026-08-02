@@ -1,0 +1,81 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `dcamera_capture_info_cmd.h` → suggests this is a *command* class for capturing camera info.
+  - `distributed_camera_constants.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` → standard shared headers for constants, error codes, logging in distributed camera subsystem.
+- **Namespaces**: `OHOS::DistributedHardware` → consistent with OpenHarmony’s distributed hardware framework.
+- **Class/Functions**:
+  - `DCameraCaptureInfoCmd::Marshal(...)`: serializes capture info (width, height, format, settings, etc.) into JSON.
+  - `DCameraCaptureInfoCmd::Unmarshal(...)`: deserializes JSON into internal struct.
+  - Helper methods: `UmarshalValue`, `UmarshalSettings` — parse nested JSON structures (e.g., `CaptureSettings`, `streamType`, `encodeType`, `isCapture`, etc.).
+
+This is clearly a **command serialization/deserialization utility** for exchanging camera capture configuration between source and sink sides over IPC (likely via SoftBus). The structure matches a *protocol message* used in command exchange.
+
+Key observations:
+- It deals with **camera capture info**, not raw image data or video streams.
+- It’s about **command payload marshaling**, not device control, data processing, or channel transport itself.
+- No logic for:
+  - IPC session management (→ rules out `ChannelCommon`, `ChannelSink`)
+  - Lifecycle/state machine (→ rules out `DistributedCameraSourceMgr`, `DistributedCameraSinkMgr`)
+  - Image/video decoding/encoding/pre/post-processing (→ rules out `CameraDataPreProcess`, `CameraDataPostProcess`, `CameraDataProcessCommon`)
+  - HDF/HDI virtual device implementation (→ rules out `VirtualCameraHdf`)
+  - General utilities like buffers, indexes, local camera ops (→ less likely `utils`, though it uses common headers)
+
+---
+
+### **2. Module Matching**
+
+#### ✅ **CameraServiceCommon**
+> *"Provides shared basic service capabilities for the source and sink sides... including basic commands, protocols, camera information, channel information, events, Metadata settings, open-camera information, and controller interfaces."*
+
+- This file defines a **command structure (`DCameraCaptureInfoCmd`)** used to convey camera capture parameters (e.g., resolution, format, settings).
+- Marshaling/unmarshaling of such commands is exactly what "basic commands" and "protocols" refer to.
+- Shared between source/sink — since both sides need to understand this command format.
+- Uses `distributed_camera_errno.h`, `distributed_camera_constants.h` — typical of shared service modules.
+
+#### ❌ DistributedCameraSourceMgr / SinkMgr
+- These are high-level managers handling lifecycle, IPC services, callbacks, etc.
+- This file is *not* a manager; it's a pure data/command serializer — too low-level for these modules.
+
+#### ❌ ChannelCommon / ChannelSink
+- These deal with *transport layer*: sessions, SoftBus adaptation, channel listeners.
+- This file does *not* interact with SoftBus or channels directly — only produces/consumes JSON payloads that would be sent *over* those channels.
+
+#### ❌ CameraData* modules
+- These handle actual media data pipelines (pre/post/process), codecs, frame rate, color space.
+- This file handles metadata/config, not pixel data.
+
+#### ❌ VirtualCameraHdf
+- Involves HDF driver-level implementation (Host/Provider/Device/StreamOperator).
+- No HDF APIs, no HDI interfaces here.
+
+#### ❌ utils
+- While `utils` includes constants/error codes/logging, its scope is broader: buffers, indexes, local camera operations (open/close/query).
+- This file is *specifically* about a structured command protocol — more aligned with *service-level command definition*, which `CameraServiceCommon` explicitly covers.
+
+---
+
+### **3. Supporting Evidence from Raw Excerpt**
+- The class `DCameraCaptureInfoCmd` encapsulates:
+  - `type_`, `dhId_`, `command_` → standard command header fields.
+  - `value_`: list of `DCameraCaptureInfo` objects (each with width, height, format, dataspace, encodeType, streamType, captureSettings).
+- This mirrors typical IPC command definitions used in service interfaces (e.g., `ICameraService`-like interfaces).
+- The use of `Json::Value` for serialization suggests it's part of a JSON-based RPC/IPC protocol — common in OpenHarmony’s distributed hardware services.
+
+In OpenHarmony architecture, such command classes are typically placed under `CameraServiceCommon`, as they define the *shared protocol* used by both source and sink managers.
+
+---
+
+### ✅ Final Assessment
+
+The file implements **serialization/deserialization of a camera capture info command**, which is a core part of the shared protocol layer between source and sink — precisely what `CameraServiceCommon` is defined to provide.
+
+Other modules either operate at higher (manager) or lower (transport/data) layers, or serve different purposes.
+
+---
+
+**The probability that this file belongs to module 'CameraServiceCommon' is 95%.**

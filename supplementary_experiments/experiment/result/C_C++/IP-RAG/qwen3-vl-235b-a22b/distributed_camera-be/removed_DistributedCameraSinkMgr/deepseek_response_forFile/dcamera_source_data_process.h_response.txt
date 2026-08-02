@@ -1,0 +1,71 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+services\cameraservice\sourceservice\include\distributedcameramgr\dcameradata\dcamera_source_data_process.h
+```
+- Located under `sourceservice` → indicates **source side (controller side)**.
+- Subdirectory `dcameradata` suggests it deals with **data processing** logic.
+- Filename: `dcamera_source_data_process.h` → explicitly names *source-side data processing*.
+
+### 2. **Content Analysis**
+- Class: `DCameraSourceDataProcess`, inherits from `ICameraSourceDataProcess`.
+- Key responsibilities (from public methods):
+  - `FeedStream(...)`: feeds stream buffers — likely ingesting data (e.g., from sink side).
+  - `ConfigStreams(...)`, `ReleaseStreams(...)`: manage stream configuration/lifecycle.
+  - `StartCapture(...)`, `StopCapture()`: control capture state.
+  - `GetAllStreamIds(...)`: query active streams.
+- Member variables:
+  - `std::vector<std::shared_ptr<DCameraStreamDataProcess>> streamProcess_`: holds per-stream data processors.
+  - `std::set<int32_t> streamIds_`: tracks stream IDs.
+  - `devId_`, `dhId_`, `streamType_`: device & stream context.
+
+This class is a **coordinator/manager** for source-side data processing — it aggregates and dispatches to per-stream processors (`DCameraStreamDataProcess`), handles stream lifecycle, and implements the interface for feeding data and controlling capture.
+
+Note: It does **not** handle:
+- IPC/channel communication (no SoftBus, session, or transport logic).
+- Codec/format conversion (no mention of decoding, color space, frame rate adjustment — that would be in post/pre-process).
+- HDF/HDI virtual camera implementation.
+- General utilities or common types only.
+
+It is specifically about **orchestrating data processing on the source side**, i.e., after receiving data from the sink (via channel), before handing it to upper layers (e.g., app or preview surface). This aligns with **post-processing** on the source side — but let’s compare carefully.
+
+### 3. **Candidate Module Comparison**
+
+| Module | Relevance |
+|--------|-----------|
+| **DistributedCameraSourceMgr** | Described as handling *lifecycle, state machine, controller, input stream, data processing, IPC service, callback management* on source side. This is broad. Our class is focused on *data processing* part of that — but not IPC, not full lifecycle/controller. However, note: it says “data processing” is part of this module. Still, the class name and structure suggest it's a *subcomponent* rather than the top-level manager. |
+| **ChannelCommon / ChannelSource / ChannelSink** | No — no channel/session/SoftBus logic here. |
+| **CameraDataProcessCommon** | Provides *common frameworks*, *pipeline interfaces*, *codecs*, *color space*, etc. Our class does **not** implement codecs or color space; it delegates to `DCameraStreamDataProcess`. It’s more of an orchestrator, not a generic framework. So unlikely. |
+| **CameraDataPreProcess** | Defined as *sink-side* preprocessing — e.g., before transmission. Our file is **source-side**, so no. |
+| **CameraDataPostProcess** | Defined as: *“data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution…”* — This seems close. But does our class do decoding/format conversion? From the header, no: it just feeds buffers and manages streams; actual processing likely happens in `DCameraStreamDataProcess`. However, the *role* of this class is to coordinate post-capture data flow on the source side — which fits the *pipeline orchestration* aspect of post-processing. |
+| **CameraServiceCommon** | Shared basic capabilities (commands, protocols, metadata, etc.) — not matching; this is more concrete data flow. |
+| **VirtualCameraHdf** | HDF/HDI layer — not relevant. |
+| **utils** | General utilities — this is a structured class, not utility functions/buffers/etc. |
+
+### 4. **Critical Insight**
+The class inherits `ICameraSourceDataProcess`, and the header includes `dcamera_stream_data_process.h`, suggesting a hierarchy:
+- `DCameraSourceDataProcess` → manages multiple `DCameraStreamDataProcess` instances.
+- Each `DCameraStreamDataProcess` likely handles per-stream decoding, format conversion, etc.
+
+Thus, `DCameraSourceDataProcess` is the **top-level data processor on the source side**, responsible for:
+- Accepting raw buffers (likely received over channel),
+- Routing them to appropriate stream processors,
+- Managing stream lifecycle (config/release/capture),
+- Providing unified interface for source-side consumers.
+
+This matches the definition of **CameraDataPostProcess**, which is explicitly for *source-side post-processing pipeline*.
+
+While *DistributedCameraSourceMgr* also mentions “data processing”, its scope is broader (lifecycle, controller, IPC), and typically such a manager would *use* `DCameraSourceDataProcess`, not be it. The file path being under `dcameradata/` (not `mgr/`) further supports it being part of the *data processing* subsystem, not the high-level manager.
+
+### ✅ Conclusion
+The most precise match is:
+**CameraDataPostProcess** — because:
+- It’s source-side,
+- It’s about post-capture data handling (feeding, configuring, capturing streams),
+- It coordinates stream-level data processing (a pipeline role),
+- And the naming/convention aligns with post-processing responsibilities.
+
+---
+
+**Assigned Module**: [CameraDataPostProcess]

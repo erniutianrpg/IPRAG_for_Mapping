@@ -1,0 +1,56 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `"SessionWrapper.h"` (custom, likely internal)
+  - `folly/Memory.h`, `folly/io/async/AsyncSocket.h`, `folly/io/async/DelayedDestruction.h` → Folly async I/O utilities
+  - `proxygen/httpserver/RequestHandler.h` → **high-level HTTP server interface**
+  - `proxygen/lib/http/HTTPConnector.h` → low-level HTTP client-side connection logic (used for upstream proxying)
+
+- Namespaces: `ProxyService`, `proxygen`
+- Types: `ResponseHandler`, `ProxyStats`, `ProxyHandler`, `ServerTransactionHandler`
+- Key class: `ProxyHandler`, which:
+  - Inherits from `proxygen::RequestHandler` → indicates it's a **server-side request handler** (i.e., part of an HTTP server built using `proxygen/httpserver`)
+  - Also inherits from `folly::DelayedDestruction`, `proxygen::HTTPConnector::Callback`, `folly::AsyncSocket::ConnectCallback`, etc.
+  - Implements both *downstream* (client → proxy) and *upstream* (proxy → backend) HTTP transaction handling:
+    - `onRequest`, `onBody`, `onEOM`, etc. → downstream (from client)
+    - `onServerHeadersComplete`, `onServerBody`, `onServerEOM`, etc. → upstream (to backend)
+  - Uses `HTTPConnector` to establish connections to upstream servers — classic **reverse proxy** behavior.
+
+This is clearly a **proxy server handler**, implementing a reverse proxy that:
+- Accepts HTTP requests via `proxygen::RequestHandler`
+- Connects to upstream servers using `HTTPConnector`
+- Bridges downstream and upstream transactions
+
+### 2. **Module Mapping**
+
+Let’s evaluate each candidate:
+
+- **pools**: About backend pool configuration. This file does not define pools, load balancing policies, or service discovery. It *uses* stats (`ProxyStats*`) but doesn’t manage pools. ❌
+
+- **sampling**: No sampling logic here (no probabilistic decisions, no sampler objects). ❌
+
+- **ssl**: No SSL/TLS context, no `SSLContext`, no TLS-specific callbacks. The includes are generic async I/O, not SSL-related. ❌
+
+- **general**: This is for *utils* like string helpers, time utilities, etc. While this file uses Folly utilities, its core purpose is not generic utility—it’s a concrete HTTP proxy handler. The file is too domain-specific for `general`. ❌
+
+- **http_general**: This module covers core HTTP protocol logic — parsing, encoding, session/transaction management in `proxygen/lib/http/`. But note: `ProxyHandler` inherits from `RequestHandler` (from `httpserver/`), and uses `HTTPConnector` (from `lib/http/`). However, `http_general` is about *protocol internals*, not server-side application logic like proxying. The presence of `RequestHandler` strongly points *outside* `lib/http/` → toward `httpserver`. Also, `ServerTransactionHandler` is a helper class, not a core protocol component. So while it uses `http_general` components, the file itself is not part of the core protocol layer. ⚠️ Not the best fit.
+
+- **services**: Described as `proxygen/lib/services/`, for “connection management and server-side related code… service execution, connection acceptance, worker threads”. But `ProxyHandler` is not a service manager or worker; it’s a per-request handler. `lib/services/` typically contains things like `ServiceHandler`, `Worker`, `Server`, etc. This file is more application-level than infrastructure. ❌
+
+- **httpserver**: Defined as “wraps `proxygen/lib/` and provides high-level APIs for building simple C++ HTTP servers”, and specifically mentions `RequestHandler`. Crucially:
+  - `#include <proxygen/httpserver/RequestHandler.h>` is present.
+  - `ProxyHandler : public proxygen::RequestHandler` — this is the hallmark of an `httpserver`-level handler.
+  - The pattern (implement `onRequest`, `onBody`, etc.) matches exactly how users extend `RequestHandler` to build HTTP servers/proxies using the `httpserver` module.
+  - Even though it also uses `HTTPConnector` (from `lib/http/`) to talk upstream, the *entry point* and *role* is as a server-side handler — i.e., part of the `httpserver` abstraction layer.
+
+✅ This fits **httpserver** best.
+
+### 3. **Reference Example Guidance**
+Although no explicit examples were given in the prompt, the description of `httpserver` explicitly says it’s for “high-level APIs for building simple C++ HTTP servers” and uses `RequestHandler`. Our file is literally a custom `RequestHandler` subclass implementing a proxy — the canonical use case for `httpserver`.
+
+### Conclusion:
+The file implements a proxy request handler that extends `proxygen::RequestHandler`, placing it squarely in the **httpserver** module — the high-level server framework layer.
+
+**Assigned Module**: [httpserver]

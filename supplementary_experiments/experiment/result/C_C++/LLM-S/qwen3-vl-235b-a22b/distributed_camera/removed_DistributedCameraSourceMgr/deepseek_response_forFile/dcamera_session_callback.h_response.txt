@@ -1,0 +1,51 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### File Content Summary:
+- **Header guard**: `OHOS_DCAMERA_SESSION_CALLBACK_H`
+- **Includes**:
+  - `"capture_session.h"` — suggests involvement with camera session lifecycle (likely from CameraStandard or distributed camera session abstraction)
+  - `"icamera_operator.h"` — indicates interaction with camera operator interface (HDI/HDF layer or service-level camera control)
+- **Namespaces**: `OHOS::DistributedHardware` — strongly signals this is part of OpenHarmony’s Distributed Hardware subsystem.
+- **Class**: `DCameraSessionCallback`, inherits from `CameraStandard::SessionCallback`
+  - Constructor takes `std::shared_ptr<StateCallback>` — implies it forwards or wraps state/event callbacks from higher layers.
+  - Overrides `OnError(int32_t errorCode)` — standard session error callback.
+- **Member**: `callback_` of type `std::shared_ptr<StateCallback>` — likely used to notify upper-layer (e.g., sink manager or controller) about session events/errors.
+
+### Key Observations:
+1. **Inheritance from `CameraStandard::SessionCallback`** means this class is a *callback handler for camera session events*, specifically for distributed camera sessions.
+2. The name `DCameraSessionCallback` and namespace `DistributedHardware` indicate it's part of the **distributed camera architecture**, not generic camera framework.
+3. It does **not** implement channel communication (no SoftBus, no IPC directly), nor does it handle data processing (no codecs, frame buffers, color space conversion).
+4. It does **not** implement HDF/HDI device logic (no Device/Provider/StreamOperator interfaces).
+5. It’s a *callback adapter* that bridges low-level camera session events (like errors) to higher-level state management — likely consumed by a manager (e.g., sink manager or source controller) that needs to react to session failures.
+
+Now evaluate each candidate module:
+
+| Module | Relevance Reasoning |
+|--------|---------------------|
+| **DistributedCameraSinkMgr** | ✅ Strong candidate. The sink manager needs to monitor camera session state (e.g., open/close, errors) on the controlled side. This callback would be registered with the local camera session and forward errors/events to the sink manager. The `StateCallback` likely originates from the sink manager. |
+| **ChannelCommon** | ❌ Unlikely: No channel/session establishment logic, no SoftBus, no listener interfaces. This is purely a callback wrapper, not infrastructure. |
+| **ChannelSource** | ❌ No evidence of controller-side command sending or receiving image streams. Not involved in channel setup. |
+| **ChannelSink** | ⚠️ Possible but less likely: ChannelSink handles communication with controller, but session callbacks like `OnError` are typically handled at a higher layer (e.g., SinkMgr), not directly in channel transport layer. ChannelSink would use such a callback but not define it. |
+| **CameraDataProcessCommon** | ❌ No data pipeline, codec, or format handling. Pure event/callback logic. |
+| **CameraDataPreProcess** / **PostProcess** | ❌ No preprocessing/postprocessing logic (no frame manipulation, resolution scaling, etc.). |
+| **CameraServiceCommon** | ⚠️ Partial fit: Provides shared services including “events” and “controller interfaces”. However, this class is specific to *session* callbacks, not general service protocols. Still, `StateCallback` might be defined here. But the header name and inheritance suggest tighter coupling with sink-side session management. |
+| **VirtualCameraHdf** | ❌ No HDF/HDI layer constructs (no `IHdfDevice`, `IStreamOperator`, etc.). This is C++ user-space callback, not driver/proxy layer. |
+| **utils** | ⚠️ Possible: utils provides “preview/photo/video callback handling” and “general support capabilities related to CameraClient/CameraOperator”. However, this is *not* a generic utility — it's a *distributed-specific* session callback (`DCamera...`) in `DistributedHardware` namespace, suggesting it belongs to a core module rather than generic utils. |
+
+### Critical Clue:
+The class inherits `CameraStandard::SessionCallback`, which is part of the **standard camera API** (e.g., used when opening a camera session via `CameraOperator`). In distributed camera, the **sink side** opens a local camera session and needs to handle its lifecycle/events — and `DCameraSessionCallback` is exactly the glue that forwards those events (like errors) to the distributed camera manager (i.e., `DistributedCameraSinkMgr`), which then reports upstream via IPC/channel.
+
+Also, the constructor takes `std::shared_ptr<StateCallback>`, where `StateCallback` is likely defined in `DistributedCameraSinkMgr` or its dependencies — a common pattern where the manager passes its own state callback into the session callback adapter.
+
+Thus, the most coherent assignment is:
+
+> This file defines a session callback adapter used by the sink-side camera session, owned and consumed by the **DistributedCameraSinkMgr**, which manages the sink-side camera lifecycle and coordinates with the controller.
+
+### Final Probability Assignment:
+- **DistributedCameraSinkMgr**: **90%**
+- **CameraServiceCommon**: 10% (if `StateCallback` is defined there, but still the *usage* points to SinkMgr)
+- All others: ≤5%
+
+---
+
+**The probability that this file belongs to module 'DistributedCameraSinkMgr' is 90%.**

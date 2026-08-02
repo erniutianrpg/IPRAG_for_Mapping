@@ -1,0 +1,86 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### File Content Summary:
+- **File name (inferred from macro)**: `DISTRIBUTED_CAMERA_HOST_CALLBACK_CLIENT_STUB_H` → suggests a *client-side stub* for a *host callback* interface.
+- **Includes**:
+  - `icamera_host_callback.h`: Defines the callback interface (`ICameraHostCallback`) that the host (controller/source side) implements to receive events from the sink (controlled side).
+  - `iremote_stub.h`, `message_parcel.h`, `parcel.h`: Standard OHOS IPC infrastructure — indicates this is an IPC stub class implementing remote callback handling.
+- **Namespace**: `OHOS::DistributedHardware`, with `using namespace OHOS::Camera;` — confirms it's part of the distributed camera subsystem, specifically in the hardware/distributed layer, and tied to camera functionality.
+- **Class**: `DCameraHostCallbackStub : public IRemoteStub<ICameraHostCallback>`
+  - This is a *server-side stub* (i.e., runs on the **sink side**) that receives remote calls *from the source side* (controller), because:
+    - In OHOS IPC, `IRemoteStub<T>` implements the *server* side of an interface `T`.
+    - The `ICameraHostCallback` interface is implemented by the **host** (i.e., the controller/source) to receive callbacks (e.g., preview frame ready, error, etc.).
+    - But here, `DCameraHostCallbackStub` is a *stub* that handles incoming requests *on the sink side* — meaning the sink side is acting as the *server* for the host’s callback interface. Wait — let’s clarify carefully:
+
+> In distributed camera architecture:
+> - The **source (controller)** opens the camera on the **sink (controlled device)**.
+> - The sink creates a camera service and returns a proxy to the source.
+> - The source also registers its *callback* (e.g., `ICameraHostCallback`) with the sink, so the sink can notify the source (e.g., “frame available”).
+> - To register the callback, the source sends its *proxy* (a client-side proxy to its own callback interface) to the sink.
+> - The sink then holds a *stub* (`DCameraHostCallbackStub`) that forwards remote calls (e.g., `OnFrameAvailable`) back to the source’s actual callback implementation.
+
+Thus, `DCameraHostCallbackStub` lives on the **sink side**, and is used to handle callbacks *originating from the sink* and *delivered to the source*. But since it’s a stub, it resides where the *IPC server* for that interface runs — i.e., on the **sink side**, because the sink needs to invoke the source’s callback.
+
+Wait — correction: In OHOS AIDL/IPC pattern:
+- If Interface `I Foo`, then:
+  - `IFoo` is the abstract interface.
+  - `IFooProxy` is the client-side proxy (used by caller).
+  - `IFooStub` is the server-side stub (implemented by callee).
+- So if the **source** wants to receive callbacks, it must implement `ICameraHostCallback`, and expose a `IFooStub` — but no: actually, the **source** implements the callback, so it creates a *local* instance of `ICameraHostCallback`, then wraps it in a `Stub`, and sends the *proxy* of that stub to the sink via IPC.
+- The sink holds the proxy, and when it wants to notify the source, it calls methods on that proxy → which routes to the source’s stub → invokes the real callback.
+
+Therefore, the `DCameraHostCallbackStub` class is the **server-side stub implementation that runs on the source side**, because:
+- It inherits `IRemoteStub<ICameraHostCallback>` → means it’s the *server* endpoint for `ICameraHostCallback`.
+- The sink will hold a *proxy* to this stub (sent by the source during registration), and call methods like `OnFrameAvailable` on that proxy.
+- So the stub must be hosted on the **source (controller)** side.
+
+But the macro is `DISTRIBUTED_CAMERA_HOST_CALLBACK_CLIENT_STUB_H` — note “CLIENT_STUB”. That’s confusing. However, in OHOS naming conventions, sometimes “ClientStub” refers to the stub used on the *client side* to handle callbacks *from the server* — i.e., the client (source) hosts the stub to receive callbacks from the server (sink). Yes — that matches: the **source** is the client of the camera service, but it hosts a stub to receive callbacks from the sink.
+
+So:  
+✅ `DCameraHostCallbackStub` runs on the **source (controller) side**, implementing the callback interface for the sink to invoke.
+
+Now, which module manages callback registration and handling on the **source side**?
+
+Look at candidate modules:
+
+- **DistributedCameraSourceMgr**:  
+  > *"lifecycle, state machine, controller, input stream, data processing, IPC service, and **callback management on the source side**"*  
+  ✅ Explicitly mentions *callback management on the source side*.
+
+- **DistributedCameraSinkMgr**:  
+  > callback management is not mentioned; focuses on sink-side operations (receiving commands, outputting data). Unlikely.
+
+- **ChannelCommon / ChannelSource**: These are about transport/session — not about callback interfaces per se.
+
+- **CameraServiceCommon**: Provides shared basic service capabilities, including "controller interfaces" and "events", but not specifically callback *stub* implementation.
+
+- **utils**: Mentions "*preview/photo/video callback handling*", but at a generic utility level — not IPC stubs.
+
+- **VirtualCameraHdf**: HDF/HDI layer — this is higher-level IPC (not HDF driver layer); stub is in DistributedHardware namespace, not HDF.
+
+The class is in `OHOS::DistributedHardware`, and implements an IPC stub for `ICameraHostCallback`, which is core to how the **source manager** receives notifications (e.g., frame available, error) from the sink.
+
+Also, the header name `DISTRIBUTED_CAMERA_HOST_CALLBACK_CLIENT_STUB_H` aligns with naming used in `DistributedCameraSourceMgr` — e.g. in OpenHarmony codebase, the source manager contains files like `dcamera_host_callback_client_stub.h`.
+
+Thus, the strongest match is:
+
+### ✅ DistributedCameraSourceMgr
+
+Other modules are less likely:
+- **DistributedCameraSinkMgr**: Would contain stubs for `ICameraDeviceCallback` or `ICameraControl`, not `ICameraHostCallback`.
+- **CameraServiceCommon**: Might define the interface `ICameraHostCallback`, but not its stub implementation.
+- **utils**: Too generic; stubs are architecture-level, not utility-level.
+
+### Probability Assessment:
+- Very high alignment with **DistributedCameraSourceMgr** (callback management on source side, IPC stub for host callback).
+- No other module explicitly owns callback stubs on the source side.
+
+**Final judgment**:  
+The probability that this file belongs to module **DistributedCameraSourceMgr** is **95%**.
+
+(5% uncertainty due to possible shared infrastructure in CameraServiceCommon, but stub implementation is clearly owned by the source manager.)
+
+---
+
+**Answer**:  
+"The probability that this file belongs to module 'DistributedCameraSourceMgr' is 95%."

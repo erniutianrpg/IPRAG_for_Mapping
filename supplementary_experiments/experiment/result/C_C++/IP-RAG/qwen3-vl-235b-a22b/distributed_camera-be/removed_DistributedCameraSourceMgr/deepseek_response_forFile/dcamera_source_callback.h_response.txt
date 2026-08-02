@@ -1,0 +1,89 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+interfaces\inner_kits\native_cpp\camera_source\include\callback\dcamera_source_callback.h
+```
+- Located under `camera_source` → suggests this is on the **source side** (i.e., controller side, where camera data originates or is controlled).
+- In distributed camera architecture, the **source side** typically refers to the device that *hosts* the physical camera and provides data — but note: in OHOS Distributed Camera terminology, the **"source"** is often the *controller* (the device requesting camera access), while the **"sink"** is the *controlled* device hosting the camera. However, naming can be confusing.
+
+But crucially:
+- The path includes `camera_source`, and the class name is `DCameraSourceCallback`.
+- The header includes `dcamera_source_callback_stub.h` and `idistributed_hardware_source.h`.
+
+Let’s inspect the content.
+
+---
+
+### 2. **Content Analysis**
+
+#### Includes:
+- `<map>` — standard container.
+- `"dcamera_source_callback_stub.h"` — implies this class inherits from a stub (likely an IPC stub for callback handling).
+- `"idistributed_hardware_source.h"` — interface for distributed hardware source; likely defines abstract callback interfaces.
+
+#### Class Definition:
+```cpp
+class DCameraSourceCallback : public DCameraSourceCallbackStub {
+```
+- Inherits from `DCameraSourceCallbackStub`, which strongly suggests it's part of an **IPC callback mechanism** used by the **source side** to receive asynchronous results (e.g., registration/unregistration results) from the **distributed hardware service** (likely running on the sink side or system service).
+
+#### Key Methods:
+- `OnNotifyRegResult(...)`, `OnNotifyUnregResult(...)`  
+  → These are callbacks invoked when registration/unregistration requests (e.g., to enable/disable camera sharing) complete. This matches typical **control-plane IPC callbacks**, not data-plane.
+
+- `PushRegCallback(...)`, `PopRegCallback(...)`, etc.  
+  → These manage a map of pending callbacks (by `reqId`), indicating this class acts as a **callback dispatcher / registry** for asynchronous operations — common in IPC layers where request IDs are used to correlate responses.
+
+#### Member Variables:
+- `std::map<std::string, std::shared_ptr<RegisterCallback>> regCallbacks_;`  
+  → Stores pending register/unregister callbacks — again, control-plane coordination.
+
+#### Namespace:
+- `OHOS::DistributedHardware` — confirms this is part of the distributed hardware framework, specifically for camera.
+
+---
+
+### 3. **Compare with Candidate Modules**
+
+Let’s evaluate each candidate:
+
+- **DistributedCameraSinkMgr**: Focuses on *sink-side* lifecycle, access control, image/video output. This file is about *callbacks* and *registration results*, not sink-side data flow or output. ❌
+
+- **ChannelCommon**: Provides *common channel-layer* capabilities: SoftBus adaptation, session management, channel interfaces/listeners. While callbacks are involved in channels, this class is not a channel interface itself — it’s a *callback handler* tied to hardware registration, not transport/session layer. ❌
+
+- **ChannelSource**: Responsible for *controller-side channel implementation*: establishes connections, sends commands, receives image info. But this file does **not** handle image/data transmission — only registration/unregistration result callbacks. Also, `ChannelSource` would deal with sending/receiving frames or control messages over SoftBus directly, not managing callback registries. ❌
+
+- **ChannelSink**: Controlled-side channel implementation — receives commands, sends image data. Again, this is not about data transmission; it's about *asynchronous response handling* for registration — likely initiated by the source (controller) and responded by sink (device). But the class is named `DCameraSourceCallback`, implying it lives on the *source* side to receive replies. So not ChannelSink. ❌
+
+- **CameraDataProcessCommon**, **CameraDataPreProcess**, **CameraDataPostProcess**: All deal with *image/video data processing* pipelines. This file has no image processing logic — only callback dispatching. ❌
+
+- **CameraServiceCommon**: *"Provides shared basic service capabilities for the source and sink sides... including basic commands, protocols, camera information, channel information, events, Metadata settings, open-camera information, and controller interfaces."*  
+  → This is promising. It explicitly mentions **events**, **controller interfaces**, and **basic service capabilities**. Callbacks like `OnNotifyRegResult` are exactly the kind of *event notifications* that would be part of a common service layer — especially since it’s tied to `IDistributedHardwareSource`, which is likely a system-level service interface.
+
+- **VirtualCameraHdf**: Implements HDF/HDI virtual camera devices, stream operators, metadata, IPC proxies/callbacks at *HDF layer*. But this file is in `native_cpp/camera_source/include/callback/`, not HDF/HDI layer — and doesn’t mention HDF, Device, StreamOperator, etc. ❌
+
+- **utils**: Provides utilities, buffers, error codes, local camera callbacks (preview/photo/video), etc. While this class manages callbacks, it’s *not generic utility* — it’s tightly coupled to distributed hardware registration protocol and uses `DCameraSourceCallbackStub`, suggesting it’s part of a formal service interface, not a helper util.
+
+---
+
+### 4. **Key Insight**
+
+The class:
+- Inherits from a *stub* (`DCameraSourceCallbackStub`) → implies it’s part of an **IPC callback interface** defined by a service.
+- Implements `OnNotifyRegResult`/`OnNotifyUnregResult` → these are responses to registration requests sent to the distributed hardware service (e.g., to register a camera for sharing).
+- Manages pending callbacks via maps → typical pattern in service clients to match async replies to requests.
+
+This fits best under **CameraServiceCommon**, because:
+- It provides *shared basic service capabilities*, including **events** and **controller interfaces**.
+- Registration/unregistration is a core *service-level operation*, not channel or data processing.
+- The namespace `DistributedHardware` aligns with the service layer (OHOS Distributed Hardware Service).
+- Other modules are more specialized (channel, data processing, HDF), while this is foundational control-plane callback handling.
+
+Reference examples (though none provided) would likely place such callback stubs in a *common service module*, not in channel or data modules.
+
+---
+
+### ✅ Final Decision:
+
+**Assigned Module**: [CameraServiceCommon]

@@ -1,0 +1,81 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `<atomic>`, `<cstdint>`, `<mutex>`, `<thread>` → standard threading/synchronization primitives.
+  - `folly/Portability.h`, `folly/io/async/EventBase.h` → Folly async I/O infrastructure (event loop, thread-per-event-loop pattern).
+- **Namespaces**: `folly`, `proxygen`
+- **Key Types**:
+  - `class WorkerThread`: A thread wrapper that manages an `EventBase`, with lifecycle control (`start`, `stopWhenIdle`, `forceStop`, `wait`, `runLoop`), state machine (`State` enum), and thread-local access (`getCurrentWorkerThread()`).
+  - `class EventBaseManager`: Forward-declared; likely manages a pool or registry of `EventBase` instances.
+- **Functions**:
+  - Lifecycle: `start()`, `stopWhenIdle()`, `forceStop()`, `wait()`, `setup()`, `cleanup()`, `runLoop()`
+  - Accessors: `getEventBase()`, `getThreadId()`, `getCurrentWorkerThread()`
+  - Internal: `resetEventBase()`
+
+This is clearly a **worker thread abstraction** that owns and runs a `folly::EventBase`, which is the core event loop in Folly (used for non-blocking I/O). The class is designed to be used in a multi-threaded server context where each worker thread runs its own event loop.
+
+### 2. **Module Comparison**
+
+#### ✅ **services**
+> *"mainly corresponds to proxygen/lib/services/ and is used for connection management and server-side related code... provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration."*
+
+- The `WorkerThread` class is *exactly* the kind of component found in `proxygen/lib/services/`.
+- In Proxygen, `services/` contains:
+  - `WorkerThread.h`, `WorkerPool.h`, `Server.cpp`, etc.
+  - It handles spawning and managing threads that run `EventBase`s — precisely what this file does.
+- The use of `EventBaseManager` (a known Proxygen class in `services/`) further confirms this.
+- Thread-local `currentWorker_` is a common pattern in Proxygen services for per-worker context.
+
+#### ❌ **httpserver**
+> *"wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers"*
+
+- This is higher-level (e.g., `HTTPServer`, `RequestHandler`, `SSLContextConfig`). No direct worker thread management here.
+- `httpserver/` typically uses `services/` internally but doesn’t define `WorkerThread`.
+
+#### ❌ **http_general**
+> *"common HTTP implementation under proxygen/lib/http/"*
+
+- Focuses on HTTP parsing, headers, sessions, transactions — not thread/event loop management.
+- Classes like `HTTPMessage`, `HTTPCodec`, `Transaction`, etc. — not present here.
+
+#### ❌ **transport**
+> *"lower-level transport capabilities... QUIC / HTTP/3"*
+
+- Involves `QuicTransport`, `UDPSocket`, `DatagramTransport`, etc.
+- No QUIC, UDP, or transport-specific logic here.
+
+#### ❌ **dns**, **sampling**, **ssl**
+- Clearly unrelated:
+  - DNS: resolver, cache, `DnsResolver`, `DnsCache`
+  - Sampling: `SamplingRate`, `Sampler`, probabilistic logic
+  - SSL: `SSLContext`, `TLSSession`, certificate handling
+
+#### ⚠️ **general**
+> *"proxygen/lib/utils/ and some common auxiliary capabilities... foundational support for core HTTP abstractions, service frameworks..."*
+
+- While `utils/` may contain small helpers (e.g., `ScopedGuard`, `TimerUtil`), `WorkerThread` is *not* a generic utility — it’s a core part of the **server-side execution model**, tightly coupled with `EventBase` and service lifecycle.
+- In Proxygen’s actual repo structure, `WorkerThread` lives under `lib/services/`, not `utils/`.
+
+### 3. **Confirming with Real Proxygen Codebase (External Knowledge)**
+In the open-source [Proxygen repository](https://github.com/facebook/proxygen):
+- `proxygen/lib/services/WorkerThread.h` matches this file almost exactly:
+  - Same includes (`EventBase.h`, `<thread>`, `<mutex>`)
+  - Same class name `WorkerThread`
+  - Same methods: `start()`, `stopWhenIdle()`, `forceStop()`, `runLoop()`, `getCurrentWorkerThread()`
+  - Same `thread_local currentWorker_`
+  - Same `EventBaseManager*` member
+
+Thus, this file is **definitively** from the `services` module.
+
+---
+
+### Final Assessment:
+
+- **services**: ✅ Direct match — architecture, naming, responsibilities, and real-world location all align.
+- All other modules are mismatched in scope and responsibility.
+
+**Probability**:
+
+"The probability that this file belongs to module 'services' is 99%."

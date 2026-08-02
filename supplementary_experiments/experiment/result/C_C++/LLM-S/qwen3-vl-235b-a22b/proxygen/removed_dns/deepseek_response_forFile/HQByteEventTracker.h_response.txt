@@ -1,0 +1,73 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File metadata**
+- **Language**: C/C++
+- **Includes**:
+  - `proxygen/lib/http/session/ByteEventTracker.h` → part of HTTP session layer (HTTP core abstractions)
+  - `quic/api/QuicSocket.h` → QUIC transport-level API (low-level transport, likely from `folly` or `quic` stack; in Proxygen context, this is tied to HTTP/3/QUIC support)
+- **Namespace**: `proxygen`
+- **Type**: `class HQByteEventTracker : public ByteEventTracker`
+  - Inheritance from `ByteEventTracker`, which is an HTTP session-level utility for tracking byte events (e.g., bytes written/read during HTTP transactions).
+- **Functions**:
+  - Constructor: takes `Callback*`, `quic::QuicSocket*`, `quic::StreamId`
+  - `onByteEventWrittenToSocket(const ByteEvent&) override` — overrides a virtual method for handling byte events being written to socket.
+- **Members**:
+  - `quic::QuicSocket* const socket_`
+  - `const quic::StreamId streamId_`
+
+### 2. **Interpretation**
+- `HQByteEventTracker` is clearly a *specialization* of `ByteEventTracker` for **HTTP/3 over QUIC**, since:
+  - “HQ” likely stands for *HTTP/3 over QUIC* (as in “HTTP/3” or “HTTP-over-QUIC” — e.g., Facebook/Meta’s internal naming).
+  - It uses `QuicSocket` and `StreamId`, which are QUIC-specific constructs.
+  - It overrides `onByteEventWrittenToSocket`, indicating integration with transport-level write events — i.e., bridging HTTP session logic (`ByteEventTracker`) with QUIC transport.
+
+- `ByteEventTracker` itself resides in `proxygen/lib/http/session/`, which falls under **HTTP protocol core layer** (i.e., `http_general`), but this class *extends* that for QUIC transport.
+
+- The key question: Is this module about:
+  - **HTTP protocol logic** (e.g., session management, event tracking) → `http_general`
+  - Or **transport-layer integration with QUIC** → `transport`
+
+Let’s compare with module definitions:
+
+#### ✅ `http_general`:
+> *"common HTTP implementation under proxygen/lib/http/. ... responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+- This includes session-level components like `ByteEventTracker`.
+- `HQByteEventTracker` is a *session-level tracker* adapted for HTTP/3 — still part of HTTP session management, just QUIC-aware.
+- However, note: it directly depends on `quic::QuicSocket`, which is *outside* pure HTTP abstraction — it's coupling HTTP session logic to transport.
+
+#### ✅ `transport`:
+> *"lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3. ... responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket..."*
+
+- While `HQByteEventTracker` uses QUIC types, it is *not* implementing transport (e.g., no packet sending/receiving, no congestion control, no connection state machine).
+- Instead, it’s a *callback/hook* from HTTP session into QUIC transport — a bridge layer.
+- In Proxygen architecture, such bridges often live in `http/` (e.g., `http/session/` or `http/codec/`) rather than `transport/`, because they’re HTTP-*aware* adaptations.
+
+#### Cross-checking real-world Proxygen structure (based on open-source Meta/Facebook Proxygen):
+- In actual Proxygen repo:
+  - `ByteEventTracker.h` is in `proxygen/lib/http/session/`
+  - Classes like `HQSession`, `HQCodec`, `HQByteEventTracker` are in `proxygen/lib/http/` subdirectories (e.g., `http/session/`, `http/codec/`) — not in `transport/`.
+  - The `transport/` module contains things like `QuicTransport`, `QuicPacketizer`, `QuicConnection`, etc., but *not* HTTP-session-level trackers.
+
+Thus, `HQByteEventTracker` is part of the **HTTP/3 adaptation layer within the HTTP core**, i.e., `http_general`.
+
+### 3. Eliminate other modules:
+- `pools`: unrelated (no backend pools, no config).
+- `sampling`: no sampling logic.
+- `ssl`: no SSL/TLS context or certs.
+- `general`: too generic; this is HTTP-specific, not utils.
+- `services`: server-side infrastructure (acceptors, workers) — not applicable.
+- `httpserver`: high-level server APIs (e.g., `HTTPServer`, `RequestHandler`) — this is lower-level session logic.
+- `transport`: close, but this class is *not* transport implementation; it’s HTTP session logic *using* transport — so belongs to HTTP layer.
+
+### Final assessment:
+- Strong alignment with `http_general`: it extends an HTTP session tracker for HTTP/3/QUIC, resides logically in HTTP core, and matches the scope (“protocol-related capabilities such as HTTP/2 and HTTP/3”).
+- Minor transport dependency doesn’t shift it to `transport`, because module boundaries are defined by *primary responsibility*, not transitive dependencies.
+
+**Probability estimate**:
+- `http_general`: 95% — core HTTP session extension for HTTP/3.
+- `transport`: 5% — only due to QUIC dependency, but not its primary role.
+
+---
+
+The probability that this file belongs to module 'http_general' is 95%.

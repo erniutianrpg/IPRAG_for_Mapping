@@ -1,0 +1,85 @@
+Let’s analyze the file content step by step to determine which architecture module it belongs to.
+
+### 1. **Module docstring**:
+> *"Trace task execution. This module defines how the task execution is traced: errors are recorded, handlers are applied and so on."*
+
+This clearly indicates the module's purpose is **task execution tracing**, including:
+- Recording errors
+- Applying handlers (e.g., for retry, ignore, failure)
+- Logging states (SUCCESS, FAILURE, IGNORED, etc.)
+
+This is *not* about:
+- Backend result storage → rules out `backends`
+- Concurrency models/pools → rules out `concurrency`
+- Event emission/monitoring → rules out `events`
+- Framework fixups → rules out `fixups`
+- Loading tasks/config → rules out `loaders`
+- Security → rules out `security`
+- General utilities → possibly `utils`, but let’s see deeper
+- Worker runtime core → possibly `worker`, but tracing is a *subcomponent* of execution
+
+### 2. **Imports**:
+Key imports include:
+- `celery.app.task.Task`, `celery.app.task.Context` → task definition and context
+- `celery.signals`, `celery.states`, `celery.exceptions.*` → state management and exception handling during execution
+- `celery.worker.state.successful_requests` → worker state tracking
+- `celery.utils.*` (log, saferepr, serialization, objects) → internal utilities
+- `billiard.einfo`, `kombu.serialization`, `kombu.exceptions` → low-level execution & message decoding
+- `celery.current_app`, `celery.group` → app and orchestration
+
+Notably, there is **no import from backends**, no concurrency pool logic (`prefork`, `thread`, `eventlet`), no event dispatching (`celery.events`), no security primitives.
+
+### 3. **Constants**:
+- Log states: `LOG_RECEIVED`, `LOG_SUCCESS`, `LOG_FAILURE`, etc.
+- Task states: `STARTED`, `SUCCESS`, `IGNORED`, `REJECTED`, `RETRY`, `FAILURE`, `EXCEPTION_STATES`, `IGNORE_STATES`
+
+These are used in *tracing* task lifecycle — directly tied to how a task is executed and its outcome is recorded.
+
+### 4. **Functions & Class**:
+- `build_tracer(...)`, `trace_task(...)`, `fast_trace_task(...)`, `trace_task_ret(...)` → core tracing entry points
+- `_signal_internal_error`, `report_internal_error` → error reporting during execution
+- `TraceInfo` class with methods like:
+  - `handle_error_state`
+  - `handle_reject`, `handle_ignore`, `handle_retry`, `handle_failure`
+  - `_log_error`
+
+This is **execution path logic**: given a task and its outcome, what to do (log, call errbacks, store result, etc.). It sits *between* the worker consuming a message and the actual task function invocation — i.e., the **task execution wrapper/tracer**.
+
+### 5. **Comparison with Candidate Modules**:
+
+- `app`: The docstring says “application-level core logic … task execution tracing”. This matches *partially*. However, `app` typically covers higher-level concerns: app object, config, task registration, signals, routing. While tracing is *used by* the app, this module is more focused on the *mechanics* of tracing during execution — not app setup or configuration.
+
+- `worker`: This module contains “task consumption, request handling, remote control, … execution strategies”. Crucially, **task tracing is a core part of request handling in the worker**. In Celery’s architecture, the worker receives a task message, then calls `trace_task()` (or `fast_trace_task()`) to execute the task *with* error handling, state updates, logging, etc. The `TraceInfo` class is used inside the worker’s request processing loop.
+
+In fact, in Celery source code:
+- `celery/worker/job.py` (or similar) uses `celery.app.trace.trace_task` to run tasks.
+- The `trace.py` module (this file) is historically located under `celery/app/trace.py`, but its *role* is tightly coupled with **worker request execution**.
+
+However, per the candidate module definitions provided:
+> `worker`: This module contains the internal worker implementation, including task consumption, request handling, remote control, heartbeats, state maintenance, execution strategies, autoscaling, and bootstep component management. It is the core runtime module for Celery task execution.
+
+The functions here (`trace_task`, `fast_trace_task`, `TraceInfo.handle_*`) are **directly part of request handling and execution strategy** — they decide how to respond to task outcomes during execution. They are not generic utilities (`utils`), nor are they app-level configuration.
+
+Also note: `utils` is defined as “common internal utilities… debugging, logging, serialization, time handling…”, but this module does *more* than utilities — it implements *policy* for task outcome handling (e.g., when to ignore, retry, log, call errbacks), which is execution logic.
+
+### 6. Cross-check with reference examples (implied by prompt):
+Although no explicit examples are listed, the pattern in Celery’s real structure is:
+- `celery/app/trace.py` → technically under `app`, but conceptually part of *execution tracing*, which is invoked by the worker.
+- However, the **candidate module `app` explicitly includes “task execution tracing”** in its description:
+  > `app`: … and task execution tracing.
+
+That’s a direct match.
+
+Let’s re-read that line:
+> **app**: This module covers application-level core logic such as the Celery application object, task registration, configuration, control, events, logging, routing, and **task execution tracing**.
+
+✅ The docstring says: “Trace task execution… defines how the task execution is traced”.
+
+So even though the logic is used by the worker, the module is *classified under `app`* per the given module definition — because the spec explicitly lists “task execution tracing” as part of `app`.
+
+This is consistent with Celery’s actual package layout: `celery/app/trace.py` exists, and `celery/app/__init__.py` imports/uses it.
+
+### Conclusion:
+The file is **explicitly described** in the `app` module’s scope as covering “task execution tracing”, and the content matches that exactly.
+
+**Assigned Module**: ['app']

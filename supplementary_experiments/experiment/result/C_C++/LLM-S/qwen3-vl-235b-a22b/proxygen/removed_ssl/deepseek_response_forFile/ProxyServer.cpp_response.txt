@@ -1,0 +1,66 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **1. Key Observations from File Content**
+
+#### **Includes**
+- `folly/Memory.h`, `folly/io/async/EventBaseManager.h`, `folly/portability/GFlags.h`, `folly/system/HardwareConcurrency.h`:  
+  → Standard Folly utilities (threading, flags, concurrency), commonly used across many modules but especially in server startup/config.
+- `proxygen/httpserver/HTTPServer.h`, `proxygen/httpserver/RequestHandlerFactory.h`:  
+  → **Critical**: These are *high-level* HTTP server APIs — part of the `httpserver` module (not core `lib/http` or `services`).
+- `"ProxyHandler.h"`, `"ProxyStats.h"`:  
+  → Local headers, likely custom to this service; not part of Proxygen core, but used in conjunction with `httpserver`.
+
+#### **Namespaces**
+- `ProxyService`, `proxygen`:  
+  → `proxygen` namespace is used for core types; `ProxyService` suggests a user-defined service layer built *on top* of Proxygen.
+
+#### **Types & Functions**
+- `class ProxyHandlerFactory : public RequestHandlerFactory`:  
+  → Direct inheritance from `proxygen::RequestHandlerFactory`, which is defined in `proxygen/httpserver/RequestHandlerFactory.h`. This is the canonical way to plug into the high-level `HTTPServer`.
+- `struct TimerWrapper`, `main()`:  
+  → Entry point with gflags, logging, server binding, thread start — classic *application-level server setup*, not library code.
+
+#### **Core Logic**
+- Uses `HTTPServerOptions`, `RequestHandlerChain().addThen<ProxyHandlerFactory>()`, `server.bind()`, `server.start()` — all from `proxygen/httpserver`.
+- Configures ports, threads, idle timeout, shutdown signals — typical of a standalone HTTP server binary.
+- Creates `ProxyHandler` per request using stats/timer — application logic, but the *glue* is via `httpserver`.
+
+#### **No evidence of:**
+- DNS resolution (`dns`): no `DNSResolver`, `AsyncDNSServer`, etc.
+- Pool management (`pools`): no backend pool config, load balancing, service discovery logic.
+- Sampling (`sampling`): no sampling rate, probabilistic decisions, trace IDs, etc.
+- Transport-layer details (`transport`): no QUIC, socket options, datagram handling, `QuicTransport`, etc.
+- Core HTTP protocol parsing (`http_general`): no `HTTPMessage`, `HTTPCodec`, `HTTPSession`, `HTTPTransaction` manipulation — only uses them indirectly via `RequestHandler`.
+- Low-level service infrastructure (`services`): no `Service`, `ConnectionManager`, `Worker`, `Acceptor`, etc. — those live in `lib/services/`, but here we’re using the *higher-level* `HTTPServer` wrapper.
+
+---
+
+### **2. Module Mapping**
+
+| Module | Match? | Reason |
+|--------|--------|--------|
+| **dns** | ❌ Very low | No DNS-related code or includes. |
+| **pools** | ❌ Low | No backend pool configuration or service discovery. |
+| **sampling** | ❌ None | No sampling logic. |
+| **general** | ⚠️ Minor | Uses some Folly utilities, but not core utility code (e.g., no `ScopedGuard`, `StringPiece`, `Optional`, etc. from `utils/`). Not a match. |
+| **http_general** | ❌ Low | Does not implement or extend HTTP protocol logic (no codec/session/transaction). Only consumes high-level abstractions. |
+| **services** | ⚠️ Medium-low | `HTTPServer` internally uses `services`, but this file does *not* directly use `lib/services/` APIs (e.g., `Service`, `ConnectionHandler`, `Acceptor`). It uses the *wrapper* layer. |
+| **httpserver** | ✅ **Strong match** | Direct inclusion of `proxygen/httpserver/HTTPServer.h` and `RequestHandlerFactory.h`, inheritance from `RequestHandlerFactory`, use of `HTTPServerOptions`, `RequestHandlerChain`, `server.bind/start()` — **this is exactly the intended usage pattern of the `httpserver` module**. The file is a *standalone HTTP server binary* built using `proxygen/httpserver`. |
+
+---
+
+### **3. Conclusion**
+
+This file is a **top-level application** that uses `proxygen/httpserver` to launch an HTTP/HTTP2 proxy server. It implements a custom `RequestHandlerFactory` and sets up server options — precisely the use case documented for the `httpserver` module.
+
+While it uses Folly and may depend on lower layers (`services`, `http_general`), the *primary architectural ownership* lies with the `httpserver` module, as it's the abstraction level being directly programmed against.
+
+---
+
+**Final Answer:**
+
+The probability that this file belongs to module 'httpserver' is 95%.  
+The probability that this file belongs to module 'services' is 5%.  
+All other modules have <1% probability.

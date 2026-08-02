@@ -1,0 +1,108 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `proxygen/lib/http/codec/HQFramedCodec.h`
+  - `proxygen/lib/http/codec/HQUtils.h`
+  - `proxygen/lib/utils/Logging.h`
+  - `folly/io/Cursor.h`
+  - `folly/tracing/ScopedTraceSection.h`
+  - `<iomanip>`
+- **Namespaces**: `folly`, `proxygen`
+- **Key Functions**:
+  - `HQFramedCodec::parseFrame(...)`
+  - Frame-type-specific parsers: `parseData`, `parseHeaders`, `parseCancelPush`, etc.
+  - `onFramedIngress`, `onFramedIngressEOF`
+  - Uses `quic::follyutils::decodeQuicInteger` (note: `quic::` suggests QUIC-related decoding)
+  - Uses `FrameType` enum with values like `DATA`, `HEADERS`, `PUSH_PROMISE`, `GOAWAY`, `MAX_PUSH_ID`, `PRIORITY_UPDATE`, etc.
+  - Uses `curHeader_.type`, `curHeader_.length`, `streamId_`, `callback_->onFrameHeader`, etc.
+
+This is clearly a **frame parser for HTTP/3 (HTTP over QUIC)** — specifically, the *framed codec* layer that parses HQ (HTTP/3 over QUIC) frames from raw bytes.
+
+The name `HQFramedCodec` strongly suggests **H**TTP/**Q**UIC framing — i.e., HTTP/3 frame decoding.
+
+Also note:
+- It includes `HQUtils.h`, which likely contains helpers for HQ frame handling.
+- It uses `Cursor` (Folly’s byte buffer cursor), common in low-level parsing.
+- It integrates with `quic::follyutils::decodeQuicInteger`, indicating direct use of QUIC integer encoding (used in HTTP/3 frame headers).
+- The frame types match [HTTP/3 frame types](https://www.rfc-editor.org/rfc/rfc9114.html#name-frame-types) (e.g., DATA, HEADERS, SETTINGS, PUSH_PROMISE, GOAWAY, MAX_PUSH_ID, PRIORITY_UPDATE).
+- The class is named `HQFramedCodec`, and resides under `proxygen/lib/http/codec/`.
+
+So this is part of the **HTTP/3 framing layer**, sitting between transport (QUIC) and higher-level HTTP semantics.
+
+---
+
+### **2. Module Matching**
+
+Let’s evaluate each candidate:
+
+#### ✅ **transport**
+> *"mainly corresponds to lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3. It is Proxygen's transport-layer support module for HTTP/3/QUIC scenarios, responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."*
+
+- This file is **not** in `lib/transport/`, but in `lib/http/codec/`.
+- However, the *functionality* is tightly coupled with QUIC framing: it decodes QUIC-encoded integers, handles HQ frame headers, and processes raw `IOBuf` input — i.e., it sits *just above* the QUIC transport layer.
+- In Proxygen’s architecture, `http/codec/HQFramedCodec` is typically considered part of the **HTTP/3 transport integration**, not core HTTP semantics (like request/response parsing), but rather the *framing* layer needed to extract frames from QUIC streams.
+- Importantly, `HQFramedCodec` is used by QUIC-based connection handlers to extract frames before handing them to HTTP session logic.
+
+→ Strong candidate.
+
+#### ✅ **http_general**
+> *"mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+- This module covers *HTTP protocol parsing*, including HTTP/2 and HTTP/3.
+- `HQFramedCodec` is indeed under `proxygen/lib/http/codec/`, which falls under `http/` hierarchy.
+- But note: HTTP/3 framing is *distinct* from HTTP message parsing (e.g., header decoding, body streaming). This file does **not** parse HTTP messages — it parses *frames* (the wire format), which is more transport-adjacent.
+- In Proxygen, `http/codec/` is often considered part of the *HTTP protocol stack*, including both HTTP/2 and HTTP/3 framing.
+
+→ Also plausible, but let’s compare with transport.
+
+#### ❌ **dns**, **pools**, **ssl**, **general**, **services**, **httpserver**
+- **dns**: No DNS resolution code here.
+- **pools**: No backend pool or load-balancing logic.
+- **ssl**: No TLS context, certs, handshake — only QUIC integer decoding (not SSL).
+- **general**: While it includes `utils/Logging.h`, the core logic is highly specialized to HQ framing — not generic utilities.
+- **services**: No service execution, connection acceptance, or worker threads.
+- **httpserver**: This is not high-level server API; it's low-level codec.
+
+So only **transport** and **http_general** are viable.
+
+---
+
+### **3. Key Discriminator: Location vs. Responsibility**
+
+Proxygen’s module boundaries:
+- `lib/transport/`: Handles QUIC connections, streams, packet I/O, encryption, etc. — pure transport.
+- `lib/http/codec/`: Contains codecs for HTTP/1, HTTP/2, and HTTP/3 framing — i.e., turning raw bytes into protocol frames.
+  - Example: `HTTP1Codec`, `HTTP2Codec`, `HQFramedCodec`.
+- These codecs are used by `HTTPSession` or `HQSession`, which sit in `lib/http/session/`.
+
+Thus, **`HQFramedCodec` is part of the HTTP protocol stack**, specifically the *framing layer* for HTTP/3 — which falls under **http_general**, per the definition:
+> *"responsible for HTTP protocol parsing, encoding/decoding, ... and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+Even though it touches QUIC decoding, the *purpose* is to support HTTP/3 semantics — not general transport concerns like congestion control, loss recovery, or socket I/O.
+
+Moreover, the inclusion path `proxygen/lib/http/codec/` directly maps to the `http_general` module description.
+
+The `transport` module is more about *QUIC transport primitives* (e.g., `QuicTransport`, `QuicSocket`, `QuicPacketBuilder`), not frame parsing per se.
+
+Also, note the namespace: `namespace proxygen::hq {` — `hq` is short for *HTTP over QUIC*, and lives under `proxygen::http`, not `proxygen::transport`.
+
+---
+
+### **Conclusion**
+
+- This file implements the **HTTP/3 frame decoder**, part of the HTTP protocol stack.
+- It resides in `proxygen/lib/http/codec/`, matching the scope of **http_general**.
+- While it uses QUIC utilities, its responsibility is HTTP protocol framing — not transport-layer concerns.
+
+> The probability that this file belongs to module **http_general** is **95%**.  
+> The probability that this file belongs to module **transport** is **5%** (due to QUIC dependency, but not primary ownership).
+
+Other modules: 0%.
+
+Final answer:
+
+"The probability that this file belongs to module 'http_general' is 95%."

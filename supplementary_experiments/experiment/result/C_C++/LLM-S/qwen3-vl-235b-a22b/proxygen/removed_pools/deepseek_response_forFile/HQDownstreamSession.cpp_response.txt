@@ -1,0 +1,58 @@
+Let’s analyze the file content step by step to determine its most likely module assignment.
+
+### 1. **File context and location**
+- The file includes:  
+  `#include <proxygen/lib/http/session/HQDownstreamSession.h>`  
+  → This header is under `proxygen/lib/http/session/`, which strongly suggests it belongs to the HTTP layer, specifically session management for HTTP/3 (HQ = HTTP/3 over QUIC).
+- Namespace: `proxygen` — consistent with core Proxygen code.
+- Functions are all members of `HQDownstreamSession`, a class that:
+  - Handles downstream (i.e., server-side) HTTP/3 sessions over QUIC.
+  - Manages push streams (`createEgressPushStream`, `findPushStream`, `erasePushStream`, `pushAllowedByGoaway`, etc.).
+  - Integrates with `HTTPTransaction`, `HTTPMessage`, `HeaderCodec`, `HTTPSessionStats`, `HTTPSessionController`.
+  - Uses QUIC-specific types: `quic::StreamId`, `hq::PushId`, `HQStreamTransportBase`, `WheelTimerInstance`.
+  - Has callbacks like `onTransportReady`, `onFullHandshakeDone`, `onWriteCipherAvailable` — indicating integration with QUIC transport and TLS handshake events.
+
+### 2. **Key observations**
+- **HQ** stands for *HTTP/3 over QUIC* in Proxygen (e.g., `hq::` namespace).
+- `HQDownstreamSession` is a concrete implementation of an HTTP session for the *downstream* (server) side — i.e., handling incoming client requests and sending responses/pushes.
+- It deals with:
+  - Session lifecycle (`onTransportReady`, `onFullHandshakeDone`, `onWriteCipherAvailable`)
+  - Transaction setup (`setupOnHeadersComplete`)
+  - Server-initiated push stream management (`createEgressPushStream`, `pushAllowedByGoaway`, `numberOfEgressPushStreams`)
+  - Thread-local attachment/detachment (but stubbed with `LOG(FATAL)` — because this is a *downstream* session; detachable behavior is upstream-only)
+- It does **not** handle DNS resolution → rules out **dns**.
+- No sampling logic → rules out **sampling**.
+- While it uses SSL/TLS (via `SSLContext`, `onWriteCipherAvailable`, `onFullHandshakeDone`), it does *not* implement SSL/TLS itself — it consumes SSL/TLS events from lower layers. So not primarily **ssl**.
+- It is not a utility/helper (`general`) — it's a core session type with protocol-specific logic.
+- It is not in `services/` — `services` handles connection acceptance, worker threads, service execution (e.g., `ServiceHandler`, `ServerTransport`, `Worker`). This file is about *session* state, not service orchestration.
+- It is not `httpserver/` — that’s the high-level API (e.g., `HTTPServer`, `RequestHandler`, `ResponseBuilder`). This is low-level session implementation.
+- It is deeply tied to **HTTP/3 (HQ)** and **QUIC transport**, but note:
+  - The `transport` module is defined as: *"lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3"*, e.g., QUIC transport, datagram/socket, token/PSK cache.
+  - However, `HQDownstreamSession` lives in `proxygen/lib/http/session/`, not `transport/`. It *uses* transport primitives but implements HTTP session semantics on top.
+  - The `http_general` module is defined as: *"common HTTP implementation under proxygen/lib/http/... responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+✅ This matches **exactly**:  
+- `lib/http/session/HQDownstreamSession.h` is part of the HTTP layer’s session management for HTTP/3.
+- It manages HTTP transactions, headers, push streams — all core HTTP semantics over QUIC.
+- It is *not* pure transport (which would be e.g., `QuicSocket`, `QuicTransport`, `HQCodec`), but rather the HTTP session built *on top* of transport.
+
+### 3. Module comparison
+
+| Module | Fit Reasoning |
+|--------|---------------|
+| **dns** | ❌ No DNS logic. |
+| **sampling** | ❌ No sampling. |
+| **ssl** | ⚠️ Uses SSL events, but doesn’t manage SSL contexts/stats directly. Not primary responsibility. |
+| **general** | ❌ Too generic; this is protocol-specific session logic. |
+| **http_general** | ✅ Direct match: `lib/http/session/`, HTTP session management, HTTP/3 (HQ), transaction/push handling — exactly what this module covers. |
+| **services** | ❌ Not about service execution or connection acceptance. |
+| **httpserver** | ❌ High-level server API; this is internal session impl. |
+| **transport** | ⚠️ Close, but transport module is lower-level (QUIC socket, frames, congestion). This file is *above* transport — it’s HTTP session using QUIC streams. |
+
+### Final determination:
+The file implements the HTTP/3 downstream session — a core part of the HTTP protocol layer in Proxygen, specifically under `lib/http/session/`. Per the definition, **http_general** explicitly includes “session management” and “protocol-related capabilities such as HTTP/2 and HTTP/3”.
+
+Thus:
+
+**The probability that this file belongs to module 'http_general' is 95%.**  
+(The remaining 5% reflects minor ambiguity with `transport`, but the directory path and responsibilities align overwhelmingly with `http_general`.)

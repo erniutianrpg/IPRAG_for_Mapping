@@ -1,0 +1,59 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `dcamera_video_surface_listener.h` → suggests this is a listener for video surface events (i.e., buffer availability from a Surface).
+  - `securec.h` → secure memory operations (e.g., `memcpy_s`)
+  - `data_buffer.h` → data buffer abstraction
+  - `distributed_camera_errno.h` → error codes
+  - `distributed_hardware_log.h` → logging
+- Namespace: `OHOS::DistributedHardware`
+- Function: `DCameraVideoSurfaceListener::OnBufferAvailable()`
+- Core logic:
+  - Acquires a buffer from a `Surface`
+  - Copies raw pixel data (`address`, size = `width * height * 4`) into a `DataBuffer`
+  - Invokes a callback `callback_->OnVideoResult(dataBuffer)`
+  - Releases the buffer
+
+This class is clearly acting as a **listener** that reacts when a new video frame buffer becomes available on a `Surface`, copies the data, and forwards it via a callback — i.e., it's part of the **video data ingestion pipeline**, likely on the **sink side** (controlled device), where camera frames are captured and made available for transmission.
+
+Note: The `Surface` here is likely an OHOS `Surface` used for camera preview/output (e.g., from Camera HDI or Media framework), and `DCameraVideoSurfaceListener` is consuming those buffers.
+
+### 2. **Compare with Candidate Modules**
+
+Let’s go one-by-one:
+
+- **DistributedCameraSourceMgr**: Focuses on lifecycle, controller-side management, IPC service, input stream *on source side* (controller). This file is not about lifecycle or IPC service; it's about buffer handling — unlikely.
+
+- **ChannelCommon**: About channel/session/SoftBus interfaces — no SoftBus or session code here. Not matching.
+
+- **ChannelSource** / **ChannelSink**: These are about channel establishment and transport (SoftBus). This file does *not* involve network communication, session management, or SoftBus APIs — only local buffer acquisition and callback. So not these.
+
+- **CameraDataProcessCommon**: Provides *common* data processing frameworks, pipelines, codecs, color space conversion, etc. This file does minimal processing — just copying raw buffer. No codec, no format conversion, no pipeline orchestration. Too low-level for this module.
+
+- **CameraDataPreProcess**: *"responsible for the data preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow."*  
+  ✅ This fits well:
+  - It's on the **sink side** (controlled device).
+  - It receives raw image data from the camera framework (via `Surface` buffer).
+  - It copies the buffer into a `DataBuffer` — a basic preprocessing step (raw copy, possibly for later encoding/transmission).
+  - It then passes it to a callback — likely feeding into the transmission pipeline.
+  - The class name `DCameraVideoSurfaceListener` suggests it's listening to video surface events — typical for pre-processing stage (before encoding/transmission).
+
+- **CameraDataPostProcess**: On the *source side*, decoding/reformatting received data. This file is not decoding or post-processing — it's acquiring raw frames. So no.
+
+- **CameraServiceCommon**: Shared basic services like commands, protocols, metadata — not relevant here.
+
+- **VirtualCameraHdf**: HDF/HDI layer implementation — this file uses `Surface`, `SurfaceBuffer`, which are higher-level (Framework/Media), not HDF directly. Also no HDF structs or HDI interfaces visible.
+
+- **utils**: Provides utilities like data buffers, error codes, constants. While it includes `data_buffer.h`, the class itself is not a utility — it’s a concrete listener with business logic (buffer acquisition + callback). So too specific for `utils`.
+
+### 3. **Key Clue: `OnBufferAvailable()` and `callback_->OnVideoResult(dataBuffer)`**
+This pattern matches a **preprocessing listener** that bridges camera output (Surface) to the data pipeline — exactly what `CameraDataPreProcess` is described to do.
+
+Also note: In distributed camera architecture, the sink side captures frames, preprocesses (e.g., copy, maybe crop/rescale), then encodes and sends via channel. This file is the first step after frame capture — buffer acquisition and packaging into `DataBuffer`.
+
+### ✅ Conclusion:
+The most appropriate module is:
+
+**Assigned Module**: [CameraDataPreProcess]

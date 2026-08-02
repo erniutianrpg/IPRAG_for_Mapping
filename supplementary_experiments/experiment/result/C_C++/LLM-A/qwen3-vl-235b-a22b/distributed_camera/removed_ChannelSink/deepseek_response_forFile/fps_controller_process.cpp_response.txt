@@ -1,0 +1,50 @@
+Let’s analyze the file content step by step to determine which module it belongs to.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `fps_controller_process.h` → indicates this is a *frame rate controller* component.
+  - `dcamera_utils_tools.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` → standard distributed camera utilities, error codes, and logging — common across many modules.
+- Namespace: `OHOS::DistributedHardware`
+- Class: `FpsControllerProcess`
+- Key functions:
+  - `InitNode()`, `ReleaseProcessNode()` → lifecycle management of a processing node.
+  - `ProcessData(std::vector<std::shared_ptr<DataBuffer>>& inputBuffers)` → core data processing function that inspects timestamps, calculates FPS, decides whether to drop frames.
+  - `UpdateFPSControllerInfo()`, `CalculateFrameRate()`, `IsDropFrame()`, `ReduceFrameRateByUniformStrategy()` → logic for frame-rate control, including adaptive correction and dropping frames based on target FPS.
+  - Uses mutex (`std::lock_guard<std::mutex> lck(mtx)`) → thread-safe processing.
+  - Operates on `DataBuffer` objects with metadata like `"timeUs"` → implies it's part of a data pipeline where buffers carry timestamps.
+
+### 2. **What does `FpsControllerProcess` do?**
+It is a *data processing node* that:
+- Receives incoming video frames (as `DataBuffer`s),
+- Extracts timestamps,
+- Computes current frame rate,
+- Compares against target frame rate,
+- Decides whether to forward or drop frames (to control output FPS),
+- Applies correction strategies (e.g., uniform reduction, overshoot mitigation).
+
+This is clearly a **frame-rate control** component in a data processing pipeline — not a channel, not a service manager, not a device driver.
+
+### 3. **Compare with Candidate Modules**
+
+| Module | Relevance |
+|--------|-----------|
+| **DistributedCameraSourceMgr** | Manages lifecycle, IPC, callbacks on *source* side. This class is not managing IPC or high-level lifecycle; it's a low-level data node. ❌ |
+| **DistributedCameraSinkMgr** | Same as above but for sink side. Not matching. ❌ |
+| **ChannelCommon / ChannelSource** | These are about communication channels (SoftBus, sessions). This file has no network/session logic; only local buffer processing. ❌ |
+| **CameraDataProcessCommon** | ✅ *"provides common data processing frameworks, data processing pipeline interfaces, codecs, color space conversion, **frame-rate control**, image types..."* — explicitly mentions **frame-rate control** as part of its scope. Also, it supplies foundational components for data processing flows on **both source and sink sides**. The class `FpsControllerProcess` fits perfectly here: it’s a reusable, generic frame-rate control node in a pipeline. |
+| **CameraDataPreProcess** | *"data preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework..."* — could be plausible, but note: `FpsControllerProcess` doesn’t modify pixel data or do format conversion; it only controls frame delivery based on timing. Preprocessing usually implies rescaling, debayering, etc. Less precise fit. ⚠️ |
+| **CameraDataPostProcess** | *"post-processing pipeline on the source side... decodes, converts formats, and processes frame rate..."* — mentions frame rate, but emphasizes decoding and format conversion. This class does **not decode**; it assumes input buffers already have timestamp metadata. Also, it's likely used *before* transmission (i.e., on sink side) to limit outgoing frame rate — not after decoding on source side. So less likely. ⚠️ |
+| **CameraServiceCommon** | Shared basic services (commands, protocols, metadata), not data processing nodes. ❌ |
+| **VirtualCameraHdf** | HDF/HDI layer device implementation — this is pure C++ user-space logic, no HDF interfaces. ❌ |
+| **utils** | Provides utilities, error codes, buffers — but `FpsControllerProcess` is a full processing node, not a utility helper. While it uses utils, it’s higher-level. ❌ |
+
+### 4. **Key Evidence**
+- The header `fps_controller_process.h` suggests it's part of a *process node* architecture — typical in modular data pipelines (e.g., chain of `ProcessNode`s).
+- The module description for **CameraDataProcessCommon** explicitly lists "**frame-rate control**" as one of its responsibilities.
+- It operates on `DataBuffer` (a common abstraction in data pipelines), and integrates into a chain via `nextDataProcess_`, indicating it's part of a pluggable processing pipeline — exactly what `CameraDataProcessCommon` provides.
+
+### ✅ Conclusion
+The file implements a frame-rate control node in a data processing pipeline, which aligns precisely with the scope of **CameraDataProcessCommon**.
+
+- **Assigned Module**: [CameraDataProcessCommon]

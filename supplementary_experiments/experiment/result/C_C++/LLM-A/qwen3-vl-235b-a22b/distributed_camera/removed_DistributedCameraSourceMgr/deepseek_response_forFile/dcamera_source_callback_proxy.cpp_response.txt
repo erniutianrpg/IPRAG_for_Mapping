@@ -1,0 +1,77 @@
+Let’s analyze the file content step by step to determine which module it belongs to.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `dcamera_source_callback_proxy.h` → strongly suggests this is a *proxy* for a callback interface from the *source side* (i.e., controller side).
+  - `parcel.h`, `anonymous_string.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` → standard IPC/serialization and logging utilities in OHOS.
+- Namespaces: `OHOS::DistributedHardware`
+- Functions:
+  - `DCameraSourceCallbackProxy::OnNotifyRegResult(...)`
+  - `DCameraSourceCallbackProxy::OnNotifyUnregResult(...)`
+
+These functions are **callback proxy methods** that send remote IPC requests (`SendRequest`) to notify registration/unregistration results — i.e., they are used by the *source side* (controller) to receive asynchronous responses from the *sink side* (controlled device), likely after registering/unregistering a camera source.
+
+Key observations:
+- The class is named `DCameraSourceCallbackProxy`, indicating it's the **client-side proxy** for a callback interface defined on the sink side.
+- It uses `Remote()->SendRequest(...)` with `NOTIFY_REG_RESULT` and `NOTIFY_UNREG_RESULT` — meaning it's sending notifications *to* the remote service (i.e., the sink side is the server, and this proxy runs on the source side).
+- However, note: In OHOS IPC patterns, a *CallbackProxy* typically lives on the *server side* to forward callbacks *from* the server *to* the client — but naming conventions can be tricky.
+
+Let’s clarify:
+- In distributed camera architecture:
+  - The **source side** = controller (e.g., phone acting as controller)
+  - The **sink side** = controlled device (e.g., IoT camera device)
+- When the source registers with the sink, the sink may call back to the source via a callback interface.
+- So, `DCameraSourceCallbackProxy` is likely the *proxy on the sink side* that sends callbacks *to the source*. But wait — the function names `OnNotifyRegResult` suggest it’s being called *by the sink* to notify the *source* of registration result. That would mean this proxy resides on the **source side**, and the sink holds the stub that calls into this proxy.
+
+But looking at the code:
+```cpp
+sptr<IRemoteObject> remote = Remote();
+...
+remote->SendRequest(NOTIFY_REG_RESULT, req, reply, option);
+```
+This means this object is the **client** (proxy), calling a remote service. So `DCameraSourceCallbackProxy` is a proxy that sends IPC requests — i.e., it’s used by the **source side** to send notifications *to the sink side*? That seems odd, because registration results should be sent *from sink to source*.
+
+Wait — re-examining the function names:  
+`OnNotifyRegResult` — this sounds like a *callback method* that is invoked when a registration result is received. But in OHOS, if it's a callback interface implemented by the source, then the sink would call the source’s stub, and the source would have a *stub* (not proxy) implementing the interface. However, here we see a *proxy*, meaning this class is the one that *sends* requests — so it’s not the callback implementation, but rather a helper to *trigger* callbacks on the remote side.
+
+Actually, the naming `DCameraSourceCallbackProxy` suggests it's the proxy for the **callback interface that the source provides to the sink**, i.e., the sink will use this proxy to call back to the source. But in OHOS, the proxy is created on the *caller side* — so if the sink wants to call back to the source, the sink must hold a proxy to the source’s callback interface. That implies this file is part of the **sink-side code**, where the sink uses `DCameraSourceCallbackProxy` to send callbacks to the source.
+
+But the includes include `dcamera_source_callback_proxy.h`, and the implementation is sending `NOTIFY_REG_RESULT` — which is likely an IPC command the sink sends to the source to inform it of registration outcome.
+
+Now let’s match with candidate modules:
+
+#### Candidate Module Analysis:
+
+- **DistributedCameraSinkMgr**: Handles lifecycle, access control, controller, data processing, image/video output, event notification, and IPC services on the **sink side**.  
+  → This includes *event notification* and *IPC services* on sink side. Since this file implements a callback proxy used by the sink to notify the source (i.e., sink → source IPC), it fits here.
+
+- **ChannelCommon**: Provides common channel-layer capabilities (SoftBus, session mgmt, etc.). This file does *not* use SoftBus directly — it uses generic OHOS IPC (`MessageParcel`, `SendRequest`), not SoftBus APIs. So unlikely.
+
+- **ChannelSource** / **ChannelSink**: These are about channel establishment and data/command transmission. This file is about *callback notification*, not channel setup or streaming.
+
+- **CameraDataProcessCommon**, **Pre/PostProcess**: Not relevant — no data processing, encoding, decoding, etc.
+
+- **CameraServiceCommon**: Provides shared basic service capabilities — commands, protocols, events, metadata, controller interfaces. This could be plausible, since registration/unregistration results are basic service events.
+
+- **VirtualCameraHdf**: HDF/HDI layer — this file is not interacting with HDF drivers; it's pure IPC proxy logic.
+
+- **utils**: General utilities — error codes, constants, buffers. While it uses `distributed_camera_errno.h`, the core logic is *not* utility; it's a specific callback proxy implementation.
+
+Now, crucial clue:  
+The header included is `dcamera_source_callback_proxy.h`. In OHOS distributed camera, the *source side* (controller) exposes a callback interface (e.g., `IDCameraSourceCallback`) for the sink to notify it of events (like reg/unreg results). The sink then uses a *proxy* to that interface — i.e., `DCameraSourceCallbackProxy` lives on the **sink side**, to call back to the source.
+
+Thus, this file is part of the **sink-side IPC infrastructure**, specifically for notifying the source about registration outcomes.
+
+Which module owns sink-side IPC and event notification?  
+→ **DistributedCameraSinkMgr** explicitly says: *"event notification, and IPC services on the sink side"*.
+
+Also, the namespace `OHOS::DistributedHardware` matches the distributed hardware subsystem, and `DistributedCameraSinkMgr` is the top-level manager on the sink side.
+
+Therefore, the most appropriate module is:
+
+**DistributedCameraSinkMgr**
+
+---
+
+- **Assigned Module**: [DistributedCameraSinkMgr]

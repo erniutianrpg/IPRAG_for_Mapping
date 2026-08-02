@@ -1,0 +1,90 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+services\cameraservice\cameraoperator\client\src\callback\dcamera_session_callback.cpp
+```
+- Located under `cameraoperator/client/src/callback/` — this indicates it's part of the **client-side** (i.e., controller/source side) implementation.
+- Specifically, it's a **callback** implementation for session events.
+
+### 2. **Includes**
+```cpp
+#include "dcamera_session_callback.h"
+#include "distributed_camera_constants.h"
+#include "distributed_hardware_log.h"
+```
+- `dcamera_session_callback.h`: Suggests this is a callback interface implementation for distributed camera session events.
+- `distributed_camera_constants.h`: Shared constants (e.g., error codes, event types like `DCAMERA_EVENT_CAMERA_ERROR`).
+- `distributed_hardware_log.h`: Logging utility — generic, but used across modules.
+
+### 3. **Namespace**
+```cpp
+namespace OHOS {
+namespace DistributedHardware {
+```
+- Standard namespace for distributed hardware components in OpenHarmony.
+
+### 4. **Class & Function**
+- Class: `DCameraSessionCallback`
+- Constructor takes `std::shared_ptr<StateCallback> callback`
+- Implements `OnError(int32_t errorCode)`
+  - Logs error.
+  - If `callback_` is valid, constructs a `DCameraEvent` with:
+    - `eventType_ = DCAMERA_MESSAGE`
+    - `eventResult_ = DCAMERA_EVENT_CAMERA_ERROR`
+  - Calls `callback_->OnStateChanged(event)` — i.e., forwards the error as a state change to a higher-level state callback.
+
+This shows:
+- It’s a **session-level callback handler**, translating low-level session errors (likely from channel/session layer) into high-level state events.
+- It bridges **session-layer errors** → **state management callbacks**, which are consumed by higher-level managers (e.g., source manager).
+
+### 5. **Candidate Module Matching**
+
+Let’s evaluate each candidate:
+
+- **DistributedCameraSourceMgr**:  
+  > *responsible for lifecycle, state machine, controller, input stream, data processing, IPC service, and **callback management on the source side**...*  
+  ✅ This module explicitly includes "**callback management on the source side**". The `DCameraSessionCallback` is a client-side (source) callback that feeds into the state machine via `OnStateChanged`. This strongly aligns.
+
+- **DistributedCameraSinkMgr**:  
+  Sink side — this is client-side (controller), not sink. ❌
+
+- **ChannelCommon**:  
+  Provides *channel-layer* capabilities: SoftBus, session management, channel interfaces/listeners. While session errors may originate here, this file is not implementing channel logic — it’s consuming session events and forwarding them as state changes. Not the channel layer itself. ❌
+
+- **ChannelSource**:  
+  Responsible for *controller-side channel implementation*: establishing connections, sending commands, receiving image info. This file does not handle connection setup or data transmission — only error callback handling. Too low-level for ChannelSource, which would likely use this callback internally. ❌
+
+- **CameraDataProcessCommon / PreProcess / PostProcess**:  
+  These deal with image/video data pipelines — no image data processing here; just error event forwarding. ❌
+
+- **CameraServiceCommon**:  
+  > *shared basic service capabilities... including basic commands, protocols, camera information, channel information, **events**, Metadata settings...*  
+  It mentions **events**, and this file deals with `DCameraEvent`. However, note:
+  - `CameraServiceCommon` is *shared* and likely contains interfaces/constants/events — but this is an *implementation* of a specific callback class (`DCameraSessionCallback`) that lives in `cameraoperator/client/src/callback/`, which is more tightly coupled to the **source-side operator/controller**.
+  - The constructor takes `StateCallback`, which is likely part of the SourceMgr’s state machine — not a generic shared service.
+
+- **VirtualCameraHdf**:  
+  HDF/HDI layer — this is clearly at application/service layer, not driver/HDF. ❌
+
+- **utils**:  
+  > *common utilities... including local camera query, open, close, stream acquisition, and **preview/photo/video callback handling**.*  
+  This mentions “callback handling”, but specifically for *local camera* preview/photo/video — whereas this is for *distributed session* errors, not frame-level callbacks. Also, `utils` is typically header-only or lightweight helpers; this is a concrete class implementation tied to session lifecycle.
+
+### 6. **Key Clue: `StateCallback` and `OnStateChanged`**
+The pattern:
+```cpp
+callback_->OnStateChanged(event);
+```
+is typical of a **manager’s state machine** (e.g., `DistributedCameraSourceMgr`) that listens to internal events (like session errors) and updates its state accordingly.
+
+In OpenHarmony’s distributed camera architecture:
+- `DCameraSessionCallback` is usually registered by the **Source Manager** to receive session-level events from the channel/session layer.
+- It then translates those into state events for the manager’s state machine.
+
+Thus, although the file resides in `cameraoperator/client`, it serves the **Source Manager’s callback infrastructure**, and per the candidate description, **DistributedCameraSourceMgr** explicitly covers “callback management on the source side”.
+
+### ✅ Conclusion:
+The file implements a session error callback that feeds into the source-side state machine — directly supporting the responsibilities of **DistributedCameraSourceMgr**.
+
+**Assigned Module**: [DistributedCameraSourceMgr]

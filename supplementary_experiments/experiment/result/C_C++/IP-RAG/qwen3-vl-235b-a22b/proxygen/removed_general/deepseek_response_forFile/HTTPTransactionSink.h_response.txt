@@ -1,0 +1,59 @@
+Let’s analyze the file `proxygen/lib/http/sink/HTTPTransactionSink.h` step by step.
+
+### 1. **File Location and Naming**
+- Path: `proxygen/lib/http/sink/HTTPTransactionSink.h`
+  - This is under `proxygen/lib/http/`, specifically in a subdirectory `sink`.
+  - The class name is `HTTPTransactionSink`, which inherits from `HTTPSink`.
+  - The `sink` subdirectory suggests it's part of the *egress* (outgoing) side of HTTP transaction handling — i.e., how data is sent *from* the transaction to the transport layer.
+
+### 2. **Key Dependencies (Includes)**
+The includes are:
+- `folly/logging/xlog.h` → logging (generic)
+- `proxygen/lib/http/observer/HTTPSessionObserverContainer.h` → observer pattern for session events
+- `proxygen/lib/http/session/HTTPTransaction.h` → core transaction abstraction
+- `proxygen/lib/http/sink/HTTPSink.h` → base sink interface
+
+This confirms the file is tightly coupled with:
+- `HTTPTransaction` (core transaction object)
+- `HTTPSink` (abstract interface for sending data)
+- Observers (for instrumentation)
+
+No includes from `transport/`, `services/`, `httpserver/`, `dns/`, `pools/`, or `ssl/` — ruling out those modules as primary owners.
+
+### 3. **Class Responsibilities (Based on Methods & Implementation)**
+The class `HTTPTransactionSink`:
+- Wraps an `HTTPTransaction*` (constructor takes `clientTxn`)
+- Implements `HTTPSink` interface methods like:
+  - `sendHeaders(...)`, `sendBody(...)`, `sendEOM()`, `sendTrailers()`, etc.
+  - Flow control, priority, transport info access (`getLocalAddress`, `getPeerAddress`, `getQUICTransport`, etc.)
+  - Lifecycle management: `detachAndAbortIfIncomplete`, `pauseIngress`, `resumeIngress`, timeouts
+- Delegates most operations directly to `httpTransaction_->...`
+- Provides metadata access (e.g., stream ID, codec protocol, priority, compression info, idle duration)
+
+This is clearly a *transaction-level egress adapter*: it bridges the high-level transaction API to the sink interface used by higher layers (e.g., handlers that want to send responses), while also exposing transport/session context.
+
+### 4. **Relation to Candidate Modules**
+
+Let’s evaluate each candidate:
+
+- **dns**: ❌ No DNS resolution logic; no DNS-related types/functions.
+- **pools**: ❌ No pool configuration, backend selection, or load balancing.
+- **sampling**: ❌ No sampling logic (e.g., probabilistic decisions, counters).
+- **ssl**: ❌ While it accesses `getPeerCertificate()` and `getTCPTransportFD()`, those are just pass-throughs from `HTTPTransaction`; SSL/TLS context is not managed here.
+- **http_general**: ✅ Strong match.  
+  - The module is defined as: *"common HTTP implementation under proxygen/lib/http/... responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management..."*
+  - `HTTPTransactionSink` is part of the transaction infrastructure — specifically the *sink* side of transaction egress — and lives directly under `lib/http/sink/`, which is logically part of the core HTTP layer.
+  - It does not belong to server-specific infrastructure (so not `services` or `httpserver`), nor transport-layer (so not `transport`).
+- **services**: ❌ That module corresponds to `lib/services/`, which deals with connection acceptance, service execution, worker threads — not transaction-level I/O sinks.
+- **httpserver**: ❌ That’s the high-level wrapper in `proxygen/httpserver/`, used for building servers — this is a low-level internal component.
+- **transport**: ❌ While it accesses QUIC/transport info, it does *not* implement transport logic; it only queries it via `HTTPTransaction`. Transport module would contain QUIC socket, framing, datagram handling — not this delegation layer.
+
+### 5. **Reference Context**
+Although no reference examples were provided, the naming and structure align with known Proxygen architecture:
+- `HTTPTransaction` is central to `http_general`.
+- `HTTPSink` and its implementations (like `HTTPTransactionSink`) are part of the *transaction output abstraction*, which is part of the core HTTP stack — not a separate subsystem.
+
+### ✅ Conclusion
+The file is a core component of the HTTP transaction layer, implementing the sink interface for sending data from an `HTTPTransaction`. It belongs squarely in the **http_general** module.
+
+**Assigned Module**: [http_general]

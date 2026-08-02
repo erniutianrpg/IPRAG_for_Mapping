@@ -1,0 +1,89 @@
+Let’s analyze the file `proxygen/lib/http/session/HQSession.cpp` step by step, using the provided content, includes, and candidate modules.
+
+---
+
+### 1. **File Path & Context**
+- Path: `proxygen/lib/http/session/HQSession.cpp`
+- `HQ` stands for **HTTP/3 over QUIC** (historically “HTTP/3” was sometimes referred to as “HQ” in early drafts; e.g., `hq-interop`, `hq-29` constants).
+- The file implements `HQSession`, which is a session class handling HTTP/3 (QUIC-based) connections.
+
+---
+
+### 2. **Key Observations from Includes**
+The includes reveal strong coupling to:
+- **HTTP/3 codec layer**:  
+  `HQControlCodec.h`, `HQStreamCodec.h`, `H3EarlyDataHandler.h`, `HQUtils.h`, `QPACKDecoderCodec.h`, `QPACKEncoderCodec.h`
+- **HTTP session infrastructure**:  
+  `HTTPSession.h`, `HTTPSessionStats.h`, `HTTPTransaction.h`
+- **QUIC transport layer**:  
+  `quic/QuicConstants.h`, `quic/common/BufUtil.h`, `quic/folly_utils/Utils.h`, `quic/logging/QLoggerConstants.h`, `folly/io/async/AsyncTransport.h`, `quic::QuicSocket`, `quic::StreamId`, etc.
+- **WebTransport over HTTP/3**:  
+  `WebTransportFramer.h`, `HqWtSession.h`, `WtUtils.h`, `HTTPWebTransport.h`
+
+So this file sits at the intersection of:
+- HTTP protocol logic (session, streams, transactions, priority, settings, goaway)
+- QUIC transport integration (stream IDs, control streams, write/read callbacks, error handling)
+- HTTP/3-specific features (QPACK, early data, control streams, WebTransport)
+
+---
+
+### 3. **Functionality Summary**
+From the function list and excerpt:
+- Implements `HQSession`: manages HTTP/3 sessions over QUIC.
+- Handles:
+  - Control stream creation & dispatch (`createEgressControlStreams`, `dispatchControlStream`)
+  - Request stream dispatch & transaction mapping (`dispatchRequestStream`, `findStream`, `eraseStream`)
+  - HTTP/3-specific frames: `SETTINGS`, `GOAWAY`, `PRIORITY`, `PUSH_PRIORITY`
+  - QPACK decoding/encoding coordination (via codecs)
+  - Early data handling
+  - WebTransport preface writing and parsing
+  - Error handling across QUIC + HTTP layers (`dropConnection`, `handleSessionError`, `handleWriteError`)
+  - Transport info introspection (`getCurrentTransportInfo`)
+  - Stream lifecycle management (resume/pause reads, cleanup, detach)
+
+This is clearly **not**:
+- DNS resolution → ❌ not `dns`
+- Pool configuration → ❌ not `pools`
+- Sampling logic → ❌ not `sampling`
+- SSL/TLS context → ❌ not `ssl` (no TLS handshake or cert handling here)
+- High-level server API → ❌ not `httpserver` (this is *not* in `proxygen/httpserver/`, nor does it expose high-level APIs like `HTTPServer::start()`)
+- Pure transport (e.g., raw QUIC socket, datagram, token cache) → ❌ not `transport` *alone*, because while it uses QUIC, it's deeply entangled with HTTP semantics (transactions, headers, priority, QPACK, etc.)
+
+---
+
+### 4. **Comparison with Candidate Modules**
+
+#### ✅ `http_general`
+> *"This module mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+- `HQSession.cpp` lives under `proxygen/lib/http/session/`, which is part of the core HTTP layer.
+- It implements session management for HTTP/3 — a direct extension of `HTTPSession`.
+- It handles protocol-level concerns: frames, streams, priorities, settings, errors — all HTTP/3 semantics.
+- While it uses QUIC, it does *not* implement QUIC itself; it consumes QUIC abstractions (e.g., `quic::StreamId`, `quic::QuicSocket`) to provide HTTP semantics — exactly what `http_general` is defined to do.
+
+#### ⚠️ `transport`
+> *"This module mainly corresponds to lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3."*
+
+- The `transport` module would be expected to contain things like:
+  - `QuicTransport.cpp`
+  - `QuicSocketAdapter`, `DatagramTransport`, `TokenCache`, etc.
+- But `HQSession.cpp` is *not* in `lib/transport/`, and doesn’t implement transport primitives — it *uses* them.
+- It’s higher-level: it maps QUIC streams to HTTP transactions, manages HTTP/3 control streams, applies HTTP semantics — i.e., **application-layer protocol over transport**, not transport itself.
+
+Thus, `transport` is too low-level for this file.
+
+#### ❌ Others
+As noted above, `dns`, `pools`, `sampling`, `ssl`, `services`, `httpserver` are clearly mismatched.
+
+Note: `services` is for server-side infrastructure *on top* of HTTP sessions (e.g., connection managers, workers), but `HQSession` is the session itself — more foundational.
+
+---
+
+### 5. **Conclusion**
+The file implements the **HTTP/3 session layer**, built on top of QUIC transport, and belongs squarely in Proxygen’s core HTTP protocol implementation — precisely what the `http_general` module covers.
+
+> Reference: In Proxygen, `HTTPSession` (HTTP/1.1/2) and `HQSession` (HTTP/3) are sibling classes under `lib/http/session/`, both part of the core HTTP stack.
+
+---
+
+**Assigned Module**: [http_general]

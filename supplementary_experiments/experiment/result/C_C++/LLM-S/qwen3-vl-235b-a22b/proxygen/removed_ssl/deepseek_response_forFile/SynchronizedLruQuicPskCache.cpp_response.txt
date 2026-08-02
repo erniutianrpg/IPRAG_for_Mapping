@@ -1,0 +1,54 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File metadata**
+- **Language**: C/C++
+- **Include**: `#include <proxygen/lib/http/SynchronizedLruQuicPskCache.h>`
+- **Namespace**: `proxygen`
+- **Functions**:
+  - `SynchronizedLruQuicPskCache::getPsk(...)`
+  - `SynchronizedLruQuicPskCache::putPsk(...)`
+  - `SynchronizedLruQuicPskCache::removePsk(...)`
+- **Key types used**:
+  - `quic::QuicCachedPsk`
+  - `quic::Optional<...>`
+  - `EvictingPskMap` (implied LRU cache with eviction)
+  - Uses `wlock()` → implies thread-safe synchronization (likely ` folly::Synchronized` or similar)
+- **Logic**:
+  - Implements a synchronized LRU cache for QUIC PSKs (Pre-Shared Keys), including expiration checking.
+  - PSKs are cached by identity, and expiration time is checked on `getPsk`.
+  - Uses `VLOG(1)` for logging expired entries.
+
+### 2. **What is a PSK in QUIC?**
+In QUIC (especially with TLS 1.3), a PSK (Pre-Shared Key) is used for 0-RTT resumption. The server caches PSKs (often derived from session tickets) to allow fast resumption. This cache must be:
+- Thread-safe (since multiple connections may access it concurrently),
+- Size-bounded (LRU eviction),
+- Time-aware (PSKs expire).
+
+This is clearly a **transport-layer concern**, specifically tied to **QUIC session resumption**, not HTTP semantics.
+
+### 3. **Module comparison**
+
+| Module | Relevance |
+|--------|-----------|
+| **dns** | ❌ No DNS resolution logic; no hostname/IP lookups. |
+| **pools** | ❌ Not about backend server pools or load balancing. |
+| **sampling** | ❌ No sampling logic (e.g., rate limiting, probabilistic decisions). |
+| **general** | ⚠️ *Possibly*, but `proxygen/lib/utils/` usually contains generic helpers (e.g., `ScopedGuard`, `StringPrintf`, `TimeUtil`). A QUIC-specific PSK cache is too domain-specific for this module. |
+| **http_general** | ⚠️ This is under `proxygen/lib/http/`, but PSK caching is not part of HTTP protocol parsing/session management — it's below HTTP, at the QUIC transport layer. While the header is in `lib/http/`, that may be for convenience (since QUIC is used for HTTP/3), the *functionality* is transport-level. |
+| **services** | ❌ Server-side infrastructure like connection acceptors, workers — not caching PSKs. |
+| **httpserver** | ❌ High-level server APIs (e.g., `HTTPServer`, `RequestHandler`) — this is low-level implementation detail. |
+| **transport** | ✅ Strong match: The module is explicitly defined as *"lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3"* and *"responsible for ... token/PSK cache"*. The file implements exactly a **PSK cache** for QUIC, with synchronization and expiration — core transport-layer functionality for HTTP/3. |
+
+> Note: Although the header path is `proxygen/lib/http/SynchronizedLruQuicPskCache.h`, this is likely a historical or organizational artifact — many QUIC-related components in Proxygen live under `lib/http/` because they’re used for HTTP/3, but architecturally they belong to the **transport** layer. The key clue is the explicit mention in the **transport** module description: *"token/PSK cache"*.
+
+Also, the use of `quic::QuicCachedPsk` confirms tight coupling with the QUIC stack (which resides in `proxygen/lib/transport/quic/` or similar), not generic HTTP logic.
+
+### 4. **Conclusion**
+The file implements a synchronized, expiring LRU cache for QUIC PSKs — a core transport-layer component for HTTP/3 session resumption. It matches the **transport** module definition precisely.
+
+Other modules are either unrelated or too generic.
+
+---
+
+**The probability that this file belongs to module 'transport' is 95%.**  
+(The remaining 5% reflects minor ambiguity due to header location under `lib/http/`, but architectural responsibility lies with transport.)

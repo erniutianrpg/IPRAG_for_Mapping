@@ -1,0 +1,65 @@
+Let’s analyze the file step by step:
+
+### 1. **File context and purpose**
+- The file defines `ProxyHandler`, which is a concrete implementation of `proxygen::RequestHandler`.
+- It handles incoming HTTP requests (via `onRequest`, `onBody`, `onEOM`) and establishes upstream connections (to backend servers) — i.e., it implements a **reverse proxy** or **forward proxy** logic.
+- Key behaviors:
+  - Parses URL from request (`proxygen::URL`)
+  - Resolves host/port and connects via `folly::AsyncSocket` or `connector_`
+  - For `CONNECT` method, uses raw socket; for others, uses higher-level connector
+  - Forwards body data between downstream (client) and upstream (server)
+  - Uses `ResponseBuilder` to send error responses (e.g., 503)
+  - Uses `ProxyStats` for metrics
+
+### 2. **Includes analysis**
+- `"ProxyHandler.h"` → custom header, likely part of the same module.
+- `<proxygen/httpserver/RequestHandler.h>` → indicates this class implements the high-level HTTP server handler interface.
+- `<proxygen/httpserver/ResponseBuilder.h>` → used for constructing HTTP responses — part of `httpserver`.
+- `<proxygen/lib/http/session/HTTPUpstreamSession.h>` → low-level session abstraction for upstream HTTP connections.
+- `<proxygen/lib/utils/URL.h>` → utility for parsing URLs — part of `general`.
+- `<folly/io/...>`, `<folly/portability/GFlags.h>` — Folly infrastructure, not module-specific.
+
+So the code sits at the intersection of:
+- High-level HTTP server handling (`httpserver`)
+- Upstream session management (`http_general`, since `HTTPUpstreamSession` lives under `proxygen/lib/http/`)
+- Custom proxy logic (not generic)
+
+### 3. **Namespace and types**
+- `namespace ProxyService { ... }` — suggests this is application-specific proxy logic, not core Proxygen library code.
+- But the class `ProxyHandler` inherits from `RequestHandler`, and uses Proxygen’s server APIs.
+
+### 4. **Compare with candidate modules**
+
+| Module | Relevance |
+|--------|-----------|
+| `dns` | Not used directly — no DNS resolution code (e.g., `DNSResolver`, `AsyncResolver`). Host:port is parsed from URL but not resolved via DNS here. ❌ |
+| `sampling` | No sampling logic present. ❌ |
+| `ssl` | No SSL/TLS context creation, no use of `SSLContext`, `SecureTransport`, etc. CONNECT method may imply TLS tunneling, but no SSL setup is done here — just raw socket forwarding. ❌ |
+| `general` | Uses `URL.h`, which is in `utils/`, but overall functionality goes beyond utilities — it's a full request handler. Partial overlap, but not primary. ⚠️ |
+| `http_general` | Involves `HTTPUpstreamSession`, which is part of `lib/http/`, and deals with HTTP session/transaction semantics. However, `http_general` is more about *core protocol* (parsing, headers, transactions), while this is about *proxying* — an application built on top. Still relevant. ⚠️ |
+| `services` | Defined as: “connection management and server-side related code” under `lib/services/`. But `ProxyHandler` is not in `lib/services/`, nor does it manage workers/acceptors/config — it’s a per-request handler. ❌ |
+| `httpserver` | ✅ This is the strongest match:  
+   - Implements `RequestHandler` (the main interface of `httpserver`)  
+   - Uses `ResponseBuilder` (from `httpserver/`)  
+   - Designed to be plugged into a `HTTPServer` instance  
+   - The pattern matches examples like `EchoHandler`, `StaticFileHandler`, etc., which are user-defined handlers using `httpserver` APIs.  
+   Even though it does proxying, it’s built *on top of* `httpserver`, not part of core transport or protocol layers.
+
+### 5. **Reference examples guidance**
+The problem says: *“Use the listed reference examples below to guide your reasoning”*, though no explicit examples were provided in the prompt. But based on standard Proxygen structure:
+- `httpserver/` contains high-level server framework + handler interface.
+- Custom handlers (like load balancers, proxies) that implement `RequestHandler` belong logically to the `httpserver` module *in terms of usage*, even if they’re app-specific.
+
+Also note: the file includes `#include "ProxyHandler.h"` and uses `ProxyStats`, suggesting it’s part of a larger proxy service — but the *module assignment* should reflect where this code *fits architecturally in Proxygen*, not the app layer.
+
+Since `ProxyHandler` is a concrete implementation of `proxygen::RequestHandler`, and uses only `httpserver`-level APIs (plus some `lib/http/` internals like `HTTPUpstreamSession`), the most appropriate module is:
+
+> **httpserver**
+
+Because:
+- It’s a handler intended to be registered with an `HTTPServer`.
+- It uses `ResponseBuilder`, `RequestHandler`, and other `httpserver/` abstractions as primary interfaces.
+- While it uses lower-level components (`HTTPUpstreamSession`), those are *used by* the handler, not defining its module identity.
+
+### Final decision:
+**Assigned Module**: ["httpserver"]

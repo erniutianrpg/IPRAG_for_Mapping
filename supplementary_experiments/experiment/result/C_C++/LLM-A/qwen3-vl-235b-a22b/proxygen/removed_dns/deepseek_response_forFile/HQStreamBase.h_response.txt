@@ -1,0 +1,87 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `folly/Optional.h`, `folly/lang/Assume.h` → general utility headers (Folly)
+  - `proxygen/lib/http/HTTPException.h`, `HTTPChecks.h`, `HTTPCodec.h`, `HTTPCodecFilter.h`, `HTTPSettings.h`, `HTTP1xCodec.h`, `HQUnidirectionalCodec.h`
+    → These are all core HTTP codec and protocol-related headers in Proxygen, especially for HTTP/1.x and HTTP/3 (HQ = HTTP/3 over QUIC).
+  - `quic/codec/Types.h` → QUIC transport layer types (stream IDs, etc.)
+
+- Namespaces: `proxygen`, `detail`, `singlestream`, `composite`
+  - `proxygen` is the main namespace for Proxygen.
+  - `detail::singlestream` suggests a helper implementation for single-stream semantics (e.g., bidirectional streams mapped to one QUIC stream).
+
+- Types defined:
+  - `HQStreamMapping`: abstract interface for mapping between HTTP streams and QUIC streams.
+  - `HQStreamBase`: base class for HTTP/3 (HQ) streams, inherits from `HQStreamMapping` and `HTTPCodec::Callback`.
+  - `SSBidir`, `SSEgress`, `SSIngress`, `CSBidir`: concrete implementations for stream mappings — likely for different stream directionality patterns (single-stream bidirectional, egress-only, ingress-only, composite stream mapping).
+  - Also includes `HQSession`, `HTTPSessionController`, `VersionUtils` (forward-declared or used elsewhere).
+
+- Functions: mostly virtual methods for stream ID management, direction, preface generation — all related to HTTP/3 stream lifecycle and mapping to QUIC streams.
+
+- Raw excerpt shows:
+  - A pure-virtual interface (`HQStreamMapping`) for stream-to-QUIC mapping.
+  - Base class `HQStreamBase` that ties into `HTTPCodec`, `HTTPCodecFilterChain`, and manages read/write buffers.
+  - Concrete `SSBidir` class implementing mapping for bidirectional streams on a single QUIC stream.
+
+### 2. **Module Candidate Analysis**
+
+Let’s map each candidate:
+
+#### `pools`: ❌  
+- Concerned with backend server pools, load balancing, service discovery.
+- No evidence of pool configuration, server lists, health checks, etc.
+- Not relevant.
+
+#### `sampling`: ❌  
+- Lightweight sampling logic (e.g., request sampling for tracing/metrics).
+- No sampling logic, no probabilistic decisions, no `Sampler` classes.
+- Not relevant.
+
+#### `ssl`: ❌  
+- SSL/TLS context, certs, handshake stats.
+- No SSL-related includes (`SSL_CTX`, `folly/io/async/AsyncSSLServerSocket`, etc.), no TLS-specific code.
+- Not relevant.
+
+#### `general`: ⚠️ Partially related  
+- General utilities under `proxygen/lib/utils/`.
+- While `folly` utilities are used, the core focus here is not generic utilities — it's tightly coupled to HTTP codec and stream mapping for HTTP/3.
+- `HQStreamMapping`, `HQStreamBase`, etc., are not generic utilities; they are protocol-specific abstractions.
+- So *not* best fit.
+
+#### `http_general`: ✅ Strong candidate  
+- Defined as: *"common HTTP implementation under proxygen/lib/http/, core layer for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+- The file includes:
+  - `HTTPCodec.h`, `HTTPCodecFilter.h`, `HTTP1xCodec.h`, `HQUnidirectionalCodec.h`
+  - Defines stream abstractions for HQ (HTTP/3), which is explicitly mentioned in the module description.
+  - `HQStreamBase` implements `HTTPCodec::Callback`, integrates with `HTTPCodecFilterChain`, and handles stream preface — all part of HTTP protocol handling.
+- This fits squarely in the HTTP protocol core layer, specifically for HTTP/3 support.
+
+#### `services`: ❌  
+- Server-side infrastructure: connection acceptance, worker threads, service execution.
+- This file does *not* deal with listening sockets, accept loops, service registration, or thread pools.
+- It’s lower-level: stream-level abstraction, not service-level.
+
+#### `httpserver`: ❌  
+- High-level HTTP server API (e.g., `HTTPServer`, `RequestHandlerFactory`).
+- This is not a server wrapper; it's internal stream/codec machinery.
+- Not relevant.
+
+#### `transport`: ⚠️ Plausible but less accurate  
+- Defined as: *"lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3... working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, token/PSK cache."*
+- The file uses `quic/codec/Types.h`, and deals with `quic::StreamId`, but:
+  - It does **not** implement QUIC transport (e.g., no `QuicSocket`, `QuicTransport`, `PacketBuilder`, etc.).
+  - Instead, it maps HTTP streams to QUIC streams — i.e., it sits *above* the transport layer, in the HTTP protocol layer.
+  - The abstraction (`HQStreamMapping`, `HQStreamBase`) is about how HTTP semantics map onto QUIC streams — this is part of the HTTP/3 *codec/session* layer, not raw transport.
+  - In Proxygen’s architecture, HTTP/3 codec and stream mapping live under `proxygen/lib/http/`, not `proxygen/lib/transport/`.
+
+Indeed, based on Proxygen’s actual directory structure (known from open-source):
+- `proxygen/lib/http/codec/` contains `HQUnidirectionalCodec.h`, `HTTP1xCodec.h`, etc.
+- Stream mapping classes like `HQStreamBase` are typically in `proxygen/lib/http/` subdirectories (e.g., `hq/` or `session/`), not in `transport/`.
+- `transport/` is reserved for QUIC transport integration (e.g., `QuicSocketHandler`, `QuicTransport`, `QuicPacketProcessor`), not HTTP stream mapping.
+
+Thus, this file belongs to the **HTTP protocol core**, specifically HTTP/3 (HQ) stream handling — which is covered by `http_general`.
+
+### ✅ Final Decision:
+**Assigned Module**: [http_general]

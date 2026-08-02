@@ -1,0 +1,105 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **File Summary**
+- **Language**: C/C++
+- **Includes**:
+  - `dcamera_preview_callback.h` → strongly suggests this is a *preview callback* implementation.
+  - `distributed_camera_constants.h` → common constants (e.g., error codes, event types).
+  - `distributed_hardware_log.h` → logging utility specific to Distributed Hardware.
+- **Namespaces**: `OHOS::DistributedHardware` → confirms this is part of the OpenHarmony Distributed Hardware subsystem.
+- **Class/Functions**:
+  - `DCameraPreviewCallback` class with:
+    - Constructor taking `std::shared_ptr<StateCallback>`
+    - `OnFrameStarted()`
+    - `OnFrameEnded(const int32_t frameCount)`
+    - `OnError(const int32_t errorCode)`
+  - In `OnError`, it constructs a `DCameraEvent`, sets `eventType_ = DCAMERA_MESSAGE`, `eventResult_ = DCAMERA_EVENT_CAMERA_ERROR`, and calls `callback_->OnStateChanged(event)`.
+  - Uses `DHLOGI/DHLOGE` macros → standard logging in Distributed Hardware.
+
+This is clearly a **callback handler for preview events**, specifically notifying higher-level state management (via `StateCallback`) about preview lifecycle events and errors. The fact that it forwards errors as `DCameraEvent` to a `StateCallback` indicates it's part of the **event/state notification chain**, likely on the **sink side** (controlled device), where camera frames are generated and errors originate.
+
+Why sink side?
+- Preview frames are *produced* on the sink (controlled device), so callbacks like `OnFrameStarted/Ended` originate there.
+- Error handling (`OnError`) reports camera errors from the local camera — again, sink-side responsibility.
+- It does *not* handle decoding, post-processing, or IPC directly; it’s purely a callback adapter.
+
+Now evaluate each module:
+
+---
+
+### Candidate Module Analysis
+
+1. **DistributedCameraSourceMgr**  
+   - Handles *source-side* (controller) lifecycle, state machine, IPC, and *invoking* distributed camera functions.  
+   - This file is not invoking anything; it’s receiving frame events.  
+   ❌ Unlikely. Probability: **5%**
+
+2. **DistributedCameraSinkMgr**  
+   - Responsible for *sink-side* lifecycle, controller, data processing, **event notification**, and IPC.  
+   - Specifically mentions “event notification” — and this file is exactly a preview event notifier.  
+   - `DCameraPreviewCallback` is likely used internally by `DistributedCameraSinkMgr` to forward preview events to its state manager.  
+   ✅ Strong match. Probability: **90%**
+
+3. **ChannelCommon**  
+   - Purely about channel/session/SoftBus abstraction — no preview logic or camera-specific callbacks.  
+   ❌ Not relevant. Probability: **2%**
+
+4. **ChannelSink**  
+   - Implements sink-side channel communication (SoftBus), receives commands, sends image data.  
+   - While it *uses* callbacks, this file is not channel transport code — it’s application-level event handling.  
+   - No SoftBus, session, or packet handling here.  
+   ❌ Low match. Probability: **10%**
+
+5. **CameraDataProcessCommon**  
+   - Framework for data pipelines, codecs, color space, etc.  
+   - This file has no data processing — just callback dispatching.  
+   ❌ No. Probability: **3%**
+
+6. **CameraDataPreProcess**  
+   - Preprocessing pipeline on sink side *before transmission* (e.g., scaling, cropping).  
+   - This file does *not* process frames — only logs and notifies.  
+   ❌ Not matching. Probability: **5%**
+
+7. **CameraDataPostProcess**  
+   - Source-side post-processing (decoding, format conversion).  
+   - This is sink-side and no decoding occurs.  
+   ❌ No. Probability: **2%**
+
+8. **CameraServiceCommon**  
+   - Shared basics: commands, protocols, camera info, events, metadata, controller interfaces.  
+   - While it includes “events”, this file is a concrete *implementation* of a preview callback — more operational than foundational.  
+   - `DCameraEvent` and `StateCallback` suggest it’s used *by* service modules, but not part of the shared definitions layer.  
+   ⚠️ Possible, but less likely than SinkMgr. Probability: **15%**
+
+9. **VirtualCameraHdf**  
+   - HDF/HDI layer: virtual device, stream operator, metadata, IPC proxies.  
+   - This is user-space C++ (not HDF driver code), no HDI interfaces, no device binding.  
+   ❌ Not matching. Probability: **1%**
+
+10. **utils**  
+    - Provides utilities: buffers, constants, error codes, *and* “preview/photo/video callback handling**.  
+    - Explicitly mentions “preview... callback handling”.  
+    - This file implements a preview callback — could fit here.  
+    - However, note: `utils` is usually *stateless helpers*, while this class holds a `callback_` member and participates in state flow — suggesting it’s part of a manager, not a utility.  
+    - Also, includes `distributed_camera_constants.h` and uses `DCameraEvent`, which are likely defined in core modules, not pure utils.  
+    ✅ Plausible, but less cohesive than SinkMgr. Probability: **25%**
+
+---
+
+### Key Discriminators
+- The class name `DCameraPreviewCallback` and its use of `StateCallback::OnStateChanged(event)` strongly indicate it’s part of the **sink-side state/event management**, which is owned by `DistributedCameraSinkMgr`.
+- In OpenHarmony’s distributed camera architecture, the sink manager typically owns:
+  - Camera device control
+  - Preview session management
+  - Callback registration (including preview/error callbacks)
+  - Event forwarding to upper layers (e.g., source via IPC)
+
+Thus, while `utils` *could* host callback stubs, this is a *functional* callback tied to state management — best placed under `DistributedCameraSinkMgr`.
+
+---
+
+### Final Assessment
+
+"The probability that this file belongs to module 'DistributedCameraSinkMgr' is 90%."

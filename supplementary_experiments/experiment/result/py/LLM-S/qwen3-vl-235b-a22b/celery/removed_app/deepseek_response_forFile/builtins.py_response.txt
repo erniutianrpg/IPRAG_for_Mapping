@@ -1,0 +1,100 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+### File Summary:
+- **Language**: Python  
+- **Module docstring**: *"Built-in Tasks. The built-in tasks are always available in all app instances."*  
+- **Imports**:  
+  - `celery._state.connect_on_app_finalize` → used for hooking into app finalization (e.g., registering tasks when app is fully configured)  
+  - `celery.utils.log.get_logger` → standard Celery logging utility  
+- **Functions** (all named like `add_*_task(app)`):  
+  - `add_backend_cleanup_task(app)`  
+  - `add_accumulate_task(app)`  
+  - `add_unlock_chord_task(app)`  
+  - `add_map_task(app)`  
+  - `add_starmap_task(app)`  
+  - `add_chunk_task(app)`  
+  - `add_group_task(app)`  
+  - `add_chain_task(app)`  
+  - `add_chord_task(app)`  
+
+These functions clearly register *built-in tasks*—i.e., high-level composition primitives (like `group`, `chain`, `chord`, `map`, `starmap`) that are part of Celery’s task orchestration API. These are not user-defined tasks, but core abstractions provided by Celery itself.
+
+Crucially:
+- They are registered via `app` (Celery application instance), suggesting they’re added during app setup.
+- The use of `connect_on_app_finalize` implies these tasks are registered *after* the app is finalized (to avoid circular imports or premature registration).
+- None of these relate directly to backends, concurrency pools, CLI, events, security, etc.—they are about *task composition patterns*.
+
+Now evaluate candidate modules:
+
+- **backends**: ❌ No—these are not result backends; no mention of storage, retrieval, retry logic, or backend-specific APIs.
+- **bin**: ❌ No—no CLI entry points, subcommands, or command-line logic.
+- **concurrency**: ❌ No—no pool implementations (prefork/thread/eventlet), no execution strategies.
+- **contrib**: ⚠️ Partially plausible? Some contrib features (e.g., abortable tasks) are extensions, but built-in composition tasks like `group`, `chain`, `chord` are *core*, not contributed. Django integration, pytest, etc. are unrelated.
+- **events**: ❌ No event sending/receiving, monitoring, or snapshot logic.
+- **fixups**: ❌ No framework-specific startup fixes (e.g., Django patching).
+- **loaders**: ⚠️ Loaders handle config/task module loading—but these functions are not about loading modules; they *register* tasks programmatically on an app instance. Not a match.
+- **security**: ❌ No signing, serialization, certs.
+- **utils**: ⚠️ Uses `get_logger`, but that’s just a utility import; the *purpose* is not general utilities—it’s task registration. `utils` contains helpers, not built-in task definitions.
+- **worker**: ❌ Worker handles consumption, heartbeats, bootsteps—not task composition primitives.
+
+Wait—none seem perfect. But recall: In Celery’s source tree, **built-in tasks** (like `group`, `chain`, `chord`, `map`, etc.) are defined in a module called `celery.task.builtins` (historically) or more recently, they are registered via internal logic in `celery.app.tasks` or similar. However, based on the function names (`add_*_task(app)`) and the docstring *"Built-in Tasks. The built-in tasks are always available in all app instances"*, this strongly suggests the file is responsible for **registering core compositional tasks** onto the app.
+
+In modern Celery (≥5.x), such registration happens in `celery/app/tasks.py` or `celery/app/builtins.py`. But among the given candidates, none explicitly say “built-in tasks” — however, the closest conceptual fit is:
+
+➡️ **contrib**? Let’s reconsider:  
+The `contrib` module includes *extension and helper functionality*. But built-in tasks are *not* extensions—they are fundamental. So unlikely.
+
+Alternatively, could this be part of **utils**? `utils` includes "common internal utilities", and registering built-in tasks *could* be considered an internal utility. But typically, task registration logic is higher-level than generic utils.
+
+Let’s think differently: In Celery’s architecture, **built-in tasks** are tightly coupled with the **app** and **task system**, and their registration is done early during app finalization. The fact that they use `connect_on_app_finalize` suggests this is part of the app’s internal setup—possibly belonging to the **loaders** module? But loaders focus on *importing* task modules, not defining/composing tasks.
+
+Actually, reviewing Celery source (e.g., GitHub repo):
+- `celery/app/tasks.py` contains `_builtin_tasks` and registration logic.
+- There is no top-level module named “builtins”, but the file described matches what would be in `celery/app/tasks.py` or a dedicated `builtins.py`.
+
+Given the candidate list does **not include an explicit “tasks” or “builtins” module**, we must choose the *most appropriate* among provided options.
+
+Key insight: These functions are **helper functions that register core task abstractions** — they are *not* backends, workers, CLI, etc. They are part of the **task definition and composition layer**, which is foundational to Celery’s programming model.
+
+Among the candidates:
+- `utils`: Provides *internal utilities*, including logging, imports, etc. Registering built-in tasks could be seen as a utility function for app setup.
+- `contrib`: Explicitly says “extension and helper functionality”, and built-in tasks are *not* extensions—they are core.
+
+But note: In Celery’s actual codebase (v5+), the file containing `add_group_task`, `add_chain_task`, etc. is located under `celery/app/` and is considered part of the **app layer**, not a separate module. Since none of the candidates is “app”, we must infer from responsibility.
+
+Let’s re-read the docstring: *"Built-in Tasks. The built-in tasks are always available in all app instances."*  
+This is about **availability of standard tasks**—i.e., ensuring `group`, `chain`, etc. exist on every app. That is a *runtime setup concern*, closely tied to how the app is initialized.
+
+The use of `connect_on_app_finalize` is a pattern used in Celery for app-level finalization hooks — commonly used in modules that need to inject behavior after app config is complete. This pattern appears in:
+- `celery/contrib/` (e.g., `abortable.py` uses it)
+- `celery/app/tasks.py`
+
+But again, `contrib` is for *optional* extensions. Built-in tasks are mandatory.
+
+After careful analysis, the best match is:
+
+> **utils** — because:
+> - It includes internal utilities for app setup (logging, state management, etc.).
+> - The registration of built-in tasks is an internal helper mechanism, not a standalone subsystem.
+> - Other modules have clearly distinct responsibilities that don’t align.
+> - In practice, Celery places such registration logic in modules that are considered “internal utilities” rather than domain-specific subsystems.
+
+However, let’s quantify likelihood:
+
+- `utils`: High plausibility — uses `get_logger`, registers tasks via app finalize — fits “common internal utilities”.
+- `contrib`: Medium-low — only if built-in tasks were considered helpers/extensions, but they’re not optional.
+- All others: Very low (<10%).
+
+I find that in Celery’s actual source (e.g., [celery/app/tasks.py](https://github.com/celery/celery/blob/main/celery/app/tasks.py)), the functions `add_group_task`, `add_chain_task`, etc. exist and are part of the app’s task registry setup — and this file lives under `celery/app/`, which is *not* listed as a candidate. Since the candidates are limited, and `utils` is the catch-all for internal helpers, **utils is the most reasonable assignment**.
+
+But wait — another angle: The module is about *tasks*, and the only module that deals with *tasks* at a high level is none directly — except perhaps `worker`? No, worker executes tasks, doesn’t define built-in ones.
+
+Given the evidence, I conclude:
+
+✅ The file implements registration of core compositional tasks using app-finalization hooks — this is an internal utility for app setup.
+
+**Probability for `utils`: 85%**  
+All other modules: ≤15%
+
+Final answer:
+"The probability that this file belongs to module 'utils' is 85%."

@@ -1,0 +1,77 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `#include <proxygen/lib/http/session/HQByteEventTracker.h>`
+    - `HQ` strongly suggests **HTTP/3 over QUIC**, since “HQ” is Facebook/Meta’s internal name for HTTP/3 (e.g., `HQSession`, `HQTransport`, etc.).
+- **Namespaces**: `proxygen`
+- **Types**:
+  - `class HQTransportByteEvent`: inherits from `proxygen::TransactionByteEvent` and `quic::ByteEventCallback`.
+    - Clearly bridges HTTP transaction logic (`TransactionByteEvent`) with QUIC transport callbacks (`ByteEventCallback`).
+- **Functions**:
+  - `onByteEvent(quic::ByteEvent)`: handles QUIC byte events (TX, ACK).
+  - `onByteEventCanceled(...)`: cleanup on cancellation.
+  - `HQByteEventTracker::onByteEventWrittenToSocket(...)`: registers QUIC callbacks (`registerTxCallback`, `registerDeliveryCallback`) for stream offsets — this is **QUIC transport-level event registration**, tightly coupled with QUIC socket API.
+- **Raw excerpt context**:
+  - Uses `quic::QuicSocket*`, `quic::StreamId`, `quic::ByteEvent`, `quic::ByteEventCancellation`.
+  - Creates `HQTransportByteEvent` instances to register with QUIC transport for tracking TX/delivery of bytes.
+  - The class `HQByteEventTracker` is in namespace `proxygen`, and lives under `http/session/` in include path — but its *implementation* deals with QUIC transport callbacks.
+
+---
+
+### **2. Module Candidate Analysis**
+
+#### ✅ **transport**
+> *"This module mainly corresponds to lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3. It is Proxygen's transport-layer support module for HTTP/3/QUIC scenarios, responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."*
+
+- This file directly uses:
+  - `quic::QuicSocket`, `quic::StreamId`, `quic::ByteEvent`, `quic::ByteEventCallback`
+  - Registers callbacks with QUIC socket (`registerTxCallback`, `registerDeliveryCallback`)
+  - Implements byte-event tracking tied to QUIC transport semantics (TX, ACK, delivery)
+- Although the header is under `proxygen/lib/http/session/`, the *functionality* is about bridging HTTP transaction state with QUIC transport events — i.e., **transport-layer integration**.
+- In Meta’s Proxygen architecture, `HQByteEventTracker` is part of the HTTP/3 transport integration layer — it sits at the boundary between HTTP session logic and QUIC transport, but its *core responsibility* is transport event handling.
+
+#### ⚠️ **http_general**
+> *"This module mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+- While the header path is `http/session/`, the *implementation* does **not** deal with:
+  - HTTP parsing/encoding
+  - Session lifecycle (e.g., request/response framing)
+  - Transaction state machine
+- Instead, it delegates to QUIC transport for byte-level tracking — a *transport concern*, not an HTTP protocol concern.
+- So although it’s used *by* HTTP session code, its role is to adapt HTTP transactions to QUIC transport events → better classified under **transport**.
+
+#### ❌ Other modules:
+- **dns**, **pools**, **sampling**, **general**, **services**, **httpserver**:
+  - No DNS resolution, pool config, sampling logic, generic utils, service infrastructure, or high-level server APIs here.
+  - All are unrelated.
+
+---
+
+### **3. Architecture Context (Meta Proxygen)**
+
+In Proxygen’s codebase:
+- `proxygen/lib/http/session/` contains HTTP/2 and HTTP/3 session implementations.
+- But `HQByteEventTracker` is specifically designed to integrate with `quic::QuicSocket` for byte-event tracking — it’s part of the **HTTP/3 transport shim**, not core HTTP logic.
+- The `transport` module (e.g., `proxygen/lib/transport/`) includes QUIC-related adapters; `HQByteEventTracker` is often colocated with HTTP session code but *semantically belongs to transport integration*.
+
+Moreover:
+- The class `HQTransportByteEvent` inherits `quic::ByteEventCallback` — a pure QUIC transport interface.
+- Its sole purpose is to forward QUIC byte events to HTTP transaction callbacks and self-delete — classic transport callback glue code.
+
+---
+
+### **Conclusion**
+
+The file implements **QUIC transport-level byte event tracking** for HTTP/3 (HQ), acting as a bridge between HTTP transaction objects and QUIC socket callbacks. Though included from `http/session/`, its responsibilities align precisely with the **transport** module definition.
+
+> **The probability that this file belongs to module 'transport' is 95%.**  
+> (Remaining 5% uncertainty due to header location in `http/session/`, but implementation semantics overwhelmingly favor transport.)
+
+Other modules: ≤5% each, mostly 0%.
+
+Final answer:
+"The probability that this file belongs to module 'transport' is 95%."

@@ -1,0 +1,174 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - Standard: `<iostream>`, `<string>`, `<vector>`
+  - Folly: `folly/io/async/EventBaseLocal.h`
+  - Proxygen HTTP server samples (HQ-specific):  
+    `proxygen/httpserver/samples/hq/FizzContext.h`, `HQParams.h`
+  - Proxygen HTTP core:  
+    `proxygen/lib/http/codec/H3EarlyDataHandler.h`, `HTTPTransaction.h`
+  - QUIC server & state:  
+    `quic/server/QuicHandshakeSocketHolder.h`, `QuicServer.h`,  
+    `quic/state/EarlyDataAppParamsHandler.h`
+- **Namespaces**: `proxygen`, `quic`
+- **Types**: `HQSession`, `HQServer`, `ScopedHQServer`, `HQServerTransportFactory`, `AlpnEntry`
+- **Functions**: Many related to:
+  - Starting/stopping a server (`start`, `stop`, `waitUntilInitialized`)
+  - QUIC transport configuration (`setTransportSettingsOverrideFn`, `setProcessId`, `setHostId`, `setConnectionIdVersion`)
+  - TLS/Fizz context management (`setFizzContext`)
+  - ALPN handling (`addAlpnHandler`, `handleHQAlpn`)
+  - Early data support (`setDefaultEarlyDataHandler`, `validate`, `EarlyDataAppParamsHandler`)
+  - Connection lifecycle callbacks (`onQuicWriteCipherAvailable`, `onQuicTransportReady`, etc.)
+  - Integration with `HTTPTransactionHandlerProvider`
+
+The raw excerpt shows a header file defining `HQServer` — a server implementation for **HTTP/3 over QUIC**, using Fizz (Facebook’s TLS library), and integrating with Proxygen’s HTTP transaction layer.
+
+Key clues:
+- `HQ` = HTTP/3 over QUIC (as in “HTTP/3” or “HTTP-over-QUIC”)
+- Uses `quic::QuicServer`, `QuicHandshakeSocketHolder`, `EarlyDataAppParamsHandler`
+- Uses `fizz::server::FizzServerContext` → TLS context
+- Uses `HTTPTransactionHandlerProvider` → ties into Proxygen’s HTTP transaction model
+- Lives under `proxygen/httpserver/samples/hq/` in includes → suggests this is part of a *sample* high-level HTTP server built on top of QUIC + HTTP/3
+
+---
+
+### **2. Module Candidate Analysis**
+
+#### ✅ **transport**
+> *"This module mainly corresponds to lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3. It is Proxygen's transport-layer support module for HTTP/3/QUIC scenarios, responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."*
+
+- The file heavily depends on `quic/server/QuicServer.h`, `QuicHandshakeSocketHolder.h`, `EarlyDataAppParamsHandler.h`, and uses QUIC-specific types (`ProcessId`, `ConnectionIdVersion`, `TransportSettingsOverrideFn`).
+- However, note: this is not *just* transport — it’s a *server wrapper* that orchestrates QUIC transport + Fizz + HTTP transactions.
+- But the presence of `HQServerTransportFactory`, `onQuicTransportReady`, `onQuicWriteCipherAvailable`, and direct use of `QuicServer` strongly points to transport-layer integration.
+
+#### ✅ **httpserver**
+> *"This module mainly corresponds to proxygen/httpserver/. It wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers, serving as Proxygen's high-level HTTP server framework."*
+
+- The file is in `proxygen/httpserver/samples/hq/` (from include paths), and defines `HQServer`, which is clearly a *high-level server* abstraction.
+- It exposes `start()`, `stop()`, `setFizzContext()`, `addAlpnHandler()`, and integrates with `HTTPTransactionHandlerProvider` — all typical of a high-level HTTP server API.
+- `HQServer` is not a raw transport; it’s a server facade that manages QUIC transport, TLS, and HTTP transaction routing.
+
+#### ⚠️ **http_general**
+> *"This module mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer..."*
+
+- While it includes `HTTPTransaction.h` and `H3EarlyDataHandler.h`, those are used *as dependencies*, not as the primary focus.
+- The file does **not** implement HTTP parsing, encoding, or session management directly — it delegates to `HTTPTransactionHandler`.
+- So it’s *using* `http_general`, but not *part of* it.
+
+#### ⚠️ **ssl**
+> *"SSL/TLS context and statistics-related capabilities..."*
+
+- It uses `FizzServerContext`, but only as a configuration parameter (`setFizzContext`). No SSL logic is implemented here.
+- Not the main responsibility.
+
+#### ❌ **pools**, **sampling**, **general**, **services**
+- `pools`: no backend pool logic.
+- `sampling`: no sampling logic.
+- `general`: too generic; this is specialized.
+- `services`: `proxygen/lib/services/` typically handles connection managers, service executors, etc. While `HQServer` uses `wangle::ConnectionManager`, it’s not defined in `services`; and `HQServer` is more of a *sample server*, not infrastructure.
+
+---
+
+### **3. Key Differentiator: Is this transport or httpserver?**
+
+- The **transport** module would contain low-level QUIC socket handling, handshake logic, frame decoding, etc.
+- The **httpserver** module contains higher-level server abstractions like `HTTPServer`, `HTTPServerOptions`, and sample servers (e.g., `hq/` samples).
+- This file defines `HQServer`, which:
+  - Wraps `quic::QuicServer`
+  - Accepts `HTTPTransactionHandlerProvider`
+  - Manages ALPN, Fizz context, early data handlers
+  - Is located in `proxygen/httpserver/samples/hq/` (implied by includes)
+
+→ This is clearly a **sample high-level HTTP/3 server**, i.e., part of the **httpserver** module.
+
+Even though it uses QUIC transport heavily, its role is to provide a *server API*, not to implement transport primitives.
+
+In Facebook’s Proxygen repo structure:
+- `proxygen/httpserver/` contains `HTTPServer`, `HTTPServerOptions`, and samples (including `hq/`)
+- `proxygen/lib/transport/` contains `QuicTransport`, `Socket`, etc.
+- `quic/` is a separate repo/submodule, but Proxygen’s `httpserver/samples/hq/` integrates it.
+
+Thus, this file belongs to the **httpserver** module.
+
+---
+
+### **4. Probability Assignment**
+
+- **httpserver**: Very high — it’s a sample server in `httpserver/samples/hq/`, implements high-level server API, integrates QUIC/TLS/HTTP but as a facade.  
+  → **95%**
+- **transport**: Medium-high — heavy QUIC usage, but it’s *using* transport, not *implementing* it. This is not a transport primitive.  
+  → **5%**
+- All others: negligible (<1%)
+
+Note: Since the question asks for probability per module, we assign the dominant one with high confidence, and others lower.
+
+But per instruction, we must give one sentence per module? No — the expected format is:
+
+> "The probability that this file belongs to module '{module_name}' is XX%."
+
+So we list **all** modules with probabilities.
+
+Let’s assign carefully:
+
+| Module | Reasoning | Probability |
+|--------|-----------|-------------|
+| **pools** | No pool/backends logic | 0% |
+| **sampling** | No sampling code | 0% |
+| **ssl** | Uses Fizz context but doesn’t implement SSL logic; not core responsibility | 2% |
+| **general** | Too generic; this is specialized server code | 1% |
+| **http_general** | Uses HTTP components but doesn’t implement core HTTP protocol logic | 3% |
+| **services** | Uses connection manager but not part of lib/services infrastructure | 2% |
+| **httpserver** | High-level server in httpserver/samples/hq/, defines HQServer API, matches module purpose exactly | **92%** |
+| **transport** | Heavy QUIC usage, but as consumer—not implementer; transport module is lower-level | **0%**? Wait — reconsider: In some architectures, QUIC-integrated server wrappers may be considered part of transport. But given the path (`httpserver/samples/hq`) and role (server facade), it's still httpserver. Let’s keep transport at **3%** to reflect dependency weight. |
+
+Actually, to be precise and conservative:
+- The file is a header in `httpserver/samples/hq/` — that alone strongly anchors it to `httpserver`.
+- All functions are server lifecycle + configuration, not transport I/O or packet processing.
+
+So final probabilities:
+
+- pools: 0%  
+- sampling: 0%  
+- ssl: 1%  
+- general: 1%  
+- http_general: 2%  
+- services: 2%  
+- httpserver: **92%**  
+- transport: **2%**
+
+But sum must be ~100%. Let’s adjust:
+
+- httpserver: **90%**
+- transport: **5%**
+- ssl: **2%**
+- others: **3%** total (1% each for general, http_general, services; 0 for pools/sampling)
+
+Better:
+
+- pools: 0%  
+- sampling: 0%  
+- ssl: 2%  
+- general: 1%  
+- http_general: 2%  
+- services: 2%  
+- transport: 3%  
+- httpserver: **90%**
+
+Yes — 90% is justified.
+
+---
+
+### ✅ Final Answer:
+
+The probability that this file belongs to module 'pools' is 0%.  
+The probability that this file belongs to module 'sampling' is 0%.  
+The probability that this file belongs to module 'ssl' is 2%.  
+The probability that this file belongs to module 'general' is 1%.  
+The probability that this file belongs to module 'http_general' is 2%.  
+The probability that this file belongs to module 'services' is 2%.  
+The probability that this file belongs to module 'httpserver' is 90%.  
+The probability that this file belongs to module 'transport' is 3%.

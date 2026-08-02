@@ -1,0 +1,86 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `folly/io/async/SSLContext.h` → SSL/TLS context (but used *as a dependency*, not core logic)
+  - `proxygen/lib/http/codec/compress/HeaderCodec.h` → HTTP header compression (HTTP/2 HPACK, etc.)
+  - `proxygen/lib/http/session/HTTPSession.h` → Core HTTP session base class
+  - `proxygen/lib/http/session/HTTPSessionStats.h` → Session-level stats (e.g., for metrics)
+
+- **Namespace**: `proxygen`
+- **Types**:
+  - `HTTPSessionStats` (forward-declared; likely defined elsewhere in same module)
+  - `HTTPUpstreamSession` — inherits from `HTTPSession`
+
+- **Functions**:
+  - Constructor(s) taking transport, codec, addresses, timer, etc.
+  - Overrides of `HTTPSession` virtual methods: `attachThreadLocals`, `detachThreadLocals`, `startNow`, `newTransaction`, `isReplaySafe`, `isReusable`, `isClosing`, `drain`, `getHTTPPriority`, `setupOnHeadersComplete`, `getTransactionTimeoutHandler`, `allTransactionsStarted`, etc.
+  - Helper methods like `maybeAttachSSLContext`, `newTransactionWithError`
+  - Uses `HeaderCodec::Stats`, `HTTPSessionController`, `PriorityAdapter`, `HTTPCodec`, `HTTPTransaction`, `HTTPMessage`, `WheelTimerInstance`, `folly::SSLContext`, `wangle::TransportInfo`
+
+This is clearly a **session implementation** for an *upstream* (i.e., client-side) HTTP connection — i.e., when Proxygen acts as an HTTP client (e.g., in a proxy or service making outbound requests), not a server.
+
+The class `HTTPUpstreamSession` extends `HTTPSession`, which is the abstract base for HTTP sessions in Proxygen. It manages transaction lifecycle, priority, SSL attachment/detachment, stats collection, and integration with codecs/filters.
+
+### 2. **Module Matching**
+
+Let’s evaluate each candidate:
+
+#### ✅ **http_general**
+- Definition: *"common HTTP implementation under proxygen/lib/http/, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+- Evidence:
+  - File path implied by includes: `proxygen/lib/http/session/HTTPSession.h`, `HeaderCodec.h` → all under `lib/http/`
+  - `HTTPUpstreamSession` is a concrete session type implementing core session behavior.
+  - Uses `HTTPCodec`, `HTTPTransaction`, `HTTPMessage`, `HeaderCodec::Stats`, `HTTPSessionStats` — all core HTTP abstractions.
+  - Not server-specific (no request handling, no service binding), not transport-layer (no QUIC, no raw socket I/O), not DNS/pools.
+  - This is exactly the kind of file that lives in `proxygen/lib/http/session/` — part of the HTTP protocol stack core.
+
+→ **Strong match**.
+
+#### ❌ **dns**
+- No DNS resolution logic, no `DNSResolver`, `DnsCache`, etc.
+- Includes don’t reference DNS headers.
+→ Probability: ~0%
+
+#### ❌ **pools**
+- No pool management, no backend selection, no load-balancing logic.
+→ Probability: ~0%
+
+#### ❌ **ssl**
+- Although it uses `folly::SSLContext`, it does *not* define or manage SSL contexts — only attaches/detaches them optionally.
+- No SSL handshake logic, no certificate validation, no TLS version negotiation.
+- SSL is a *dependency*, not the focus.
+→ Probability: low (~5–10%). But not primary.
+
+#### ❌ **general**
+- `general` = `lib/utils/` and common utilities.
+- This file is not a utility; it's a core session class deeply tied to HTTP semantics and lifecycle.
+- Not generic (e.g., no `ScopedGuard`, `ByteRange`, `StringPrintf`, etc.).
+→ Probability: low (~10%).
+
+#### ❌ **services**
+- `services` = `lib/services/`, for server-side infrastructure (e.g., `ServiceHandler`, `ConnectionManager`, `Worker`, etc.).
+- `HTTPUpstreamSession` is *client-side* (upstream), used when Proxygen acts as an HTTP client (e.g., in a reverse proxy forwarding requests).
+- Server-side sessions would be `HTTPDownstreamSession`.
+→ Probability: very low (~5%).
+
+#### ❌ **httpserver**
+- `httpserver/` is high-level wrapper (e.g., `HTTPServer`, `RequestHandler`, `ResponseBuilder`).
+- This is low-level session implementation, not API-facing.
+→ Probability: ~0%.
+
+#### ❌ **transport**
+- Transport = QUIC / HTTP/3 / low-level socket handling.
+- This file uses `folly::AsyncTransport`, but that’s standard for TCP-based HTTP; no QUIC, no `QuicTransport`, no datagram, no stream IDs, no connection IDs.
+- `HeaderCodec.h` is HTTP-level, not transport-level.
+→ Probability: low (~5%).
+
+### 3. **Conclusion**
+The file implements `HTTPUpstreamSession`, a core session type in the HTTP layer, directly inheriting from `HTTPSession`, using HTTP codecs, transactions, stats, and priority — all part of the foundational HTTP protocol stack in `proxygen/lib/http/`.
+
+This fits **exactly** the definition of the `http_general` module.
+
+---
+
+**The probability that this file belongs to module 'http_general' is 95%.**

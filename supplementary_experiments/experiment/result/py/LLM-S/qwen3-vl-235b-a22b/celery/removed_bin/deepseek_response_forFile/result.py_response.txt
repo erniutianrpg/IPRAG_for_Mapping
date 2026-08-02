@@ -1,0 +1,63 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+### 1. **File Overview**
+- **Module docstring**: *"Task results/state and results for groups of tasks."*
+- **Key imports**:
+  - `kombu.utils.objects.cached_property`, `vine.Thenable`, `vine.barrier`, `vine.promise` → low-level async/result primitives.
+  - `current_app`, `app.app_or_default`, `states`, `_state.*`, `exceptions.*`, `utils.graph.*` → Celery internal utilities and state handling.
+  - No direct backend-specific imports (e.g., `redis`, `sqlalchemy`, `amqp`, `memcached`) — so *not* a backend implementation.
+  - No worker runtime logic (e.g., `consumer`, `hub`, `bootsteps`, `heartbeat`, `request`, `task_handler`) — so *not* `worker`.
+  - No event-related imports (`event`, `dispatch`, `snapshot`, `monitors`) — so *not* `events`.
+  - No concurrency pool or executor classes (`prefork`, `thread`, `gevent`, `asynpool`) — so *not* `concurrency`.
+  - No framework fixup logic (`django`, `flask`, `autodiscover`, `setup_django`) — so *not* `fixups`.
+  - No security primitives (`signing`, `cert`, `key`, `digest`) — so *not* `security`.
+  - No app-level registration, config loading, or routing logic — so *not* `app` (though it uses `current_app`, that’s just reference).
+  - Uses `utils.graph.DependencyGraph`, `utils.graph.GraphFormatter` → strong signal toward `utils`.
+
+### 2. **Core Classes & Responsibilities**
+- `AsyncResult`: Represents a single task result; supports `.get()`, `.ready()`, `.failed()`, `.revoke()`, `.then()`, `.as_tuple()`, etc. This is the canonical result proxy object used by users and internally.
+- `ResultSet`: Aggregates multiple `AsyncResult`s; supports `.join()`, `.successful()`, `.failed()`, iteration.
+- `GroupResult`: Subclass of `ResultSet`; adds group ID, persistence (`save`/`delete`), restoration.
+- `EagerResult`: For eager (synchronous/local) execution mode — mimics `AsyncResult` but with immediate result.
+
+These are **result abstractions**, not backend implementations. They define the *interface* and *behavior* of task results, independent of where results are stored.
+
+Crucially:
+- They use `backend` as an attribute but do **not implement** backend logic — they delegate to it.
+- They rely on `states`, `_state`, `exceptions`, and `utils.graph` — all internal utilities.
+- The graph utilities (`DependencyGraph`, `GraphFormatter`) are used in `build_graph()` and `graph()` methods — clearly from `utils.graph`.
+
+This strongly suggests this file is part of the **result abstraction layer**, which sits *above* backends and *below* user-facing APIs — i.e., core internal utility for managing task result state and composition.
+
+### 3. Module Mapping
+Let’s evaluate each candidate:
+
+| Module | Match? | Reason |
+|--------|--------|--------|
+| **app** | ❌ Low | App handles config, task registry, control, routing — none of that here. Uses `current_app` but doesn’t define app logic. |
+| **backends** | ❌ Low | No backend-specific code (no Redis/DB/RPC logic). Backends implement `get`, `set`, `forget`, etc. — here those are *called*, not implemented. |
+| **concurrency** | ❌ No | No executors, pools, threads, event loops. |
+| **contrib** | ❌ No | No Django integration, pytest helpers, abortable tasks, etc. |
+| **events** | ❌ No | No event dispatch, monitoring, or snapshot logic. |
+| **fixups** | ❌ No | No framework startup hooks or compatibility patches. |
+| **loaders** | ❌ No | No config loading, module importing, or lifecycle hooks. |
+| **security** | ❌ No | No signing, serialization security, certs. |
+| **utils** | ✅ **High** | Uses `utils.graph.*`, provides generic result abstractions, state management helpers (`_state.*`), exception types, and reusable patterns (`Thenable`, `barrier`, `promise`). Result objects are *utilities* for composing and querying task outcomes — exactly what `utils` does: internal shared infrastructure. |
+| **worker** | ❌ No | Worker deals with consuming messages, executing tasks, heartbeats — not result aggregation. |
+
+Note: In Celery’s actual source tree (e.g., `celery/result.py`), this exact structure lives under `celery/result.py`, which is historically considered part of the **core utility layer** — and in modern Celery architecture, `celery.result` is often grouped with `utils`-like internals, even if it has its own file. But among the given modules, **`utils`** is the best fit because:
+- It contains graph utilities used directly.
+- It houses generic abstractions (like `Thenable`, `barrier`, `promise`) via vine/kombu — which are imported and used here.
+- The module is about *representing and manipulating task result state*, not executing, routing, or persisting.
+
+Also, observe:  
+- `E_WOULDBLOCK`, `assert_will_not_block()`, `allow_join_result()`, `denied_join_result()` — these are low-level concurrency coordination helpers, typical of utility modules.
+- `_state._set_task_join_will_block`, `_state.task_join_will_block` — internal state flags for blocking behavior — again, utility/internal.
+
+### Final Assessment
+The file defines the **result abstraction layer**: `AsyncResult`, `ResultSet`, `GroupResult`, `EagerResult` — which are fundamental to how Celery exposes task status and outcomes. While one might expect a dedicated “results” module, among the provided candidates, **`utils`** is the only one that encompasses generic internal infrastructure like graph structures, state helpers, and composable result primitives.
+
+Thus:
+
+**The probability that this file belongs to module 'utils' is 95%.**  
+(5% uncertainty because in some architectures “result” could be its own top-level module — but per the given options, `utils` is the correct match.)

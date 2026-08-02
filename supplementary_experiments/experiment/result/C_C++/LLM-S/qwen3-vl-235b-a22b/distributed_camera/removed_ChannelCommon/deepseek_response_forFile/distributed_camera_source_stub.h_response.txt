@@ -1,0 +1,95 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **File Summary**
+- **Language**: C/C++
+- **Header guard**: `OHOS_DISTRIBUTED_CAMERA_SOURCE_STUB_H`
+- **Includes**:
+  - `<map>` — standard library for function mapping
+  - `"iremote_stub.h"` — OHOS IPC stub base class (used for remote service implementation on *server side*)
+  - `"idistributed_camera_source.h"` — interface for distributed camera source (likely defines methods like `InitSource`, `ReleaseSource`, etc.)
+- **Namespace**: `OHOS::DistributedHardware`
+- **Class**: `DistributedCameraSourceStub` inherits from `IRemoteStub<IDistributedCameraSource>`
+  - This is a classic **IPC stub** (server-side proxy) implementing the remote interface `IDistributedCameraSource`.
+  - Implements `OnRemoteRequest()` to dispatch incoming IPC calls via `memberFuncMap_`.
+  - Private inner functions correspond to interface methods: `InitSourceInner`, `ReleaseSourceInner`, `RegisterDistributedHardwareInner`, `UnregisterDistributedHardwareInner`, `DCameraNotifyInner`.
+- **Key implication**: This class runs on the **source side** (i.e., the *controller* side), because:
+  - It implements `IDistributedCameraSource`, which is the interface *exposed by the controller* to allow the sink (controlled device) to call back or register/unregister.
+  - In OHOS IPC patterns, `IRemoteStub<T>` is used on the **server side** (the one hosting the service), while `IRemoteObject`/proxy is used on the client side.
+  - The naming `SourceStub` + `IDistributedCameraSource` strongly suggests this is the **stub for the source-side service**, i.e., the controller exposes this stub to let the sink communicate with it.
+
+> Note: In distributed camera architecture:
+> - **Source side** = controller (initiates requests, manages lifecycle, receives data)
+> - **Sink side** = controlled device (hosts camera hardware, executes commands, sends frames)
+
+But here, `DistributedCameraSourceStub` is the *service implementation* on the **source side** that handles callbacks/registrations *from the sink*. So it's part of the **source-side IPC service layer**, not the sink.
+
+Now evaluate modules:
+
+---
+
+### Candidate Module Analysis
+
+1. **DistributedCameraSourceMgr**
+   - ✅ Responsible for: *lifecycle, state machine, controller, input stream, data processing, IPC service, and callback management on the source side*.
+   - The stub is clearly an **IPC service component** on the source side — exactly what `SourceMgr` would host or manage.
+   - `SourceMgr` likely creates/owns `DistributedCameraSourceStub`, registers it with SAMGR, and routes calls to its internal logic.
+   - This file is the *implementation of the IPC stub* that `SourceMgr` depends on — tightly coupled.
+   - **High match**.
+
+2. **DistributedCameraSinkMgr**
+   - ❌ This is for the *sink side* (controlled device). The stub implements `IDistributedCameraSource`, not `IDistributedCameraSink`. Sink would implement `DistributedCameraSinkStub`, not `SourceStub`.
+   - Mismatch in role and interface.
+
+3. **ChannelSource**
+   - ❌ ChannelSource deals with SoftBus connections, sending control commands *from controller to sink*, and receiving image streams.
+   - This file is about **IPC stub handling method dispatch**, not network channel logic.
+   - No SoftBus, no socket/connection code — purely local IPC (MessageParcel-based).
+   - Not a match.
+
+4. **ChannelSink**
+   - ❌ Same reasoning as above; this is sink-side channel, but this file is source-side stub.
+
+5. **CameraDataProcessCommon**
+   - ❌ No data processing logic here — just method dispatching via map. No codecs, color space, frame rate control.
+   - Not relevant.
+
+6. **CameraDataPreProcess**
+   - ❌ Preprocessing happens on sink side before transmission; this is source-side IPC stub.
+   - No image/data processing.
+
+7. **CameraDataPostProcess**
+   - ❌ Post-processing on source side (e.g., decoding received frames) — but this file does *not* handle frame data; only command dispatch.
+   - Not matching.
+
+8. **CameraServiceCommon**
+   - ⚠️ Provides shared basic capabilities: protocols, camera info, events, etc.
+   - While `IDistributedCameraSource` may be defined here, the *stub implementation* is more concrete and belongs to the manager that uses it.
+   - This file is not generic utility — it’s a specific stub tied to source-side service lifecycle.
+   - Lower likelihood than SourceMgr.
+
+9. **VirtualCameraHdf**
+   - ❌ HDF/HDI layer, virtual device implementation — this is pure OHOS native IPC, no HDF references.
+   - Not matching.
+
+10. **utils**
+    - ❌ Utilities: buffers, constants, error codes — this is a full class with IPC dispatch logic.
+    - Too high-level for utils.
+
+---
+
+### Final Reasoning
+- The file is a **stub implementation of `IDistributedCameraSource`**, running on the **source (controller) side**, handling remote requests (e.g., sink registering itself, notifying events).
+- The only module explicitly responsible for **IPC service on the source side** is **`DistributedCameraSourceMgr`**, which would own and instantiate this stub, register it with the system ability manager, and delegate to its inner logic.
+- In OHOS architecture, such stubs are typically placed inside the manager module (or as a private header/class within it), not in generic utilities or channel layers.
+
+Thus:
+
+> The probability that this file belongs to module 'DistributedCameraSourceMgr' is 95%.  
+> (Remaining 5% accounts for possibility it's in a dedicated IPC sub-module, but none of the candidates list that — and among given options, SourceMgr is definitive.)
+
+---
+
+**Answer**:  
+The probability that this file belongs to module 'DistributedCameraSourceMgr' is 95%.

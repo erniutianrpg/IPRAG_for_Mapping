@@ -1,0 +1,95 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - Standard: `<iostream>`, `<string>`, `<vector>`
+  - Folly: `folly/io/async/EventBaseLocal.h`
+  - Proxygen HTTP server samples (HQ-specific):  
+    `proxygen/httpserver/samples/hq/FizzContext.h`, `HQParams.h`
+  - Proxygen HTTP core:  
+    `proxygen/lib/http/codec/H3EarlyDataHandler.h`, `HTTPTransaction.h`
+  - QUIC server & state:  
+    `quic/server/QuicHandshakeSocketHolder.h`, `QuicServer.h`,  
+    `quic/state/EarlyDataAppParamsHandler.h`
+- **Namespaces**: `proxygen`, `quic`
+- **Types**: `HQSession`, `HQServer`, `ScopedHQServer`, `HQServerTransportFactory`, `AlpnEntry`
+- **Functions**: Many related to:
+  - Starting/stopping a server (`start`, `stop`)
+  - Setting up QUIC transport (`setTransportSettingsOverrideFn`, `setListeningFDs`, `setProcessId`, etc.)
+  - Handling ALPN, early data, Fizz (TLS) context
+  - Managing connections (`onQuicWriteCipherAvailable`, `onQuicTransportReady`, `handleHQAlpn`)
+  - Integration with `HTTPTransactionHandlerProvider`
+
+The excerpt shows a header for `HQServer` — a high-level server class that wraps QUIC + HTTP/3 (HQ = HTTP/3 over QUIC), using Fizz (Facebook’s TLS library), and integrating with Proxygen’s HTTP transaction model.
+
+Crucially:
+- It lives in `proxygen/httpserver/samples/hq/` (from includes like `FizzContext.h`, `HQParams.h`)
+- Uses `quic::QuicServer`, `quic::EarlyDataAppParamsHandler`, `fizz::server::FizzServerContext`
+- Provides a server API that abstracts QUIC transport setup, ALPN handling, and HTTP transaction dispatch
+
+This is **not** a low-level transport primitive (like raw socket or packet handling), nor is it pure DNS, pools, or SSL-only logic. It's a *server implementation* built on top of QUIC + HTTP/3 abstractions.
+
+---
+
+### **2. Candidate Module Analysis**
+
+#### ✅ **httpserver**
+- Matches: `proxygen/httpserver/` is the high-level HTTP server framework.
+- The file is in `samples/hq/`, which is part of `httpserver/` (as per include paths).
+- `HQServer` is a concrete server class exposing a clean API for starting an HTTP/3 server — exactly what `httpserver` provides.
+- Uses `HTTPTransactionHandlerProvider`, which is a pattern used in `httpserver` to plug in user-defined handlers.
+- Integrates Fizz (SSL/TLS), QUIC, and HTTP transaction layer — all orchestrated at the *server application level*, not lower layers.
+
+→ Strong match.
+
+#### ⚠️ **transport**
+- This module handles *low-level* QUIC transport: e.g., `QuicServer`, `QuicSocket`, `EarlyDataAppParamsHandler`, `QuicHandshakeSocketHolder`.
+- While this file *uses* those components, it does **not implement** them — it consumes them.
+- The file is a *server wrapper*, not a transport primitive.
+- So transport is a dependency, but not the module this file belongs to.
+
+→ Not the best fit.
+
+#### ⚠️ **http_general**
+- Covers core HTTP protocol logic: parsing, encoding, sessions, transactions.
+- Includes `HTTPTransaction.h`, `H3EarlyDataHandler.h` — yes, used here.
+- But `HQServer` is not implementing HTTP semantics; it’s orchestrating transport + session + handler dispatch.
+- This is higher-level than `http_general`.
+
+→ Partial overlap, but not primary.
+
+#### ❌ **services**
+- `proxygen/lib/services/`: connection management, worker threads, service execution.
+- While `HQServer` has `getWorkerEvbs()`, `pauseRead()`, etc., it doesn’t appear to be part of the generic `services` infrastructure — rather, it’s a sample app-level server.
+- No evidence of `ConnectionManager`, `Service`, or `Worker` abstractions from `services/`.
+
+→ Unlikely.
+
+#### ❌ **ssl**
+- Only uses Fizz context as a parameter; no SSL/TLS implementation here.
+- Not focused on certificates, key management, or handshake logic — just passes context.
+
+→ Not this.
+
+#### ❌ **dns**, **pools**, **general**
+- No DNS resolution, pool config, or generic utils (e.g., ` folly::StringPiece`, `ScopedGuard`, etc.) are central here.
+
+→ Ruled out.
+
+---
+
+### **3. Final Judgment**
+
+The file:
+- Is a header for `HQServer`, a sample HTTP/3 server in `proxygen/httpserver/samples/hq/`
+- Exposes a high-level API for starting/stopping an HTTP/3 server using QUIC + Fizz
+- Fits precisely the definition of the **httpserver** module: *“wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers”*
+
+Even though it uses QUIC/transport and HTTP core components, its *role* is that of a server framework entry point — the hallmark of `httpserver`.
+
+---
+
+**The probability that this file belongs to module 'httpserver' is 95%.**

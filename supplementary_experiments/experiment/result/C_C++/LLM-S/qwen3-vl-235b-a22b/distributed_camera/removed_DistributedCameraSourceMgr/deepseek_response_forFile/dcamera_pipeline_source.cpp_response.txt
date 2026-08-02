@@ -1,0 +1,122 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `dcamera_pipeline_source.h` → clearly indicates this is a *source-side pipeline* implementation.
+  - `distributed_hardware_log.h` → standard logging for distributed hardware (common across modules).
+  - `decode_data_process.h` → suggests decoding functionality (e.g., JPEG decode or format conversion).
+  - `fps_controller_process.h` → frame-rate control, a common post-processing step.
+
+- **Namespaces**: `OHOS::DistributedHardware` → confirms this is part of the OHOS Distributed Hardware subsystem.
+
+- **Key Class**: `DCameraPipelineSource`
+  - Manages creation/destruction of a *data processing pipeline* on the **source side**.
+  - Handles `PipelineType::VIDEO`, rejects `JPEG`/other types.
+  - Uses `DecodeDataProcess` and `FpsControllerProcess` as pipeline nodes.
+  - Implements event-driven asynchronous processing via `EventBus` and `DCameraPipelineEvent`.
+  - Has methods like:
+    - `CreateDataProcessPipeline`
+    - `InitDCameraPipNodes`
+    - `ProcessData`
+    - `OnEvent`, `OnError`, `OnProcessedVideoBuffer`
+    - `IsInRange` (config validation)
+
+- **Raw excerpt highlights**:
+  - Pipeline initialization involves `DecodeDataProcess` and likely other nodes.
+  - It's building a *processing pipeline* that takes raw camera data (from local camera), decodes (if needed), controls FPS, and prepares it for transmission — but note: this is on the **source side**, i.e., the *controller side* (the device requesting the remote camera feed).
+
+⚠️ Clarify terminology:
+- In distributed camera architecture:
+  - **Source side** = *controller side* (the device that *requests* and *uses* the camera stream — e.g., a tablet using a phone’s camera).
+  - **Sink side** = *controlled side* (the device *hosting* the camera — e.g., the phone providing its camera).
+  
+This is critical: despite the name `DCameraPipelineSource`, in OHOS Distributed Camera context, “source” refers to the *consumer/controller side*, where incoming data (from sink) is processed before being presented to local apps (e.g., preview, recording). So this is **post-processing** of received video data.
+
+Evidence:
+- The pipeline processes `videoResult` in `OnProcessedVideoBuffer`.
+- It uses `DecodeDataProcess` — likely to decode encoded video (e.g., H.264/JPEG) received from sink.
+- It controls FPS — typical for adapting remote stream to local display/recording requirements.
+- It does **not** interact with local camera hardware directly (no `CameraOperator`, `StreamOperator`, etc.), nor does it send commands — it receives and processes data.
+
+So this is **not** the sink-side camera capture pipeline; it’s the *controller-side pipeline that processes received data*.
+
+---
+
+### **2. Module Matching**
+
+Let’s evaluate each candidate:
+
+#### ✅ **CameraDataPostProcess**
+> *"responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution, and related properties of received image data so that the controller can use distributed camera data as if using a local Camera."*
+
+- Matches perfectly:
+  - Operates on **source side** (controller side),
+  - Does **decoding** (`DecodeDataProcess`),
+  - Applies **FPS control** (`fps_controller_process.h`),
+  - Processes received video buffers (`OnProcessedVideoBuffer`),
+  - Validates config ranges (resolution/fps),
+  - Builds a pipeline (`InitDCameraPipNodes`, `pipelineHead_`, `eventBusSource_`),
+  - Goal: make remote stream usable locally — exactly what post-processing does.
+
+→ **High match**.
+
+#### ❌ DistributedCameraSinkMgr
+- Focuses on *sink-side* lifecycle, access control, IPC, and *outputting* data from local camera.
+- This file does **not** manage camera open/close, session control, or sink-side IPC.
+- No sink-specific logic (e.g., `CameraOperator`, `StreamOperator`, `HDF` callbacks).
+→ Low match.
+
+#### ❌ ChannelCommon / ChannelSource / ChannelSink
+- These are about *transport layer*: SoftBus, sessions, message passing.
+- This file has **no network/session code**, no SoftBus APIs, no `ISession` or `IChannel` usage.
+- It assumes data is already received (via some channel) and focuses on *processing* it.
+→ Not a channel module.
+
+#### ❌ CameraDataProcessCommon
+> *"provides common data processing frameworks, pipeline interfaces, codecs, color space conversion..."*
+
+- While this file uses common components (`DecodeDataProcess`, `FpsControllerProcess`), the class `DCameraPipelineSource` is a *concrete implementation* for the **source side**, not a generic framework.
+- `CameraDataProcessCommon` would likely contain abstract interfaces (`IDataProcessNode`, `IPipeline`), base classes, or utility functions — not a full pipeline orchestrator tied to source-side event bus.
+- The inclusion of `dcamera_pipeline_source.h` (not `_common.h`) suggests it’s not generic.
+→ Possible partial overlap, but not primary home.
+
+#### ❌ CameraDataPreProcess
+> *"preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework..."*
+
+- This is **sink-side preprocessing**, e.g., before encoding/transmission.
+- Our file is **source-side post-processing**, after reception.
+→ Opposite role → mismatch.
+
+#### ❌ CameraServiceCommon
+- Provides shared *service-level* capabilities: commands, protocols, metadata, events, controller interfaces.
+- This file is focused on *data pipeline execution*, not service orchestration or IPC protocol handling.
+- No command parsing, no metadata setting, no controller interface registration.
+→ Low match.
+
+#### ❌ VirtualCameraHdf
+- HDF/HDI layer: virtual device, provider, stream operator, etc.
+- No HDF-related code here (no `IHdfDevice`, `StreamOperator`, `HDI` calls).
+→ Mismatch.
+
+#### ❌ utils
+- General utilities: buffers, error codes, constants.
+- While it uses `DataBuffer`, `DataProcessListener`, etc., the logic is high-level pipeline orchestration — not utility helpers.
+→ Too generic; this is domain-specific pipeline logic.
+
+---
+
+### **3. Conclusion**
+
+The file implements the **source-side (controller-side) data post-processing pipeline**, including decoding, FPS control, config validation, and event-driven buffer processing — exactly the responsibility of **CameraDataPostProcess**.
+
+Probability assessment:
+- Strong alignment with module description.
+- No competing module fits as well.
+- Naming (`DCameraPipelineSource`) may confuse, but architecture context confirms it’s post-processing on source side.
+
+---
+
+**The probability that this file belongs to module 'CameraDataPostProcess' is 95%.**

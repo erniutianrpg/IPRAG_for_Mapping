@@ -1,0 +1,93 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **1. File Overview**
+
+- **Language**: C/C++
+- **Includes**:
+  - `"ProxyHandler.h"` → custom local header, likely part of a proxy service.
+  - `folly/io/SocketOptionMap.h`, `folly/io/async/EventBaseManager.h`, `folly/portability/GFlags.h` → Folly utilities for async I/O, config flags.
+  - `proxygen/httpserver/RequestHandler.h`, `ResponseBuilder.h` → **high-level HTTP server APIs**.
+  - `proxygen/lib/http/session/HTTPUpstreamSession.h` → low-level HTTP session handling (upstream).
+  - `proxygen/lib/utils/URL.h` → URL parsing utility.
+  - `"ProxyStats.h"` → custom stats tracking.
+
+- **Namespaces**: `ProxyService`, `proxygen`
+- **Functions**:
+  - `ProxyHandler::onRequest(...)`, `onBody(...)`, `onEOM(...)`
+  - `connectSuccess`, `connectError`, `abortDownstream`, etc.
+  - Constructor/destructor with `ProxyStats*`, `HHWheelTimer`, `connector_`, `serverHandler_`
+
+- **Raw excerpt shows**:
+  - Implements a **reverse proxy handler** that:
+    - Parses incoming HTTP request (`onRequest`)
+    - Extracts host/port from URL
+    - Connects to upstream (via `AsyncSocket` or `connector_`)
+    - Forwards body/EOM to upstream
+    - Uses `ResponseBuilder` to send error responses
+    - Uses `HTTPUpstreamSession` (note: not `HTTPDownstreamSession`) — suggests *upstream* client-side behavior (i.e., acting as an HTTP client toward backend)
+    - Uses `downstream_` (the client connection) and `txn_` / `upstreamSock_` (backend connection)
+
+This is clearly a **proxy handler** that sits between an HTTP client (downstream) and an upstream HTTP server (or generic TCP endpoint for CONNECT), using Proxygen’s high-level server APIs (`RequestHandler`, `ResponseBuilder`) and low-level session abstractions.
+
+---
+
+### **2. Module Comparison**
+
+#### ✅ **httpserver**
+- Corresponds to `proxygen/httpserver/`
+- Includes `RequestHandler.h`, `ResponseBuilder.h`
+- Designed for building HTTP servers; handlers implement `RequestHandler` interface.
+- This file implements `ProxyHandler : public RequestHandler` (implied by use of `onRequest`, `onBody`, `onEOM`, and `serverHandler_(*this)` in constructor).
+- The pattern matches exactly: `RequestHandler` subclass used to handle incoming requests and forward them.
+
+> ✔️ Strong match.
+
+#### ⚠️ **services**
+- `proxygen/lib/services/`: provides infrastructure like connection acceptance, worker threads, service execution.
+- This file is *not* about accepting connections or managing workers — it's a per-request handler.
+- It uses `serverHandler_(*this)` — possibly a reference to a higher-level service, but the file itself is not infrastructure code.
+
+> ❌ Not a strong match.
+
+#### ⚠️ **http_general**
+- Core HTTP protocol layer: parsing, encoding, sessions, transactions.
+- Includes `HTTPUpstreamSession.h`, which *is* used here — but only as a component.
+- However, this file does **not** implement protocol parsing or transaction lifecycle management directly; instead, it uses those abstractions to build a proxy logic.
+- It’s *using* `http_general`, not *part of* it.
+
+> ❌ Not the primary module.
+
+#### ❌ **dns**, **pools**, **sampling**, **ssl**, **transport**
+- No DNS resolution logic (e.g., no `DNSResolver`, `AsyncResolver`, etc.)
+- No pool configuration (no `ServerPool`, `Backend`, `LoadBalancer`)
+- No sampling logic (no `Sampler`, `RateLimiter`, etc.)
+- No SSL context creation or TLS handshake (no `SSLContext`, `SecureTransport`, `TLSHandshake`)
+- No QUIC/HTTP3 transport (no `QuicTransport`, `QuicSocket`, `DatagramTransport`)
+
+> All ruled out.
+
+---
+
+### **3. Key Evidence Supporting `httpserver`**
+
+- The class `ProxyHandler` inherits from `RequestHandler` (standard pattern in `httpserver`).
+- Uses `ResponseBuilder(downstream_)` — exclusive to `httpserver`.
+- Uses `onRequest`, `onBody`, `onEOM` — the core virtual methods of `RequestHandler`.
+- Constructor takes `*this` to initialize `serverHandler_(*this)` — typical for delegating to `RequestHandler` base.
+- Located in a project using `ProxyService` namespace — likely an application built *on top of* `httpserver`, but the file itself is a handler implementation conforming to `httpserver`'s API.
+
+While it uses lower-level components (`HTTPUpstreamSession`, `AsyncSocket`), the **architectural role** is that of an `httpserver`-level request handler.
+
+---
+
+### ✅ Final Assessment
+
+The file implements a custom `RequestHandler` subclass that handles HTTP requests and forwards them upstream — precisely the kind of code expected in the `httpserver` module (or user code *using* `httpserver`, but since the question asks “belongs to which module”, and `httpserver` is the module providing the abstraction it implements, this is the best fit).
+
+Other modules are either too low-level (`http_general`, `transport`) or unrelated.
+
+---
+
+**The probability that this file belongs to module 'httpserver' is 95%.**

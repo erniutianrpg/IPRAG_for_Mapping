@@ -1,0 +1,74 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `convert_nv12_to_nv21.h` → clearly indicates a *color format conversion* utility (NV12 ↔ NV21).
+  - `distributed_hardware_log.h`, `distributed_camera_errno.h` → standard logging and error handling for distributed camera/hardware.
+- Namespace: `OHOS::DistributedHardware`
+- Class/Function Scope: All functions belong to `ConvertNV12ToNV21`, a class that:
+  - Checks convertibility between NV12 and NV21 formats.
+  - Extracts image metadata from `DataBuffer`.
+  - Validates image unit info.
+  - Separates/combines UV planes (core of NV12↔NV21 conversion).
+  - Copies Y plane.
+  - Performs full color conversion (`ColorConvertNV12ToNV21`).
+  - Processes input buffer (`ProcessData`) using config params.
+
+This is **low-level pixel data manipulation**, specifically **YUV color space format conversion** — not control logic, not IPC, not device abstraction.
+
+### 2. **Key Clues**
+- The conversion is *format-specific*: NV12 (U/V interleaved, U first) → NV21 (V/U interleaved, V first). This is a common need when transmitting camera frames across systems with different format expectations.
+- The class operates on raw image buffers (`DataBuffer`) and uses `ImageUnitInfo` (width, height, aligned dimensions, chroma offset, etc.) — typical of *data processing pipelines*.
+- No IPC, no session management, no device control, no virtual device implementation — rules out:
+  - `DistributedCameraSourceMgr`
+  - `DistributedCameraSinkMgr`
+  - `ChannelCommon`, `ChannelSource`
+  - `VirtualCameraHdf`
+  - `CameraServiceCommon`
+
+### 3. **Candidate Module Matching**
+
+#### ✅ `CameraDataProcessCommon`
+> *"provides common data processing frameworks, data processing pipeline interfaces, codecs, **color space conversion**, frame-rate control, image types..."*
+
+- Explicitly mentions **color space conversion** — exactly what this file does.
+- Provides *foundational components for data processing flows on both source and sink sides* — this conversion could be used on either side (e.g., sink may output NV12, source expects NV21, or vice versa).
+- Uses shared utilities like `DataBuffer`, `VideoConfigParams`, error codes — consistent with “common” module usage.
+
+#### ❌ `CameraDataPreProcess`
+> *"preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework..."*
+
+- While NV12→NV21 *could* happen on sink side before transmission, the function `ProcessData` is generic and doesn’t tie to sink-specific logic (no camera framework interaction, no stream operator, no metadata injection).
+- More importantly, the module description emphasizes *input-side preprocessing*, but this conversion is format adaptation — often needed on *both* ends depending on protocol requirements. So it's more appropriately in a *shared* module.
+
+#### ❌ `CameraDataPostProcess`
+> *"post-processing pipeline on the source side... decodes, converts formats..."*
+
+- This *could* fit, since source side might need to convert received NV12 to NV21 for local display or encoding.
+- However, the class is named generically (`ConvertNV12ToNV21`), not tied to “post” semantics; and the module description emphasizes *decoding* (implying after network reception), while this code works directly on raw buffers — likely used *before* or *after* decoding depending on context.
+- Crucially, the official module definitions distinguish:
+  - `CameraDataProcessCommon`: **shared**, foundational, including color conversion.
+  - `CameraDataPostProcess`: source-side *output* pipeline (e.g., after receiving data over channel).
+
+Given that this is a reusable, format-specific conversion utility with no side-specific assumptions, it belongs in the **common** data processing layer.
+
+#### ❌ `utils`
+> *"common distributed camera utilities, data buffers, indexes, constants, error codes..."*
+
+- While it includes error codes and logging, this is not a generic utility (like string helper, math, buffer pool); it’s a *dedicated image format converter*.
+- `utils` is for *generic helpers*, not domain-specific processing like YUV plane manipulation.
+
+### 4. **Reference Examples (Implied by Prompt)**
+Though no explicit examples were given, the naming and structure align with OHOS Distributed Camera architecture patterns where:
+- Format conversions (e.g., NV12↔I420, NV12↔NV21) are placed in `CameraDataProcessCommon`.
+- Such modules are header-only or implementation files under `camera_data_process_common/`.
+
+### ✅ Conclusion
+The file implements a **reusable, format-specific color conversion** (NV12 ↔ NV21) using shared infrastructure (`DataBuffer`, `VideoConfigParams`, error codes), operating at the data buffer level — exactly matching the scope of:
+
+**CameraDataProcessCommon**
+
+---
+
+- **Assigned Module**: [CameraDataProcessCommon]

@@ -1,0 +1,53 @@
+Let’s analyze the file content step by step to determine which module it belongs to.
+
+### 1. **File context and location clues**
+- The header includes many `proxygen/lib/http/...` headers:
+  - `HTTPConstants.h`, `HTTPHeaderSize.h`, `HTTPMessage.h`, `ProxygenErrorEnum.h`, `Window.h`
+  - `codec/HTTPCodec.h`
+  - `observer/HTTPTransactionObserver*`
+  - `session/ByteEvents.h`, `HTTP2PriorityQueue.h`, `HTTPEvent.h`, `HTTPTransactionEgressSM.h`, `HTTPTransactionIngressSM.h`
+  - `sink/FlowControlInfo.h`
+  - `webtransport/WebTransport.h`, `WebTransportImpl.h`
+  - `utils/Time.h`, `TraceEvent.h`, `TraceEventObserver.h`, `WheelTimerInstance.h`
+- Also includes Folly and Wangle transport-related headers (`AsyncTransport.h`, `TransportInfo.h`), but those are *dependencies*, not primary ownership.
+- Namespace: `proxygen`
+- Types defined: `TransactionInfo`, `HTTPSessionStats`, `HTTPTransaction`, `HTTPTransactionHandler`, `HTTPPushTransactionHandler`, `HTTPSession`, `HQSession`, `WebTransport`-related structs/callbacks, etc.
+- Functions include core HTTP transaction lifecycle callbacks (e.g., `onIngressHeadersComplete`, `onIngressBody`, `onEgressBodyBytesTx`, etc.), flow control, priority, WebTransport stream handling, and state machine hooks.
+
+This is clearly a **core HTTP transaction/session abstraction layer**, heavily focused on:
+- HTTP transaction lifecycle (ingress/egress state machines)
+- Session management (`HTTPSession`, `HQSession`)
+- WebTransport support (which is an extension of HTTP/2/3 semantics)
+- Observability via `TraceEventObserver`
+- Flow control, priority, byte-level events
+
+### 2. **Compare with candidate modules**
+
+- **pools**: ❌ No backend pool configuration, no service discovery logic. Not relevant.
+- **sampling**: ❌ No sampling logic (e.g., probabilistic sampling, rate limiting via sampling). While there’s a `RateLimitCallback`, that’s part of transaction flow control, not generic sampling infrastructure.
+- **ssl**: ❌ No SSL/TLS context, certificates, handshake logic, or crypto primitives. Includes no OpenSSL or TLS-specific headers.
+- **general**: This covers `proxygen/lib/utils/`, and while this file includes some utils (`Time.h`, `TraceEvent.h`, `WheelTimerInstance.h`), the *primary focus* is not utility code—it's HTTP session/transaction abstractions. So **partial overlap**, but not the best fit.
+- **http_general**: ✅ Matches exactly:  
+  > *"mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*  
+  The file defines:
+  - `HTTPTransaction`, `HTTPSession`, `HTTPTransactionHandler`, state machines (`IngressSM`, `EgressSM`)
+  - WebTransport (an HTTP/2 extension, part of HTTP protocol layer)
+  - Flow control, priority, byte events — all part of HTTP session/transaction semantics
+  - Uses `HTTPCodec`, `HTTPMessage`, `Window`, etc. — core HTTP protocol types
+
+- **services**: ❌ This would be `proxygen/lib/services/`, dealing with service execution, connection acceptance, worker threads — none of that is present here.
+- **httpserver**: ❌ That’s `proxygen/httpserver/`, high-level server APIs (e.g., `HTTPServer`, `RequestHandler`). This is lower-level; no server binding or request routing.
+- **transport**: ❌ While it uses `AsyncTransport` and has QUIC-related stream IDs (`HTTPCodec::StreamID`, `quic::StreamReadCallback`), the file itself does *not* implement transport logic — it’s using transport *abstractions* as part of HTTP session semantics (e.g., `sendDatagram`, `notifyPendingWriteOnStream`). WebTransport is built *on top* of transport, but the interface here is HTTP-layer (e.g., `HTTPTransaction` owns the streams), not raw transport.
+
+### 3. **Key evidence from raw excerpt**
+The excerpt shows:
+- `class HTTPTransactionHandler : public TraceEventObserver`
+- Virtual methods like `onHeadersComplete`, `onBody`, `onChunkHeader`, etc. — these are the standard HTTP transaction callback interfaces.
+- `HTTPTransactionEgressSM.h` / `IngressSM.h` included — state machines for HTTP transaction egress/ingress, central to HTTP protocol handling.
+- `WebTransportImpl.h` included, but used in context of `HTTPTransaction` methods (e.g., `newWebTransportBidiStream()`), indicating integration into HTTP session layer, not standalone transport.
+
+This is the **core HTTP transaction/session interface and implementation scaffolding**, which is precisely what `http_general` covers.
+
+---
+
+**Assigned Module**: [http_general]

@@ -1,0 +1,79 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+interfaces\inner_kits\native_cpp\camera_sink\src\distributed_camera_sink_proxy.cpp
+```
+- Located under `camera_sink` → strongly suggests it belongs to the **sink side** (controlled side).
+- Under `interfaces\inner_kits\native_cpp\...` → this is an **IPC proxy implementation**, i.e., client-side stub for remote calls to a sink service.
+
+### 2. **File Content Summary**
+- Includes headers:  
+  - `distributed_camera_sink_proxy.h` → interface definition for proxy  
+  - `parcel.h`, `anonymous_string.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` → standard IPC and logging utilities  
+- Namespace: `OHOS::DistributedHardware`  
+- Class: `DistributedCameraSinkProxy`  
+- Functions implemented:
+  - `InitSink`, `ReleaseSink` — lifecycle management of sink
+  - `SubscribeLocalHardware`, `UnsubscribeLocalHardware` — hardware registration/unregistration
+  - `StopCapture`, `ChannelNeg`, `GetCameraInfo`, `OpenChannel`, `CloseChannel` — channel setup, camera info query, capture control
+
+All these methods are **remote procedure calls (RPCs)** that send requests via `IRemoteObject->SendRequest()` to a remote sink service (i.e., the actual sink implementation). This is a classic **proxy pattern** used in OHOS for inter-process communication (IPC) using `MessageParcel`.
+
+So this file is **not** the sink service implementation itself — it's the *client-side proxy* used by other modules (e.g., source/controller side or local manager) to talk to the sink service.
+
+### 3. **Compare with Candidate Modules**
+
+Let’s evaluate each candidate:
+
+- **DistributedCameraSinkMgr**:  
+  Described as responsible for *lifecycle, access control, controller, data processing, image/video output, event notification, and IPC services on the sink side*.  
+  → This sounds like the **actual sink service implementation** (the *stub/server* side), not the proxy. The proxy is used *by* the manager or other clients to invoke sink operations — but the proxy itself is not the manager. So **not this**.
+
+- **ChannelCommon**, **ChannelSource**, **ChannelSink**:  
+  These focus on *channel-layer communication* (SoftBus, session, channel establishment).  
+  While `OpenChannel`, `CloseChannel`, `ChannelNeg` appear here, those are *remote calls* — the proxy doesn’t implement the channel logic; it just forwards requests. The real channel logic would be in `ChannelSink` (server side). So proxy is not part of channel implementation layer per se — it's a higher-level IPC abstraction.
+
+- **CameraDataProcessCommon**, **CameraDataPreProcess**, **CameraDataPostProcess**:  
+  These deal with *data processing pipelines* (encoding, decoding, format conversion, etc.).  
+  The proxy does **no data processing** — only marshaling/unmarshaling and RPC. So **not these**.
+
+- **CameraServiceCommon**:  
+  Provides *shared basic service capabilities*, including *basic commands, protocols, camera info, channel info, events, Metadata settings, open-camera info, and controller interfaces*.  
+  Key phrase: "**controller interfaces**" — and this proxy exposes exactly those: methods like `GetCameraInfo`, `OpenChannel`, `SubscribeLocalHardware`, etc., which are standard service interfaces used by controllers or managers. Also note: it's *common* between source/sink, and this proxy is used on the *caller side* (e.g., source side or local manager) to talk to sink service — fitting "shared service interfaces".
+
+- **VirtualCameraHdf**:  
+  Implements *HDF/HDI layer virtual camera devices*, including Host/Provider/Device/StreamOperator and related IPC proxies/callbacks.  
+  But this file is **not at HDF layer** — it's in `native_cpp/camera_sink/src`, and uses `MessageParcel`/`IRemoteObject`, not HDF interfaces. So **not this**.
+
+- **utils**:  
+  Provides *utilities, buffers, constants, error codes, local camera query/open/close*, etc.  
+  While it includes error codes (`distributed_camera_errno.h`) and logging, the core purpose here is **IPC proxying**, not generic utilities. So too narrow to classify as `utils`.
+
+### 4. **Critical Insight**
+In OHOS architecture:
+- A `_proxy.cpp` file (especially under `interfaces/inner_kits/native_cpp/...`) typically implements the **client-side stub** for a remote service defined in an `.idl` or interface header.
+- The corresponding *service implementation* (stub/server) would be in a module like `DistributedCameraSinkMgr`.
+- However, the question asks: **to which module does this file belong** — i.e., where is it logically placed in the architecture?
+
+Given:
+- The proxy is named `DistributedCameraSinkProxy`
+- It resides in `camera_sink/src/`
+- Its methods mirror the sink service API (lifecycle, hardware subscription, channel ops, camera info)
+- And per reference examples (though none provided explicitly), such proxy files are usually grouped with the **service they proxy to**, or with a common service module.
+
+Looking again at **CameraServiceCommon**:
+> *"provides shared basic service capabilities [...] including basic commands, protocols, camera information, channel information, events, Metadata settings, open-camera information, and controller interfaces."*
+
+The proxy implements the *controller interface* to the sink — i.e., it’s the client-facing part of the shared service API. In many OHOS subsystems, proxy files are placed under the module that defines the service interface — often `*Common` modules contain both interface definitions and proxies/stubs.
+
+Also note: the header `distributed_camera_sink_proxy.h` likely declares the interface that both proxy and stub implement — and such interface definitions commonly live in `CameraServiceCommon`.
+
+Moreover, `DistributedCameraSinkMgr` is described as handling *IPC services on the sink side* — implying it hosts the service; the proxy is external to it.
+
+Thus, the most appropriate module is:
+
+> **CameraServiceCommon** — because this proxy implements the standardized, shared interface for interacting with the distributed camera sink, aligning with “controller interfaces” and “basic commands/protocols/camera info/channel info” described in that module.
+
+### ✅ Final Decision:
+**Assigned Module**: [CameraServiceCommon]

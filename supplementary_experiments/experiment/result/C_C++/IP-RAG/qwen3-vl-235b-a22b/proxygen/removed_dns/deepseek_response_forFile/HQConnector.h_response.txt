@@ -1,0 +1,72 @@
+Let’s analyze the file `proxygen/lib/http/HQConnector.h` step by step.
+
+### 1. **File Path and Context**
+- Path: `proxygen/lib/http/HQConnector.h`
+  - Located under `proxygen/lib/http/`, which suggests it belongs to the HTTP layer.
+  - Name: `HQConnector` — “HQ” stands for **HTTP/3 over QUIC**, as used in Proxygen (e.g., `HQUpstreamSession`, `H3Settings`).
+  - This is a *connector* class — responsible for initiating an HTTP/3 (QUIC-based) connection.
+
+### 2. **Key Dependencies (Includes)**
+The includes reveal strong coupling to:
+- `quic/*`: QUIC transport, client transport, socket, event base, PSK cache, QLogger, LoopDetectorCallback → clearly QUIC stack.
+- `fizz/client/AsyncFizzClient.h`: TLS handshake via Fizz (Meta’s TLS library), used for QUIC crypto handshake.
+- `proxygen/lib/http/session/HQUpstreamSession.h`: The session type this connector creates — an upstream HTTP/3 session.
+- `quic/api/QuicSocket.h`, `QuicClientTransport.h`: Core QUIC transport abstractions.
+
+So while the file lives under `lib/http/`, its *functionality* is deeply tied to **QUIC transport setup** for HTTP/3.
+
+### 3. **Class Responsibilities**
+- `HQConnector`:
+  - Implements `HQSession::ConnectCallback`.
+  - Manages QUIC connection lifecycle: `connect()`, `reset()`, timeout handling.
+  - Configures QUIC-specific parameters: versions, transport settings, PSK cache, H3 settings.
+  - Uses `QuicClientTransport`, `AsyncFizzClient`, `QuicSocket`, etc.
+  - Returns a `HQUpstreamSession*` on success — i.e., once the QUIC+HTTP/3 connection is established.
+
+This is not about HTTP parsing, encoding, or session management *per se*, but about **establishing the underlying QUIC transport for HTTP/3**.
+
+### 4. **Comparison with Candidate Modules**
+
+| Module | Relevance |
+|--------|-----------|
+| `pools` | ❌ No backend pool logic; no server list config. |
+| `sampling` | ❌ No sampling logic. |
+| `ssl` | ⚠️ Uses Fizz/TLS, but only as part of QUIC handshake — not SSL context management per se. Not core SSL module responsibility. |
+| `general` | ❌ Too generic; this is protocol-specific (HTTP/3/QUIC), not utility code. |
+| `http_general` | ⚠️ Lives under `lib/http/`, and deals with HTTP sessions — but `HQConnector` is *not* doing HTTP parsing/encoding/session state; it's setting up the transport *beneath* the HTTP session. The session (`HQUpstreamSession`) would belong here, but the *connector* is transport-focused. |
+| `services` | ❌ Server-side infrastructure — this is client-side connection initiation (upstream). |
+| `transport` | ✅ Matches definition: *"transport-layer support module for HTTP/3/QUIC scenarios, responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."*<br>— `HQConnector` directly uses `QuicClientTransport`, configures `TransportSettings`, `QuicPskCache`, `QuicVersion`, etc. It bridges HTTP session layer to QUIC transport layer. |
+
+### 5. **Reference Example Reasoning**
+Although no explicit reference examples were given, the module definitions are clear. The `transport` module is explicitly described as covering:
+> *"lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3"*
+
+Even though this header is physically under `lib/http/`, its *role* is transport establishment — and in Proxygen, the boundary between `http` and `transport` for HTTP/3 is that:
+- `transport/` handles raw QUIC connection setup (e.g., `QuicClientTransport`, `QuicSocket`)
+- `http/` builds sessions on top — but `HQConnector` is the *glue* that initiates the QUIC transport and hands off to an HTTP session.
+
+In practice, Proxygen places such connector classes under `lib/http/` because they are HTTP-session-facing, but architecturally, they belong to the **transport layer** for HTTP/3.
+
+However, the assignment must follow the *module definitions*, not just file location.
+
+The `transport` module description says it corresponds to `proxygen/lib/transport/`, but this file is in `lib/http/`. Still, the key is **responsibility**, not path.
+
+Let’s re-read the `transport` module definition:
+> *"This module mainly corresponds to lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3."*
+
+It says "mainly corresponds to" `lib/transport/`, but emphasizes *responsibility*: QUIC/HTTP/3 transport support.
+
+Now consider: Is there a `lib/transport/` file that does exactly this? Possibly — but the question asks us to assign based on *what the file does*, using the module descriptions.
+
+Given that:
+- The class directly configures and drives QUIC transport,
+- It depends on QUIC/Fizz transport APIs,
+- Its purpose is to establish a QUIC connection for HTTP/3 (i.e., transport layer),
+- And the `transport` module is defined as the one for QUIC/HTTP/3 transport support,
+
+→ **`HQConnector.h` belongs to the `transport` module**, even if physically located under `http/`.
+
+This is consistent with how layered systems often place *adapters* or *connectors* in higher-level directories while their responsibility is lower-layer.
+
+### Final Decision:
+**Assigned Module**: [transport]

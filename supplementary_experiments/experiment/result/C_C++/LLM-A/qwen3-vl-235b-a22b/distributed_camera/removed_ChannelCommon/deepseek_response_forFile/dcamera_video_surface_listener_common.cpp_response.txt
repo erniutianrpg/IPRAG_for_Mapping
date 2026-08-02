@@ -1,0 +1,70 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `dcamera_video_surface_listener.h` → suggests this is a listener for video surface events (i.e., buffer availability from a Surface).
+  - `securec.h` → secure memory operations (e.g., `memcpy_s`)
+  - `data_buffer.h` → data buffer abstraction
+  - `distributed_camera_errno.h`, `distributed_hardware_log.h` → error codes and logging for distributed hardware
+
+- Namespace: `OHOS::DistributedHardware`
+- Function: `DCameraVideoSurfaceListener::OnBufferAvailable()`
+
+### 2. **Function Behavior**
+The function `OnBufferAvailable()`:
+- Is called when a buffer becomes available on a `Surface`.
+- Acquires a `SurfaceBuffer` from the `surface_`.
+- Validates buffer dimensions and virtual address.
+- Copies raw pixel data (`address`) into a `DataBuffer` (via `memcpy_s`).
+- Invokes a callback (`callback_->OnVideoResult(dataBuffer)`) with the copied data.
+- Releases the buffer.
+
+This is clearly **receiving video frame data from a Surface**, copying it, and forwarding it via a callback — i.e., **ingesting raw camera frames from a local surface** (likely from a camera HAL or sink-side preview stream), then handing them off for further processing or transmission.
+
+Key clues:
+- Uses `Surface` and `SurfaceBuffer` → typical of Android/HDF-based graphics surfaces (used in camera preview/output).
+- Callback delivers `DataBuffer` → likely feeding into a pipeline (e.g., encoding, transmission).
+- The class name `DCameraVideoSurfaceListener` implies it's listening to video surface events — typically used on the **sink side**, where the local camera produces frames onto a surface (e.g., preview surface), and this listener consumes them.
+
+### 3. **Module Matching**
+
+Let’s evaluate candidate modules:
+
+- **DistributedCameraSourceMgr**: Manages *source/controller* side lifecycle, IPC, callbacks — but this code is not about managing IPC or controller logic; it’s about consuming a surface buffer. ❌
+
+- **DistributedCameraSinkMgr**: Handles *sink/controlled* side: lifecycle, access control, data processing, image/video output, event notification. This includes receiving data from local camera and sending it upstream. The `OnBufferAvailable()` listener fits as part of the sink-side data ingestion. ✅ Strong candidate.
+
+- **ChannelSource / ChannelSink**: These are about SoftBus channel communication (network layer). This code does *not* involve network send/receive — it’s purely local surface buffer handling. ❌
+
+- **CameraDataProcessCommon**: Provides *common frameworks*, pipelines, codecs, color conversion — but this code is low-level buffer acquisition/copying, not a pipeline framework. It’s more concrete than “common”. Possibly related, but not the best fit.
+
+- **CameraDataPreProcess**: *"responsible for the data preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow."*  
+  → This matches perfectly:  
+  - It’s on the **sink side**  
+  - It processes raw image data from camera (via `SurfaceBuffer`)  
+  - It copies into `DataBuffer` — a preprocessing step before encoding/transmission  
+  ✅ Very strong match.
+
+- **CameraDataPostProcess**: On *source/output* side — decodes received data. This code is not decoding; it’s acquiring raw frames. ❌
+
+- **CameraServiceCommon**: Shared basic services (commands, protocols, metadata) — this is not protocol-level. ❌
+
+- **VirtualCameraHdf**: Implements HDF/HDI virtual camera devices, operators, metadata — this is not at the HDF driver level; it's using `Surface`, which is higher-level (graphics subsystem), not HDF device ops. ❌
+
+- **utils**: Provides utilities like `DataBuffer`, error codes, logging — indeed, it uses `DataBuffer`, `distributed_camera_errno.h`, `distributed_hardware_log.h`. But the class `DCameraVideoSurfaceListener` is not a generic utility; it's a *functional component* with specific behavior (listening to surface buffers and forwarding video data), so it’s more domain-specific than a utility.
+
+Between **DistributedCameraSinkMgr** and **CameraDataPreProcess**, which is better?
+
+- `DistributedCameraSinkMgr` is broader: lifecycle, access control, controller, data processing, output, etc.
+- `CameraDataPreProcess` is specifically for *preprocessing pipeline on sink side* — and this code is exactly that: taking raw surface frames and preparing them (copying into `DataBuffer`) before further processing/transmission.
+
+The function is part of a *listener* that feeds into a result callback — likely feeding into the preprocessing or transmission pipeline. Since the module description of `CameraDataPreProcess` explicitly says:
+> "processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow"
+
+… and this code does exactly that — acquires buffer from surface (camera framework output), copies it, and passes to callback — it belongs to **CameraDataPreProcess**.
+
+Also note: the class name `DCameraVideoSurfaceListener` suggests it's a helper component within the preprocessing/data ingestion stage, not the top-level manager (`SinkMgr`).
+
+### ✅ Final Decision:
+**Assigned Module**: [CameraDataPreProcess]

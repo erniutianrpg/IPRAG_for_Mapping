@@ -1,0 +1,99 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **File name**: `OHOS_DCAMERA_SINK_CONTROLLER_H` (from macro `#define OHOS_DCAMERA_SINK_CONTROLLER_H`)
+- **Class name**: `DCameraSinkController`
+- **Namespace**: `OHOS::DistributedHardware`
+- **Inheritance**:
+  - `public ICameraController` → indicates it implements a controller interface.
+  - `public EventSender`
+  - `public EventBusHandler<DCameraFrameTriggerEvent>`
+  - `public EventBusHandler<DCameraPostAuthorizationEvent>`
+  - `public std::enable_shared_from_this<DCameraSinkController>`
+
+This strongly suggests it is a **controller on the sink side**, handling events, commands, and lifecycle.
+
+---
+
+### **2. Key Dependencies (Includes)**
+| Include | Significance |
+|--------|--------------|
+| `event_bus.h`, `dcamera_frame_trigger_event.h`, `dcamera_post_authorization_event.h` | Event-driven architecture; handles frame trigger & authorization events — typical for sink-side command/event processing. |
+| `icamera_controller.h` | Implements controller interface (command dispatch). |
+| `icamera_channel.h`, `icamera_operator.h`, `icamera_sink_access_control.h`, `icamera_sink_output.h` | All are *sink*-specific interfaces: access control (permissions), channel (communication), operator (camera ops), output (data delivery). |
+| `<mutex>` | Thread safety for capture/channel operations — expected in real-time data path. |
+
+These dependencies are **exclusively sink-side** — no source-side or common-only interfaces like `ICameraSource`, `ICameraSourceOutput`, etc.
+
+---
+
+### **3. Public Methods**
+The class provides:
+- **Lifecycle**: `Init()`, `UnInit()`
+- **Capture control**: `StartCapture()`, `StopCapture()`, `StartCaptureInner()`
+- **Channel management**: `OpenChannel()`, `CloseChannel()`, `ChannelNeg()`
+- **Command/event handling**: `DCameraNotify()`, `UpdateSettings()`, `GetCameraInfo()`, `OnEvent()` (for frame trigger & auth), `OnStateChanged()`, `OnSessionState()`, `OnSessionError()`, `OnDataReceived()`
+- **Data handling**: `HandleReceivedData()`, `OnDataReceived()`
+- **Access control**: `PostAuthorization()`
+
+All of these align with **receiving commands from controller and acting on local camera hardware**, then sending back data/events — i.e., **controlled side behavior**.
+
+Note: `OnDataReceived()` implies it receives data buffers (e.g., from SoftBus channel), which matches sink-side receiving image/video data *from* the local camera *to be sent upstream* — but here, it's receiving data *into* the sink controller (likely from local camera HAL/Operator), then forwarding via output.
+
+Also, `ICameraSinkOutput` is used — this is for pushing data out (to network/SoftBus), confirming sink-side role.
+
+---
+
+### **4. Member Variables**
+- `std::shared_ptr<ICameraChannel> channel_` → manages communication channel (sink side)
+- `std::shared_ptr<ICameraOperator> operator_` → interacts with local camera device (HDF/HDI layer)
+- `std::shared_ptr<ICameraSinkAccessControl> accessControl_` → enforces permissions (e.g., app authorization to use camera)
+- `std::shared_ptr<ICameraSinkOutput> output_` → sends data out (e.g., to controller via SoftBus)
+- `eventBus_` → event distribution (e.g., frame trigger events from controller)
+- `sessionState_`, `dhId_`, `srcDevId_` → session/device context for distributed scenario
+
+All point to **sink-side controller logic**, not source, not channel transport layer alone, not data processing pipeline.
+
+---
+
+### **5. Comparison with Candidate Modules**
+
+| Module | Match? | Reason |
+|--------|--------|--------|
+| **DistributedCameraSourceMgr** | ❌ Low | Source-side controller; this is sink-side (`SinkController`). Includes `ICameraSink*` interfaces, not `ICameraSource*`. |
+| **DistributedCameraSinkMgr** | ✅ High | Exactly matches: lifecycle, controller, access control, channel, output, event handling on *sink side*. The class `DCameraSinkController` is likely the core controller within this manager. |
+| **ChannelCommon** | ❌ Low | This is about *channel abstraction*, SoftBus session, listener interfaces — but this file uses `ICameraChannel`, not implementing channel itself. No SoftBus API usage visible. |
+| **ChannelSink** | ⚠️ Medium | ChannelSink would implement the actual SoftBus channel logic (e.g., `OnMessageReceived`, session setup). This class uses channel as dependency, but doesn’t implement channel transport — it’s higher-level controller. So less likely. |
+| **CameraDataProcessCommon** | ❌ Low | No codec, color space, frame rate control, pipeline stages. Only `HandleReceivedData()` — minimal preprocessing, not full pipeline. |
+| **CameraDataPreProcess** | ❌ Low | Preprocessing would involve format conversion, cropping, scaling — none seen here; only buffer receipt and forwarding. |
+| **CameraDataPostProcess** | ❌ Low | Post-processing is source-side (decoding, rescaling for display); this is sink-side. |
+| **CameraServiceCommon** | ⚠️ Partial | Provides shared types/events/interfaces — but this file is an *implementation* class, not just common definitions. It depends on common interfaces but is not itself "common". |
+| **VirtualCameraHdf** | ❌ Low | HDF/HDI layer implementation (Host/Provider/Device/StreamOperator) — this is above that, using `ICameraOperator`, not implementing HDF driver. |
+| **utils** | ❌ Low | Utilities are helpers (buffers, constants, error codes) — this is a full controller class with state, lifecycle, and business logic.
+
+---
+
+### **6. Conclusion**
+The class `DCameraSinkController` is the **central controller component on the sink side**, orchestrating:
+- Initialization/uninitialization
+- Channel opening/negotiation
+- Command execution (capture, settings, info)
+- Event handling (frame trigger, auth)
+- Data reception from local camera and forwarding via output
+- Access control enforcement
+
+This is precisely what the **`DistributedCameraSinkMgr`** module is described to do:
+> *"responsible for lifecycle, access control, controller, data processing, image/video output, event notification, and IPC services on the sink side..."*
+
+While `ChannelSink` is related, it would be lower-level (transport), whereas this is the *manager/controller* that uses `ChannelSink` (via `ICameraChannel`) as a dependency.
+
+Thus, the strongest match is:
+
+**DistributedCameraSinkMgr**
+
+---
+
+### Final Answer:
+The probability that this file belongs to module 'DistributedCameraSinkMgr' is 95%.

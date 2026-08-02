@@ -1,0 +1,52 @@
+Let’s analyze the file content step by step and map it to the most appropriate module.
+
+### File Content Summary:
+- **Header guard**: `OHOS_DCAMERA_VIDEO_SURFACE_LISTENER_H`
+- **Includes**:
+  - `surface.h` → indicates interaction with Android-like `Surface` (used for rendering/output buffers)
+  - `icamera_operator.h` → suggests integration with camera operator interfaces (likely part of camera framework)
+- **Namespace**: `OHOS::DistributedHardware`
+- **Class**: `DCameraVideoSurfaceListener`, inherits from `IBufferConsumerListener`
+- **Constructor**: takes `sptr<Surface>` and `std::shared_ptr<ResultCallback>`
+- **Method**: `OnBufferAvailable()` — a standard callback invoked when a new buffer is ready from a producer (e.g., camera hardware or encoder)
+
+This class is clearly a **listener that receives video buffers via a Surface**, likely used on the **sink side** (controlled device) to receive frames from the camera and forward them (or process them) — but note: the *Surface* is typically used on the **consumer side**, i.e., where frames are rendered or consumed (e.g., preview display, encoding input). However, in distributed camera context:
+
+- The **sink side** (controlled device) captures frames from local camera and sends them over channel.
+- But if this listener is attached to a `Surface`, it implies the sink side is using a `Surface` as the output target for camera frames — possibly for local preview *or* for feeding into an encoder before transmission.
+
+But more importantly:
+- The class name `DCameraVideoSurfaceListener` and its role (`IBufferConsumerListener`) indicate it's part of the **video data consumption pipeline** — specifically, listening to buffer availability from a producer (e.g., camera HAL or encoder).
+- It holds a `Surface` and a `ResultCallback`, suggesting it's involved in delivering frames (buffers) to a consumer (e.g., for preview or encoding), and reporting results back.
+
+Now compare with candidate modules:
+
+1. **DistributedCameraSourceMgr** — controller side; handles *invoking* camera capabilities, not directly handling `Surface` buffer callbacks. Unlikely.
+
+2. **DistributedCameraSinkMgr** — controlled side; responsible for *receiving commands*, using local camera, and providing image data. This includes data processing and output — and crucially, **image/video output** is listed as part of its responsibilities. Since `Surface` is often used for output (preview, encoder input), and this listener consumes buffers from camera → fits sink side output path.
+
+3. **ChannelCommon / ChannelSource** — communication layer; no direct involvement with `Surface` or `IBufferConsumerListener`. Not matching.
+
+4. **CameraDataProcessCommon** — common frameworks, pipelines, codecs — possible, but this is a concrete listener tied to `Surface`, not a generic pipeline interface.
+
+5. **CameraDataPreProcess** — preprocessing on sink side *before* transmission/encoding; this could involve consuming raw frames from camera and preparing them. A `Surface` might be used as input to preprocessing (e.g., if camera outputs to Surface, then preprocessor reads from it). However, `IBufferConsumerListener::OnBufferAvailable()` is typically used when you’re the *consumer* of a BufferQueue — which is exactly what happens when a camera outputs to a Surface (Surface is backed by BufferQueue, and listener gets notified when buffer is ready). So this class likely sits between camera and preprocessing/encoding — i.e., **data ingestion on sink side**, which aligns with **CameraDataPreProcess**.
+
+6. **CameraDataPostProcess** — source side (controller), after receiving data — unlikely, since `Surface` is not typically used on source side for receiving remote video (more likely `AVCodec`, `PixelMap`, etc.).
+
+7. **CameraServiceCommon** — shared basic services; too generic; no indication of buffer/Surface handling.
+
+8. **VirtualCameraHdf** — HDF/HDI layer implementation; this header doesn’t reference HDF, only `surface.h` and `icamera_operator.h`, and uses `sptr<Surface>` (AOSP-style), not HDF-specific types. So unlikely.
+
+9. **utils** — utilities, error codes, buffers, callbacks. While `ResultCallback` sounds utility-like, the class is tightly coupled to `Surface` and buffer consumption — more functional than utility.
+
+### Key Insight:
+In OpenHarmony’s distributed camera architecture:
+- The **sink side** uses a `Surface` as the output target of the local camera (e.g., for preview or as input to encoder).
+- `DCameraVideoSurfaceListener` listens to buffer availability on that `Surface`, and likely triggers sending the buffer over the channel (or handing it to preprocessing).
+- This is part of the **data ingestion/preprocessing pipeline on the sink side**, which matches **CameraDataPreProcess**.
+
+Also, reference examples (implied by problem statement) suggest that classes ending in `*Listener` that interact with `Surface` and `IBufferConsumerListener` are assigned to `CameraDataPreProcess` when on the sink side.
+
+Thus, the most appropriate module is:
+
+**Assigned Module**: [CameraDataPreProcess]

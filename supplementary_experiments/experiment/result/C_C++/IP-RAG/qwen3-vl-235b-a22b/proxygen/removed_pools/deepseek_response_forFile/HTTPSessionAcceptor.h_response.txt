@@ -1,0 +1,58 @@
+Let’s analyze the file `proxygen/lib/http/session/HTTPSessionAcceptor.h` step by step.
+
+### 1. **File Location**
+- Path: `proxygen/lib/http/session/HTTPSessionAcceptor.h`
+- This places it under `proxygen/lib/http/session/`, which is a subdirectory of `proxygen/lib/http/`.
+
+### 2. **Content Summary**
+- The class `HTTPSessionAcceptor`:
+  - Inherits from `HTTPAcceptor` (from `proxygen/lib/services/HTTPAcceptor.h`)
+  - Implements `HTTPSessionBase::InfoCallback`
+  - Manages session creation (`onNewConnection`, `startSession`)
+  - Configures codec factory, error pages, controller, session info callback
+  - Handles connection-level logic (e.g., `dropIdleConnections`, `onSessionCreationError`)
+  - Is abstract: has pure virtual `newHandler(...)`
+- It's clearly part of the **server-side session acceptance and initialization pipeline**, bridging transport-level connections to HTTP sessions.
+
+### 3. **Key Dependencies**
+From includes:
+- `<proxygen/lib/http/codec/HTTPCodecFactory.h>` → HTTP protocol decoding/encoding (part of `http_general`)
+- `<proxygen/lib/http/session/HTTPDownstreamSession.h>`, `<HTTPErrorPage.h>`, `<SimpleController.h>` → session-level abstractions (still under `http/session/`)
+- `<proxygen/lib/services/HTTPAcceptor.h>` → base acceptor interface (belongs to `services` module)
+
+So this class sits at the intersection of:
+- **HTTP session management** (core HTTP protocol layer)
+- **Server-side connection acceptance infrastructure** (service layer)
+
+But crucially:
+- It does **not** implement transport (no socket I/O itself — delegates to `AsyncTransport`)
+- It does **not** handle DNS, SSL/TLS directly (though uses `AsyncSSLSocket` via `folly`, but doesn’t manage SSL context — that’s `ssl` module’s job)
+- It is not a high-level server API (like `httpserver`), nor a utility (`general`) or sampling (`sampling`) or QUIC/transport (`transport`).
+
+### 4. **Compare with Candidate Modules**
+
+| Module | Relevance |
+|--------|-----------|
+| `dns` | ❌ No DNS logic here |
+| `sampling` | ❌ No sampling logic |
+| `ssl` | ❌ Uses SSL sockets indirectly but doesn’t manage SSL contexts/stats |
+| `general` | ❌ Not in `utils/`, and not generic utilities — it's HTTP-specific |
+| `http_general` | ✅ Strong candidate: lives under `lib/http/`, deals with HTTP session lifecycle, codec factory, error pages, controllers — all core HTTP protocol abstractions. The `http/session/` directory is part of the HTTP core layer. |
+| `services` | ⚠️ Partial: inherits `HTTPAcceptor`, but `HTTPSessionAcceptor` is *not* in `lib/services/`. More importantly, `services` module focuses on higher-level service execution, worker threads, configuration — while this class is tightly coupled to HTTP session creation and protocol handling. It’s more of an *HTTP-specific acceptor*, not a generic service acceptor. |
+| `httpserver` | ❌ This is in `lib/http/`, not `httpserver/`; `httpserver` is a wrapper layer above `lib/`. |
+| `transport` | ❌ No QUIC/HTTP3; only uses `AsyncTransport`, which is folly-level, not Proxygen transport abstraction. |
+
+### 5. **Reference Reasoning**
+Although `HTTPSessionAcceptor` inherits from `HTTPAcceptor` (in `services`), its implementation is deeply tied to HTTP semantics:
+- It manages `HTTPCodecFactory`, `HTTPErrorPage`, `HTTPSessionController`, `HTTPTransaction::Handler`, etc.
+- Its purpose is to *accept an incoming connection and turn it into an HTTP session*, including protocol negotiation (e.g., HTTP/2 priorities), error page generation, and session setup — all HTTP protocol concerns.
+
+The `http_general` module is defined as:
+> *"This module mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+✅ `HTTPSessionAcceptor` directly participates in **session management** and **protocol-level setup** (e.g., codec selection, HTTP/2 priority config), fitting squarely in `http_general`.
+
+Note: While `HTTPAcceptor` (base class) is in `services/`, the *derived concrete HTTP-specific acceptor* belongs to the HTTP core layer — analogous to how `HTTPDownstreamSession` is in `http/session/` and assigned to `http_general`.
+
+### ✅ Conclusion
+**Assigned Module**: [`http_general`]

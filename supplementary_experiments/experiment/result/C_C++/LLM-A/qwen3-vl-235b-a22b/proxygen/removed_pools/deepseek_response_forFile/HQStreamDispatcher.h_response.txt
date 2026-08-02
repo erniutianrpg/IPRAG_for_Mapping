@@ -1,0 +1,67 @@
+Let’s analyze the file content step by step to determine the most appropriate module.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `quic/api/QuicSocket.h` → QUIC transport layer (low-level)
+  - `proxygen/lib/http/codec/HQFramer.h`, `HQUnidirectionalCodec.h` → HTTP/3 (HQ = HTTP/3 over QUIC) framing and codec logic
+  - `folly/io/async/EventBase.h` → Folly event loop infrastructure (used for async I/O, timers)
+
+- Namespace: `proxygen`
+- Key types:
+  - `HQStreamDispatcherBase`: Base class inheriting from `quic::QuicSocket::PeekCallback`, used to dispatch incoming QUIC streams based on HTTP/3 semantics.
+  - `HQUniStreamDispatcher`, `HQBidiStreamDispatcher`: Concrete dispatchers for unidirectional and bidirectional HTTP/3 streams.
+  - `DispatchTimeout`: Timer callback for stream dispatch timeout (uses `folly::HHWheelTimer`).
+  - `CallbackBase`: Abstract interface for callbacks handling stream rejection, timeout, etc.
+
+- Functions include:
+  - Stream ownership management (`takeTemporaryOwnership`, `releaseOwnership`, `hasOwnership`)
+  - Stream dispatch logic for various stream types: control, push, request, WT (WebTransport), uni/bidi
+  - Preface parsing (`parseUniStreamPreface`, `parseBidiStreamPreface`)
+  - Timeout handling (`dispatchTimeoutExpired`)
+  - Integration with QUIC socket peeking (`onDataAvailable`, `peekError`)
+
+### 2. **What is this code doing?**
+This file implements **stream dispatching logic for HTTP/3 (HQ)** on top of QUIC. It:
+- Listens to incoming data on QUIC streams via `QuicSocket::PeekCallback`.
+- Parses stream prefacing (to identify stream type: control, request, push, WebTransport, etc.).
+- Manages temporary ownership of streams while waiting for full header/preface parsing.
+- Uses timeouts to reject streams that stall during dispatch.
+- Delegates actual handling to concrete dispatchers (`HQUniStreamDispatcher`, `HQBidiStreamDispatcher`) — though those are not defined here, they’re implied.
+
+This is **not**:
+- DNS resolution → no DNS-related includes or logic.
+- Sampling → no sampling logic.
+- SSL/TLS → no SSL context or crypto usage.
+- General utilities → too protocol-specific; not in `utils/`.
+- High-level HTTP server (`httpserver`) → this is lower-level, not exposing server APIs.
+- Pure services (`services`) → not about connection acceptance, workers, service config.
+
+### 3. **Module Candidates Revisited**
+
+- **`http_general`**: Defined as *“common HTTP implementation under proxygen/lib/http/”, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3.*  
+  ✅ This fits well: HQ (HTTP/3) framing/codec/dispatch is part of HTTP protocol handling. The includes are from `proxygen/lib/http/codec/`, and the logic is about parsing and dispatching HTTP/3 streams — core protocol logic.
+
+- **`transport`**: Defined as *“lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3… working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket…”*  
+  ⚠️ While it uses QUIC socket and is HTTP/3-related, this code is **not** implementing transport primitives (e.g., packet sending/receiving, congestion control, connection state machine). Instead, it’s interpreting stream data *after* the transport delivers it — i.e., **application-layer protocol dispatch**, not transport-layer.
+
+The key distinction:
+- Transport module: deals with `QuicSocket`, `QuicConnection`, `QuicTransport`, etc., at the network/data-link level.
+- This file is a **callback-based dispatcher** that sits *on top* of `QuicSocket::PeekCallback`, parsing HTTP/3 stream semantics — clearly part of the **HTTP protocol stack**, specifically HTTP/3 (HQ).
+
+Also note:
+- `HQFramer.h` and `HQUnidirectionalCodec.h` are under `proxygen/lib/http/codec/`, which strongly suggests `http_general`.
+- In Proxygen’s structure, HTTP/3 (HQ) codec and dispatch logic lives in `lib/http/`, not `lib/transport/`.
+
+### 4. **Reference Examples (implied by instruction)**  
+Though no explicit examples given, standard Proxygen layout:
+- `lib/http/codec/` → HTTP/2 & HTTP/3 framing/decoding → belongs to `http_general`.
+- `lib/transport/quic/` → QUIC connection/socket management, handshake, loss recovery, etc. → `transport`.
+
+This file is in the former category.
+
+---
+
+### ✅ Final Decision:
+
+**Assigned Module**: [`http_general`]

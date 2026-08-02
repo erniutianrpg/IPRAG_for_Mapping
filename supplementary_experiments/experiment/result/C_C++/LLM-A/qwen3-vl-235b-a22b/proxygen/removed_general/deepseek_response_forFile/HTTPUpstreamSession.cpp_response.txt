@@ -1,0 +1,52 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `proxygen/lib/http/session/HTTPUpstreamSession.h` → core HTTP session header
+  - `folly/io/async/AsyncSSLSocket.h` → SSL socket (transport-level, but used here as part of session)
+  - `wangle/acceptor/ConnectionManager.h` → connection lifecycle management (Wangle is Facebook’s networking library, often used with Proxygen for server-side infrastructure)
+
+- Namespace: `proxygen`
+- Functions: All are methods of `HTTPUpstreamSession`, including:
+  - Session lifecycle (`startNow`, dtor)
+  - Transaction creation (`newTransaction`, `newTransactionWithError`)
+  - Reusability & replay safety checks (`isReplaySafe`, `isReusable`, `isClosing`)
+  - Thread-local attachment/detachment (with SSL context, event base, stats, etc.)
+  - Timeout handling, codec interaction, transport state queries
+
+- Raw excerpt shows:
+  - Constructor(s) for `HTTPUpstreamSession`, inheriting from `HTTPSession`
+  - Uses `folly::AsyncTransport`, `HTTPCodec`, `WheelTimerInstance`, `wangle::TransportInfo`
+  - Checks `codec_->getTransportDirection() == UPSTREAM`
+  - Implements logic for session reuse, closing state, write/read states, error tracking
+
+This clearly indicates this is an **upstream HTTP session** — i.e., a client-side HTTP session used to connect *to* upstream servers (e.g., in a proxy or reverse proxy), not a server accepting connections.
+
+### 2. **Module Candidates Analysis**
+
+| Module | Description | Match? |
+|--------|-------------|--------|
+| **dns** | DNS resolution only | ❌ No DNS-related code; not relevant |
+| **pools** | Backend pool config / service discovery | ❌ No pool logic; just session state |
+| **sampling** | Sampling logic | ❌ No sampling code |
+| **ssl** | SSL/TLS context & stats | ⚠️ Uses SSL context via `maybeAttachSSLContext`, but SSL is *used*, not *implemented* here. The module is about session management, not SSL internals. So not primary. |
+| **http_general** | Common HTTP implementation under `proxygen/lib/http/`: protocol parsing, encoding/decoding, session/transaction management | ✅ Strong match: `HTTPUpstreamSession` lives in `proxygen/lib/http/session/`, inherits from `HTTPSession`, handles transaction lifecycle, reusability, codec interaction — all core HTTP session logic. Upstream sessions are part of the general HTTP layer (as opposed to server-specific or transport-specific). |
+| **services** | `proxygen/lib/services/`, server-side infra: connection acceptance, workers, service execution | ❌ This is *upstream* (client-facing) session, not server-side. `ConnectionManager` from Wangle is included, but only for managing the *outgoing* connection lifecycle — not for accepting connections. |
+| **httpserver** | High-level HTTP server API (`proxygen/httpserver/`) | ❌ Not a server framework; no request routing, handlers, etc. |
+| **transport** | QUIC/HTTP/3 transport layer, low-level transport | ❌ No QUIC, no datagram, no HTTP/3-specific code. Uses `AsyncSSLSocket`, which is TCP/TLS — standard transport, not specialized. |
+
+### 3. **Key Determinants**
+- Path: `proxygen/lib/http/session/HTTPUpstreamSession.h` → directly under `lib/http/`, which maps to **http_general**
+- Role: Manages HTTP session state, transactions, reusability, timeouts — exactly what `http_general` is defined to cover.
+- Although it uses SSL and Wangle components, those are dependencies, not the module’s responsibility.
+- `HTTPUpstreamSession` is a peer to `HTTPDownstreamSession` (server-side), both living under `lib/http/session/`, and both belong to the core HTTP layer.
+
+### ✅ Conclusion
+The file implements `HTTPUpstreamSession`, a core component of Proxygen’s HTTP session management layer, residing in `proxygen/lib/http/`. This aligns precisely with the definition of the **http_general** module:
+
+> *"This module mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management..."*
+
+---
+
+**Assigned Module**: [http_general]

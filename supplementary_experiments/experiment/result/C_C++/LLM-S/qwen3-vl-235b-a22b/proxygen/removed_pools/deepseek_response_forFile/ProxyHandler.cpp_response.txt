@@ -1,0 +1,89 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `"ProxyHandler.h"` → custom local header, likely part of a proxy service.
+  - `folly/io/SocketOptionMap.h`, `folly/io/async/EventBaseManager.h`, `folly/portability/GFlags.h` → Folly utilities (event loop, socket options, flags).
+  - `proxygen/httpserver/RequestHandler.h`, `ResponseBuilder.h` → high-level HTTP server APIs.
+  - `proxygen/lib/http/session/HTTPUpstreamSession.h` → low-to-mid-level HTTP session abstraction for upstream connections.
+  - `proxygen/lib/utils/URL.h` → utility for parsing URLs (part of `lib/utils/`).
+  - `"ProxyStats.h"` → custom stats tracking.
+
+- **Namespaces**: `ProxyService`, `proxygen`
+- **Functions**:
+  - `ProxyHandler::onRequest`, `onBody`, `onEOM`, `connectSuccess`, `connectError`, etc.
+  - Uses `HTTPMessage`, `ResponseBuilder`, `downstream_`, `txn_`, `upstreamSock_`, `connector_`, etc.
+- **Raw excerpt** shows:
+  - A class `ProxyHandler` that implements `RequestHandler`.
+  - Handles both `CONNECT` (tunneling) and regular HTTP requests.
+  - Parses URL → resolves host/port → connects to upstream via `AsyncSocket` or `connector_`.
+  - Manages bidirectional body forwarding.
+  - Uses `ResponseBuilder` to send error responses.
+  - Integrates with `folly::EventBase`, `HHWheelTimer`, `GFlags`.
+
+This is clearly a **reverse proxy handler** — it receives an HTTP request from a client (`downstream_`) and forwards it to an upstream server (`upstreamSock_` or `txn_`). It's not a DNS resolver, not SSL-specific, not sampling, and not transport-layer QUIC.
+
+---
+
+### **2. Module Matching**
+
+#### ✅ **httpserver**
+- `#include <proxygen/httpserver/RequestHandler.h>` and `ResponseBuilder.h`
+- Implements `RequestHandler::onRequest/onBody/onEOM`
+- `ResponseBuilder(downstream_)` is a hallmark of `httpserver` usage.
+- The class is a *handler* for the high-level HTTP server framework.
+- This module provides the interface for writing request handlers — exactly what `ProxyHandler` does.
+
+> Strong match: This file is a concrete implementation of a `RequestHandler`, which lives in the `httpserver` module’s ecosystem.
+
+#### ⚠️ **services**
+- `services` is for *server-side infrastructure*: connection acceptance, worker threads, service execution.
+- While `ProxyHandler` is used *by* services, it is not itself part of the infrastructure layer — it’s application logic built *on top* of `httpserver`.
+- No evidence of `Service`, `Worker`, `AcceptCallback`, etc.
+
+→ Less likely.
+
+#### ⚠️ **http_general**
+- Covers core HTTP abstractions: `HTTPMessage`, `HTTPSession`, `HTTPTransaction`, `HTTPUpstreamSession`.
+- The file uses `HTTPUpstreamSession.h`, but only as a *client-side* session (upstream), and doesn’t implement protocol parsing or transaction lifecycle management — it just *uses* those abstractions.
+- The handler is not part of the core protocol layer; it’s a higher-level use case.
+
+→ Partial overlap, but not primary home.
+
+#### ❌ **dns**, **sampling**, **ssl**, **transport**
+- No DNS resolution logic (e.g., no `DNSResolver`, `AsyncResolver`, etc.); URL parsing is done via `URL.h`, but no actual lookup.
+- No sampling logic (no `Sampler`, `SampleRate`, etc.).
+- No SSL context, certificates, TLS handshake — even though `CONNECT` is used for HTTPS tunneling, the code doesn’t handle TLS itself; it just forwards raw bytes.
+- No QUIC, `QuicTransport`, `Datagram`, etc. — uses `AsyncSocket`, not `QuicSocket`.
+
+→ Not applicable.
+
+#### ⚠️ **general**
+- `lib/utils/URL.h` is included, but that’s just one utility.
+- The bulk of the code is not generic utility code — it’s a specific proxy handler implementing business logic.
+- `general` is for helpers like `ByteRange`, `Checksum`, `ScopedEventBaseThread`, etc., not full handlers.
+
+→ Minor inclusion, but not main module.
+
+---
+
+### **3. Conclusion**
+The file:
+- Implements `RequestHandler` from `proxygen/httpserver/`.
+- Uses `ResponseBuilder`, `HTTPMessage`, and integrates with `downstream_` (the HTTP server’s connection).
+- Is structured as a *user-defined handler* for the high-level HTTP server framework.
+
+This is textbook `httpserver` module usage — the module provides the framework, and this file is a concrete handler built using it.
+
+> While it *uses* components from `http_general` (like `HTTPUpstreamSession`) and `general` (like `URL`), its **primary role and location in architecture** is as a handler in the `httpserver` layer.
+
+---
+
+### Final Answer:
+
+The probability that this file belongs to module **httpserver** is **95%**.  
+The probability that it belongs to module **http_general** is **5%**.  
+All other modules have **0%** probability.

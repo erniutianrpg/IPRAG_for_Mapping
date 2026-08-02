@@ -1,0 +1,101 @@
+Let’s analyze the file content step by step and compare it with the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `distributed_camera_source_stub.h`
+  - `dcamera_source_callback_proxy.h`
+  - `distributed_camera_errno.h`
+  - `distributed_hardware_log.h`
+- Namespaces: `OHOS::DistributedHardware`
+- Key class: `DistributedCameraSourceStub`
+- Functions:
+  - `OnRemoteRequest` (IPC dispatch handler)
+  - Several `*Inner` methods mapping to remote IPC codes:
+    - `InitSourceInner`
+    - `ReleaseSourceInner`
+    - `RegisterDistributedHardwareInner`
+    - `UnregisterDistributedHardwareInner`
+    - `DCameraNotifyInner`
+- Constructor initializes a function map (`memberFuncMap_`) binding IPC codes to internal handlers.
+- Uses `MessageParcel`, `IRemoteObject`, `sptr<DCameraSourceCallbackProxy>`, etc. — standard OHOS IPC stub pattern.
+- Implements **stub-side IPC interface** for distributed camera source operations (i.e., server side of IPC, handling requests from remote clients).
+
+This is clearly an **IPC stub** that exposes a service interface for the *source side* (controller side) of the distributed camera system — i.e., it receives remote calls (e.g., from sink side or framework) to initialize/release source, register/unregister hardware, notify events.
+
+Note: In OHOS IPC patterns:
+- `*Stub` = server-side implementation (receives requests).
+- `*Proxy` = client-side stub (sends requests).
+Here, `DistributedCameraSourceStub` is the **server-side handler** for the *source* device — meaning it runs on the **controller side**, and handles incoming IPC calls (e.g., from the sink side or from the local CameraService requesting to use the distributed camera).
+
+But wait: The naming suggests it's the *source* stub — i.e., the stub for the *source service*. In distributed camera architecture:
+- The **source side** is the *controlled device* (where the physical camera resides), and it provides the camera capability.
+- The **sink side** is the *controller device* (e.g., phone/tablet) that uses the camera remotely.
+
+However, there's potential confusion in naming. Let’s resolve this using the included headers and logic:
+
+- It includes `dcamera_source_callback_proxy.h`: implies this stub receives callbacks *from* the source (i.e., the physical camera side) via proxy — but actually, in the `InitSourceInner`, it reads a remote object (`data.ReadRemoteObject()`) and constructs a `DCameraSourceCallbackProxy`. That means the *caller* (remote side) is passing a callback interface *to* this stub — so this stub is acting as the **server** that the remote side (likely the *sink/controller*) is calling to set up the source.
+
+Wait — more precisely:
+In `InitSourceInner`:
+```cpp
+sptr<IRemoteObject> remoteObj = data.ReadRemoteObject();
+sptr<DCameraSourceCallbackProxy> callbackProxy(new DCameraSourceCallbackProxy(remoteObj));
+ret = InitSource(params, callbackProxy);
+```
+So the remote caller (e.g., sink side) is sending its callback interface to the source side, and the source side will use `callbackProxy` to notify the sink (e.g., about events, frames, etc.). Therefore:
+- This `DistributedCameraSourceStub` runs on the **source side** (physical camera device), and implements the IPC interface that the **sink/controller** calls to request camera services.
+- So it's the *source service stub*, i.e., the server endpoint on the source device.
+
+That matches typical distributed camera architecture:
+- Source device exposes `DistributedCameraSourceStub` (this file).
+- Sink device uses `DistributedCameraSourceProxy` (not shown here) to call into it.
+
+Now, which module owns this?
+
+### 2. Compare with Candidate Modules
+
+Let’s evaluate each candidate:
+
+- **DistributedCameraSourceMgr**:  
+  > *"responsible for lifecycle, state machine, controller, input stream, data processing, IPC service, and callback management on the source side, namely the controller side..."*  
+  ⚠️ Contradiction: says “controller side", but source side is *controlled* device. However, the description may be misworded. Let’s read carefully:  
+  > *"enabling the controller to invoke distributed camera capabilities and use the controlled device's camera"*  
+  So SourceMgr should be on the *controlled device* (source side), managing the camera and exposing IPC. The stub is part of the IPC service layer of the source side — exactly what this file is.
+
+  Also, the functions implemented (`InitSource`, `ReleaseSource`, `RegisterDistributedHardware`, `DCameraNotify`) align with lifecycle and callback management on the source side.
+
+- **ChannelCommon / ChannelSource / ChannelSink**:  
+  These are about *channel-layer* communication (SoftBus sessions, data transmission). This file does **not** involve SoftBus, session management, or raw data channels — only IPC (binder-like) for control commands. So not these.
+
+- **CameraDataProcessCommon / PreProcess / PostProcess**:  
+  No data pipeline, no codec, no frame processing — just IPC dispatch. Not these.
+
+- **CameraServiceCommon**:  
+  > *"shared basic service capabilities for the source and sink sides... including basic commands, protocols, camera information, channel information, events, Metadata settings..."*  
+  This could be plausible, but note: `CameraServiceCommon` sounds like a *shared header/utility* layer, not the concrete stub implementation. The file is a concrete `.cpp` implementing a stub — likely part of a manager module, not a common utility.
+
+- **VirtualCameraHdf**:  
+  Involves HDF/HDI layer, virtual device implementation, StreamOperator, etc. This file has no HDF references, no device driver abstractions — purely IPC stub. So not this.
+
+- **utils**:  
+  Utilities, error codes, buffers — but this is a full stub class with business logic mapping IPC codes to methods. Not a utility.
+
+### 3. Key Evidence
+- Class name: `DistributedCameraSourceStub`
+- Namespace: `OHOS::DistributedHardware`
+- Functionality: Dispatches IPC calls for source-side operations (`InitSource`, `ReleaseSource`, etc.)
+- Used by source-side service to expose API to remote callers (e.g., sink side)
+- Matches the responsibility of **DistributedCameraSourceMgr**, which per description includes:
+  - "IPC service" ✅
+  - "callback management on the source side" ✅ (`DCameraNotifyInner`, callback proxy usage)
+  - "lifecycle" ✅ (`InitSource`, `ReleaseSource`)
+  - "controller" — possibly misphrased; likely means *managing the source as a controlled entity*.
+
+Given all this, the most appropriate module is:
+
+**DistributedCameraSourceMgr**
+
+---
+
+- **Assigned Module**: [DistributedCameraSourceMgr]

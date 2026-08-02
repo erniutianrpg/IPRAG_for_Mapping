@@ -1,0 +1,92 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `dcamera_source_callback.h` → strongly suggests *source-side callback handling*
+  - `anonymous_string.h` → utility for anonymizing sensitive strings (e.g., device IDs) — common in logging/security-sensitive modules
+  - `distributed_camera_errno.h` → error codes specific to distributed camera subsystem
+  - `distributed_hardware_log.h` → logging infrastructure for distributed hardware (OHOS-specific)
+- **Namespaces**: `OHOS::DistributedHardware` → confirms this is part of OHOS Distributed Hardware subsystem, specifically camera-related.
+- **Class/Functions**:
+  - `DCameraSourceCallback` class with:
+    - `OnNotifyRegResult`, `OnNotifyUnregResult`: callbacks invoked when registration/unregistration results are received from remote side (i.e., sink side).
+    - `PushRegCallback`, `PopRegCallback`, etc.: manage pending registration/unregistration callbacks using `reqId` as key.
+  - Internally maintains two maps: `regCallbacks_`, `unregCallbacks_` → stores user-provided callbacks awaiting response.
+  - Uses `DHLOGI/E` for logging, `GetAnonyString` for privacy-safe logging.
+  - Returns `DCAMERA_OK`, `DCAMERA_NOT_FOUND` — from `distributed_camera_errno.h`.
+
+This is clearly a **callback dispatcher** on the **source side** (controller side), handling asynchronous responses (e.g., registration success/failure) from the sink side.
+
+It does **not**:
+- Handle IPC directly (no SoftBus calls or session management).
+- Process image/video data (no codecs, frame buffers, resolution conversion).
+- Manage camera lifecycle, streams, or HDF devices.
+- Implement virtual camera devices or service interfaces.
+
+Instead, it's a **helper class** that manages the mapping between request IDs and user callbacks, and forwards the result to the appropriate registered callback — a classic pattern in async IPC-based systems.
+
+---
+
+### **2. Candidate Module Matching**
+
+#### ✅ **DistributedCameraSourceMgr**
+- Responsibility: *"lifecycle, state machine, controller, input stream, data processing, IPC service, and **callback management** on the source side"*
+- Key phrase: **callback management** on the source side.
+- This file implements exactly that: managing registration/unregistration callbacks on the source side.
+- The class name `DCameraSourceCallback` aligns with `DistributedCameraSourceMgr`.
+- It’s likely used *by* `DistributedCameraSourceMgr` to dispatch results from IPC responses (e.g., after sending a register request over channel).
+
+→ **Strong match**.
+
+#### ❌ **DistributedCameraSinkMgr**
+- Sink side (controlled device). This file is clearly source-side (handles *incoming* registration results, i.e., responses to *its own* requests).
+- No sink-side logic (e.g., no `OnRegisterRequest`, no local camera control).
+→ **Low match**.
+
+#### ❌ **ChannelCommon / ChannelSource**
+- These handle *channel establishment*, *session*, *SoftBus adaptation*, *sending/receiving raw messages*.
+- This file does **not** deal with channels, sessions, or transport — only with high-level callback dispatching.
+- It likely *uses* ChannelSource to send requests, but is not itself part of channel layer.
+→ **Low match**.
+
+#### ❌ **CameraDataProcessCommon / CameraDataPreProcess / CameraDataPostProcess**
+- All are about *data processing*: encoding, decoding, format conversion, frame rate, etc.
+- This file handles *control-plane* callbacks, not media/data pipeline.
+→ **No match**.
+
+#### ❌ **CameraServiceCommon**
+- Provides shared *basic commands, protocols, camera info, events, metadata, controller interfaces*.
+- While `DCameraSourceCallback` may use some of those, this file is specifically about *callback dispatch*, not protocol definitions or service interfaces.
+→ **Weak match at best**.
+
+#### ❌ **VirtualCameraHdf**
+- HDF/HDI layer, virtual device implementation.
+- No HDF APIs, no `IDevice`, `IStreamOperator`, etc.
+→ **No match**.
+
+#### ❌ **utils**
+- Described as providing *"common utilities, data buffers, indexes, constants, error codes, general support capabilities... including local camera query, open, close, stream acquisition, and preview/photo/video callback handling."*
+- This file is *not* generic utility — it’s tightly coupled to distributed camera registration flow.
+- Though it uses `anonymous_string.h` and `distributed_camera_errno.h` (which *could* be in utils), the core logic is domain-specific: managing async reg/unreg callbacks for distributed camera source.
+- Also, note: `utils` mentions *"preview/photo/video callback handling"* — but those are *media* callbacks (e.g., `OnFrameAvailable`), not *control-plane* registration callbacks like `OnNotifyRegResult`.
+→ **Medium-low match**, but less precise than `DistributedCameraSourceMgr`.
+
+---
+
+### **3. Final Reasoning**
+- The class `DCameraSourceCallback` is almost certainly a private/internal helper class **owned by** `DistributedCameraSourceMgr`.
+- Its responsibilities (tracking pending registration callbacks, dispatching results) fall squarely under “callback management on the source side” — explicitly listed in `DistributedCameraSourceMgr`’s description.
+- In OHOS architecture, such callback managers are typically implemented as part of the manager module, not as standalone utility or channel modules.
+
+Thus, while the file might reside in a subdirectory like `source/callback/`, its **architectural ownership** is with `DistributedCameraSourceMgr`.
+
+---
+
+### ✅ Final Answer:
+
+The probability that this file belongs to module 'DistributedCameraSourceMgr' is 95%.  
+The probability that this file belongs to module 'utils' is 5%.  
+All other modules have near 0% probability.

@@ -1,0 +1,101 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **File Summary**
+- **Language**: C/C++
+- **Includes**:
+  - `folly/Expected.h` → Folly utility for error-aware return types.
+  - `proxygen/lib/http/session/HTTPTransaction.h` → Core HTTP transaction abstraction (session-level).
+- **Namespace**: `proxygen`
+- **Types**:
+  - `RequestHandler`, `PushHandler`, `ResponseHandler` — all appear to be abstract interfaces for handling HTTP request/response lifecycle, especially in a server-side context.
+- **Functions**:
+  - Destructor `~ResponseHandler()`
+  - `getCurrentTransportInfo(wangle::TransportInfo*)` — interacts with transport layer metadata (via `wangle::TransportInfo`)
+- **Key Observations**:
+  - `ResponseHandler` is an *abstract base class* defining methods for sending headers, body chunks, EOM, abort, timeout refresh, ingress control, push handling, etc.
+  - It holds references to `RequestHandler` (upstream) and `HTTPTransaction*` (txn_).
+  - Uses `HTTPMessage`, `folly::IOBuf`, `folly::Expected`, `ProxygenError`, `wangle::TransportInfo`.
+  - The interface is clearly part of the *server-side HTTP processing pipeline*, specifically for handling responses (and pushed responses), tightly coupled with `HTTPTransaction`.
+
+This strongly suggests this file belongs to the **HTTP protocol layer**, not transport, DNS, pools, or high-level server framework.
+
+Now let’s evaluate each candidate:
+
+---
+
+### **1. dns**
+- ❌ No DNS-related types (`DnsResolver`, `DnsQuery`, etc.), no DNS resolution logic.
+- Includes do not reference DNS headers.
+- **Probability: <1%**
+
+---
+
+### **2. pools**
+- ❌ No pool management, no backend server lists, no load-balancing logic.
+- Not related to service discovery or configuration.
+- **Probability: <1%**
+
+---
+
+### **3. sampling**
+- ❌ No sampling logic (e.g., rate limiting, probabilistic sampling flags, counters).
+- No use of sampling utilities like `SamplingRate`, `Sampler`, etc.
+- **Probability: <1%**
+
+---
+
+### **4. general**
+- This module covers `proxygen/lib/utils/` and common auxiliary code.
+- While `folly/Expected.h` and `wangle::TransportInfo` are used, those are *shared dependencies*, not sufficient to classify as “general”.
+- However, `ResponseHandler` is not a generic utility—it’s a core HTTP abstraction tied directly to `HTTPTransaction`.
+- General utils would be things like `URL`, `TimeUtil`, `AsyncTimeoutSet`, `ScopedEventBaseThread`, etc.
+- This file is too specific to HTTP semantics to be "general".
+- **Probability: ~10%** — low, but non-zero due to shared infra usage.
+
+---
+
+### **5. http_general**
+- ✅ Matches perfectly:
+  - Lives under `proxygen/lib/http/` (implied by include: `proxygen/lib/http/session/HTTPTransaction.h`)
+  - Defines core HTTP *transactional* abstractions: `ResponseHandler`, `RequestHandler`, `PushHandler`.
+  - Directly interacts with `HTTPTransaction`, `HTTPMessage`, and manages response flow (headers, body, EOM, push).
+  - Abstract interface used by higher layers (e.g., services, httpserver) to implement actual handlers.
+  - `http_general` is described as: *“HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3.”*
+  - This file is exactly about *transaction-level response handling* — a core part of that layer.
+- **Probability: 95%**
+
+---
+
+### **6. services**
+- This module is `proxygen/lib/services/`, providing *server-side infrastructure*: connection acceptance, worker threads, service execution.
+- While `ResponseHandler` may be *used by* services, it is not itself part of service infrastructure—it's a lower-level contract.
+- Services typically implement concrete `RequestHandler`s or use `ServiceHandler`, not define the abstract `ResponseHandler`.
+- The file does not involve connection management, worker loops, or service registration.
+- **Probability: ~5%**
+
+---
+
+### **7. httpserver**
+- This is the *high-level API* layer (`proxygen/httpserver/`) — e.g., `HTTPServer`, `RequestHandlerAdapter`, `ResponseBuilder`.
+- This file defines a low-level abstract interface, not a convenience wrapper or high-level server builder.
+- `httpserver` usually depends on `http_general`, not defines its core abstractions.
+- **Probability: <2%**
+
+---
+
+### **8. transport**
+- Transport = QUIC / HTTP/3 / socket-level code (`proxygen/lib/transport/`).
+- While `wangle::TransportInfo` is used (which *can* come from transport), the class itself doesn’t deal with packets, streams, QUIC frames, congestion control, etc.
+- No mention of `QuicTransport`, `Socket`, `Datagram`, `CryptoStream`, etc.
+- The use of `TransportInfo` here is for *metadata exposure*, not transport implementation.
+- So while there's a thin link, it's not transport-layer code.
+- **Probability: ~3%**
+
+---
+
+### ✅ Final Determination
+The file defines an abstract interface central to HTTP response handling, tightly coupled with `HTTPTransaction`, and resides logically in the HTTP protocol core layer — i.e., **`http_general`**.
+
+> The probability that this file belongs to module 'http_general' is 95%.

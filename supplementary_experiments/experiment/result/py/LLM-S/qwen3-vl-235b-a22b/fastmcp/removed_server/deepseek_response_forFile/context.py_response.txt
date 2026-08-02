@@ -1,0 +1,103 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **1. High-Level Observations**
+
+The file defines:
+- A `Context` class (dataclass) that encapsulates:
+  - Server session, task ID, request ID, FastMCP instance
+  - Methods for logging (`debug`, `info`, `warning`, `error`, `log`)
+  - Resource/prompt/root listing & fetching (`list_resources`, `get_prompt`, `read_resource`, `list_roots`)
+  - Sampling (`sample`, `sample_step`) — i.e., LLM inference with tools, messages, etc.
+  - Elicitation (`elicit`) — interactive user input gathering
+  - State management (`set_state`, `get_state`, `delete_state`)
+  - Visibility transforms (`enable_components`, `disable_components`, `reset_visibility`)
+  - Transport context management (`set_transport`, `reset_transport`)
+  - Request context handling (`request_context`, `_detached_request_context`)
+  - Protocol version checks (`_is_modern_protocol`, `client_supports_extension`)
+  - Progress reporting, pagination, SSE stream control
+
+It imports heavily from:
+- `fastmcp.server.*` (context, sampling, elicitation, visibility, server)
+- `mcp_types.*` (protocol types: Prompt, Resource, Root, SamplingMessage, etc.)
+- `fastmcp.resources.base.ResourceResult`
+- `fastmcp.utilities.logging.*`, `fastmcp.utilities.versions.*`
+
+Notably:
+- No CLI argument parsing, no `argparse`, no entrypoint logic → **not cli**
+- No client-side connection management, no HTTP/WebSocket clients, no `AsyncClient`, no `connect()`, `call_tool()` from client perspective → **not client**
+- While it *uses* prompts/resources/roots, it does not define or manage prompt templates (e.g., no Jinja2, no template rendering, no `PromptTemplate` class) → **unlikely prompts**
+- While it *calls* tools via `sample(..., tools=...)`, it does not define tool registration, validation, or metadata (no `@tool`, no `ToolSpec`, no `register_tool`) → **not tools**
+- It provides infrastructure for **server-side request handling**, including:
+  - Context scoping (via `contextvars`, async enter/exit)
+  - Logging integration with MCP server
+  - State persistence per session/task
+  - Visibility rules (transforming what tools/resources are visible)
+  - Sampling and elicitation orchestration
+  - Utility helpers like `_clamp_logger`, `get_logger`, `VersionSpec`, `TypeVar`, deprecation warnings
+
+This strongly suggests the file is part of the **server runtime infrastructure**, specifically the **context abstraction** used during request processing — a core piece of the server’s internal execution model.
+
+Now let’s map to modules:
+
+---
+
+### **Candidate Module Analysis**
+
+#### ✅ **utilities**
+- Definition: *"reusable internal support capabilities... helping other core modules with schema handling, log management, test support, caching, decorators, and common type definitions... low-level utility collection... infrastructure support for servers, clients, tools, resources..."*
+- Evidence in file:
+  - Logging utilities: `_clamp_logger`, `get_logger`, `_log_to_server_and_client`, `_MCP_LEVEL_SEVERITY`
+  - Version handling: `VersionSpec`, protocol version checks
+  - Contextvar-based transport/state management (low-level context scoping)
+  - Deprecation warnings (`FastMCPDeprecationWarning`)
+  - Generic helpers: `_warn_sampling_deprecated`, `_paginate_list`, `_make_state_key`
+  - Type utilities: `T`, `TypeVar`, overloads, casting
+  - Reusable abstractions: `LogData`, `Context` (as a shared execution context)
+- The `Context` class is *not* a domain object (like a tool or resource), but rather a **runtime context wrapper** used across server operations — exactly the kind of cross-cutting concern utilities handle.
+- Import pattern: heavy use of `fastmcp.utilities.*`, and many imported symbols are internal utilities (`logging._clamp_logger`, `versions.VersionSpec`, etc.)
+
+#### ❌ **cli**
+- No CLI-related code: no `argparse`, no `click`, no `main()`, no subcommands.
+- Not installed as a CLI script; no reference to `sys.argv`, `__main__.py`, etc.
+→ Probability: **<5%**
+
+#### ❌ **client**
+- No client-side network code (no `httpx`, `aiohttp`, `WebSocketClient`, `connect`, `send`, `recv`)
+- All methods assume a *server-side* context (`session`, `fastmcp`, `request_id`, `origin_request_id`, `SSE stream close`)
+- `elicit`, `sample`, `log`, `send_notification` are server-initiated actions — consistent with server handler logic, not client invocation.
+→ Probability: **<10%**
+
+#### ❌ **prompts**
+- Uses `Prompt`, `GetPromptResult`, `list_prompts`, `get_prompt`, but does *not* define prompt templates, interpolation, or rendering.
+- No template syntax handling, no `jinja2`, no `PromptTemplate` class.
+- These are just *consumption* APIs, not definition/manipulation.
+→ Probability: **~15%** (weak overlap, but not core)
+
+#### ❌ **resources**
+- Uses `Resource`, `ResourceResult`, `read_resource`, `list_resources`, but again, only as API endpoints — no resource loading logic, no URI resolution, no adapter implementations.
+- No `ResourceProvider`, no `load()`, no schema validation for resources.
+→ Probability: **~15%** (same as prompts — usage, not ownership)
+
+#### ✅ **utilities** — strongest match
+- The `Context` class is a canonical *utility abstraction*: it bundles common runtime concerns (logging, state, visibility, sampling, elicitation) into a single scoped object used across server handlers.
+- Many functions are pure utilities: `_warn_sampling_deprecated`, `set_transport`, `_log_level_session_key`, `_detached_request_context`.
+- It lives under `fastmcp.server.*` but is clearly *shared infrastructure*, not domain-specific logic.
+- In modular frameworks like FastMCP, the server’s request context layer is typically placed in `utilities` or `core` — and given the candidate list, `utilities` is the only one that fits “infrastructure support for servers”.
+
+Also note: the file imports `uncalled_for.SharedContext` — likely an internal utility namespace. And `fastmcp.utilities.*` is directly used.
+
+---
+
+### Final Assessment
+
+- The file is **not** a domain module (tools/prompts/resources), nor a top-level interface (cli/client).
+- It implements **cross-cutting concerns** used by the server: context scoping, logging, state, visibility, sampling/elicitation orchestration — all classic utility responsibilities.
+- The presence of `_clamp_logger`, `get_logger`, `VersionSpec`, deprecation helpers, and generic context management confirms this is infrastructure.
+
+> Therefore, the highest-probability module is **utilities**.
+
+---
+
+**The probability that this file belongs to module 'utilities' is 95%.**

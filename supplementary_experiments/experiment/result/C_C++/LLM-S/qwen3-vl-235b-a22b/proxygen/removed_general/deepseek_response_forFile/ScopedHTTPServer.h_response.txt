@@ -1,0 +1,77 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `<barrier>`, `<chrono>` — standard library (threading/time)
+  - `folly/io/async/SSLContext.h` — Folly SSL context (used for TLS setup)
+  - `folly/system/ThreadName.h` — thread naming (debugging/logging)
+  - `proxygen/httpserver/HTTPServer.h`, `ResponseBuilder.h` — **key indicators**: these are from `proxygen/httpserver/`, i.e., the *high-level HTTP server* layer.
+- **Namespaces**: `proxygen`
+- **Types**:
+  - `ScopedHandler<T>` — wraps a user-defined handler, implements `RequestHandler` (from proxygen core), handles request lifecycle (`onRequest`, `onBody`, `onEOM`, etc.), uses `ResponseBuilder`.
+  - `ScopedHandlerFactory<T>` — implements `RequestHandlerFactory`, creates `ScopedHandler`.
+  - `ScopedHTTPServer` — RAII-style wrapper around `HTTPServer`, starts/stops server, manages threads, supports SSL config, port binding, etc.
+- **Functions**:
+  - `ResponseBuilder r(downstream_)` — used inside `onEOM()` to send responses.
+  - `start(...)` overloads — high-level convenience API to start an HTTP server with minimal boilerplate.
+- **Raw excerpt**: Clearly shows:
+  - Use of `HTTPServer::IPConfig`, `HTTPServerOptions`, `ResponseBuilder`, `RequestHandler`, `RequestHandlerFactory`.
+  - RAII pattern for server lifetime (`~ScopedHTTPServer()` stops & joins).
+  - No low-level protocol parsing, no transport details (e.g., no QUIC, no socket I/O), no DNS, no pool management.
+
+---
+
+### **2. Module Comparison**
+
+#### ✅ **httpserver**
+- **Definition**: *"wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers... high-level HTTP server framework."*
+- **Evidence**:
+  - Includes `proxygen/httpserver/HTTPServer.h` and `ResponseBuilder.h`.
+  - `ScopedHTTPServer` is clearly a *convenience wrapper* for `HTTPServer`, abstracting away thread management, shutdown, and startup.
+  - `ScopedHandler` and `ScopedHandlerFactory` are helper templates to simplify user handler integration — exactly what a *high-level server framework* would provide.
+  - The entire file is about simplifying server creation (e.g., `ScopedHTTPServer::start(handler, port, ...)`), not implementing core protocol logic.
+- **Match**: Very strong — this is *exactly* the kind of utility code found in `proxygen/httpserver/`.
+
+#### ⚠️ **services**
+- **Definition**: *"connection management and server-side related code... service execution, connection acceptance, worker threads, service configuration."*
+- **Evidence**: `ScopedHTTPServer` does manage threads and server lifecycle, but:
+  - It's a thin wrapper on top of `HTTPServer`, not implementing the underlying service infrastructure.
+  - `services/` typically contains things like `ServiceHandler`, `ServerTransport`, `Worker`, etc., not RAII helpers for users.
+  - This file is *user-facing*, not infrastructure for internal Proxygen components.
+- **Match**: Moderate overlap, but not primary — this is more *application-facing* than *service infrastructure*.
+
+#### ⚠️ **ssl**
+- **Definition**: SSL/TLS context and stats.
+- **Evidence**: Includes `SSLContext.h`, and accepts `std::unique_ptr<wangle::SSLContextConfig>`, but:
+  - It does *not* define or implement SSL logic — just passes through SSL config to `HTTPServer`.
+  - No SSL handshake, certificate handling, or TLS state management here.
+- **Match**: Weak — SSL is used, but not the focus.
+
+#### ❌ **dns**, **pools**, **sampling**, **transport**
+- **dns**: No DNS resolution code (no `DNSResolver`, `HostResolver`, etc.).
+- **pools**: No backend pool, load balancing, or service discovery logic.
+- **sampling**: No sampling counters, rate limiters, or probabilistic logic.
+- **transport**: No QUIC, no `QuicTransport`, no `Socket`, no datagram handling. Uses `HTTPServer`, which abstracts transport away.
+
+#### ⚠️ **http_general**
+- **Definition**: Core HTTP protocol layer — parsing, encoding/decoding, session/transaction management, HTTP/2/3.
+- **Evidence**: Uses `HTTPMessage`, `RequestHandler`, `ResponseBuilder`, but:
+  - These are *interfaces* defined in `http_general`, but this file does *not implement* them — it *uses* them.
+  - No parsing logic, no codec, no stream management — only orchestration of handlers and responses.
+- **Match**: Indirect usage, but not implementation — so not the best fit.
+
+---
+
+### **3. Conclusion**
+The file is a **high-level convenience wrapper** for building HTTP servers using Proxygen. It lives in the `proxygen/httpserver/` namespace, includes headers from that directory, and provides RAII-style server startup/shutdown with minimal user code. This aligns *exactly* with the definition of the **httpserver** module:
+
+> *"wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers... high-level HTTP server framework."*
+
+All other modules are either too low-level (transport, http_general), unrelated (dns, pools, sampling), or infrastructural (services) — but this is clearly a *user-facing server abstraction*.
+
+---
+
+**The probability that this file belongs to module 'httpserver' is 98%.**

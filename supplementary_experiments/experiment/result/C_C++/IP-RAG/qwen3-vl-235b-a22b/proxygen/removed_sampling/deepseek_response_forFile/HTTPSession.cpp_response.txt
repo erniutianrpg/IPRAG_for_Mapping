@@ -1,0 +1,74 @@
+Let’s analyze the file `proxygen/lib/http/session/HTTPSession.cpp` step by step, using the provided content, includes, functions, and candidate modules.
+
+---
+
+### 1. **File Path & Context**
+- Path: `proxygen/lib/http/session/HTTPSession.cpp`
+- Belongs to the `http/session/` subdirectory under `proxygen/lib/http/`.
+- This strongly suggests it is part of the **HTTP protocol core layer**, not transport, SSL, DNS, or high-level server APIs.
+
+---
+
+### 2. **Key Includes**
+The includes reveal deep integration with:
+- `HTTPSession.h`, `HTTPSessionController.h`, `HTTPSessionStats.h` → session management
+- `HTTP2Codec.h`, `HTTPChecks.h` → HTTP/2 codec and protocol validation
+- `WebTransportSession.h`, `WtUtils.h` → WebTransport (an HTTP/2-based extension)
+- `HTTPHeaderSize.h` → HTTP header handling
+- `fizz/protocol/AsyncFizzBase.h` → TLS handshake support (but only via Fizz; not SSL module logic itself)
+- `wangle/acceptor/ConnectionManager.h` → connection lifecycle management (used by higher layers, but here only for shutdown/draining logic)
+
+Note: While `fizz` and `wangle` are included, the file does **not** implement SSL/TLS context setup, certificate handling, or handshake logic — those belong in the `ssl` module. Here, Fizz is used only as a transport base (e.g., for encrypted socket I/O), not for SSL-specific features.
+
+---
+
+### 3. **Functionality Observed (from function list & excerpt)**
+The class `HTTPSession` implements:
+- Session lifecycle: `startNow()`, `closeWhenIdle()`, `immediateShutdown()`, `drain()`, `checkForShutdown()`
+- HTTP/2 frame handling: `onHeadersComplete`, `onBody`, `onTrailersComplete`, `onMessageComplete`, `onGoaway`, `onPing*`, `onWindowUpdate`, `onSettings`, etc.
+- Stream and transaction management: `createTransaction`, `findTransaction`, `incrementIncomingStreams`, `decrementTransactionCount`, `maybeResumePausedPipelinedTransaction`
+- Flow control: `setFlowControl`, `getFlowControlInfo`, `onSetSendWindow`, `onSetMaxInitiatedStreams`
+- Egress/ingress buffering and writing: `scheduleWrite`, `onWriteCompleted`, `takeBodyBytesForWrite`
+- WebTransport extensions: `sendWTMaxData`, `sendWTMaxStreams`, etc.
+- Codec interaction: `setupCodec()`, `getCodecSendWindowSize`, `isHTTP2CodecProtocol`
+- Stats and diagnostics: `setSessionStats`, `describe`, `dumpConnectionState`
+
+This is clearly the **core session abstraction** that ties together:
+- The underlying transport (`AsyncTransport`)
+- The HTTP codec (`HTTP2Codec`)
+- Transaction lifecycle
+- Flow control
+- Session-level state (e.g., stream limits, draining, shutdown coordination)
+
+It sits *above* raw transport and *below* service/server layers.
+
+---
+
+### 4. **Comparison with Candidate Modules**
+
+| Module | Fit? | Reason |
+|--------|------|--------|
+| `dns` | ❌ | No DNS resolution logic; not related. |
+| `pools` | ❌ | No backend pool configuration or service discovery. |
+| `ssl` | ❌ | Uses Fizz for transport, but no SSL context creation, cert handling, or TLS stats. Not the SSL module. |
+| `general` | ❌ | `general` is for utils (e.g., `proxygen/lib/utils/`). This is HTTP-specific, not generic utility code. |
+| `http_general` | ✅ | Matches perfectly: corresponds to `proxygen/lib/http/`, responsible for HTTP protocol parsing, session management, transaction management, HTTP/2, and related protocol capabilities. This file is literally in `http/session/`, a core part of the HTTP protocol layer. |
+| `services` | ❌ | `services` is for server-side infrastructure like `ServiceHandler`, `Worker`, `Acceptor`. This file is lower-level — it's used *by* services, not part of them. |
+| `httpserver` | ❌ | That’s the high-level API wrapper (e.g., `HTTPServer`, `RequestHandler`). This is internal implementation. |
+| `transport` | ❌ | Transport is for QUIC/HTTP3 (e.g., `quic/`, `transport/`). This is HTTP/2 over TCP/TLS, not QUIC. |
+
+---
+
+### 5. **Reference Example Alignment**
+Although no explicit reference examples were given, the description of `http_general` says:
+> *"This module mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+`HTTPSession.cpp` is precisely that: the central session manager for HTTP transactions, tightly coupled with `HTTP2Codec`, handling all session-level protocol events and state.
+
+Note: Even though WebTransport is included, WebTransport in Proxygen is implemented *on top of HTTP/2*, and its session logic is still part of the HTTP protocol layer — not a separate transport module.
+
+---
+
+### ✅ Conclusion
+
+**Assigned Module**: [`http_general`]

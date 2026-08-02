@@ -1,0 +1,78 @@
+Let’s analyze the file content step by step to determine the most appropriate module.
+
+### 1. **File Path & Context**
+- The header included is:  
+  `#include <proxygen/httpserver/samples/hq/HQServer.h>`  
+  This strongly suggests the file is part of a **sample HTTP/3 (HQ = HTTP/3 over QUIC) server** under `proxygen/httpserver/samples/hq/`.
+
+- Other includes:
+  - `proxygen/httpserver/samples/hq/FizzContext.h`, `H1QDownstreamSession.h`, `HQLoggerHelper.h`
+  - `proxygen/lib/http/session/HQDownstreamSession.h`
+  - `quic/server/QuicSharedUDPSocketFactory.h`
+  - `quic/common/udpsocket/FollyQuicAsyncUDPSocket.h`
+  - `fizz::server::FizzServerContext` (TLS context via Fizz)
+
+This shows tight coupling with:
+- **HTTP session control** (`HQSessionController` inherits from `HTTPSessionController`)
+- **QUIC transport layer** (`QuicSocket`, `QuicServerTransport`, `FollyQuicAsyncUDPSocket`)
+- **HTTP/3-specific downstream session** (`HQDownstreamSession`)
+- **Server infrastructure** (`HQServer`, `HQServerTransportFactory`)
+
+### 2. **Key Types and Functions**
+- `class HQSessionController`: Implements `HTTPSessionController` and `HTTPSessionBase::InfoCallback`. It manages session lifecycle, transaction handlers, and hooks into transport readiness — core to *session management* for HTTP/3.
+- `HQServerTransportFactory`: Handles QUIC transport setup, ALPN validation, cipher availability, connection manager, etc. This is clearly **transport-layer logic**, specifically for QUIC-based HTTP/3.
+- `HQServer`: High-level server API (`start`, `stop`, `setListeningFDs`, `pauseRead`, etc.) — this is a **server wrapper**, but note it's in `httpserver/samples/hq/`, not core `httpserver/`.
+
+### 3. **Module Comparison**
+
+| Module | Relevance |
+|--------|-----------|
+| **dns** | ❌ No DNS resolution code here. |
+| **sampling** | ❌ No sampling logic. |
+| **ssl** | ⚠️ Uses `FizzServerContext`, but only as a config object; no SSL/TLS implementation or stats. Not the focus. |
+| **general** | ⚠️ Some utility patterns (e.g., `EventBaseLocal`, `SocketOptionMap`) are used, but the file is not about generic utilities — it’s domain-specific (HQ/QUIC server). |
+| **http_general** | ⚠️ Uses `HTTPSessionController`, `HTTPTransactionHandler`, `HQDownstreamSession`, which are part of HTTP protocol layer. However, `HQDownstreamSession` is HTTP/3-specific and lives in `proxygen/lib/http/session/`, but the *controller* and *server* here are built on top of that for QUIC transport — suggesting it's beyond pure HTTP protocol parsing/encoding. |
+| **services** | ⚠️ `ConnectionManager`, `worker threads`, `service execution` — but `HQServer` is a sample, not part of `lib/services/`. Also, `services` typically handles generic service lifecycle, not QUIC-specific transport factories. |
+| **httpserver** | ✅ Strong candidate: The file is under `proxygen/httpserver/samples/hq/`, and `HQServer` provides high-level server APIs (`start`, `stop`, `setListeningFDs`, etc.), wrapping lower layers. But note: `httpserver` module is defined as *"wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers"*. This fits — even though it's a *sample*, it's still part of the `httpserver` module’s scope (samples are part of the module’s ecosystem). |
+| **transport** | ✅ Also strong: The file heavily uses QUIC transport abstractions (`QuicSocket`, `FollyQuicAsyncUDPSocket`, `QuicSharedUDPSocketFactory`, `onQuicTransportReady`, `onQuicWriteCipherAvailable`). The `HQServerTransportFactory` is clearly a transport factory for QUIC. The module description says: *"transport-layer support module for HTTP/3/QUIC scenarios, responsible for working with low-level transport capabilities such as QUIC transport..."* — this matches perfectly.
+
+Now, the critical distinction:
+
+- `transport` module: focuses on **low-level transport capabilities** (e.g., socket handling, QUIC transport binding, cipher setup, packet forwarding).
+- `httpserver` module: focuses on **high-level server framework**, e.g., `HTTPServer`, `HTTPServerOptions`, `RequestHandler`, etc.
+
+But this file is **not** a generic server framework — it's a *sample* implementing an **HTTP/3 (HQ) server**, tightly integrating:
+- QUIC transport (`QuicSocket`, `FollyQuicAsyncUDPSocket`)
+- HTTP session control (`HQSessionController`)
+- Server orchestration (`HQServer`)
+
+The presence of `HQServerTransportFactory` — which implements QUIC transport callbacks like `onQuicTransportReady`, `onQuicWriteCipherAvailable`, `handleHQAlpn` — is a hallmark of the **transport** module. Moreover, the includes from `quic/server/` and `quic/common/udpsocket/` point directly to transport-level QUIC integration.
+
+Also, per the module definition:
+> **transport**: *"responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."*
+
+The functions like:
+- `HQServerTransportFactory::onQuicTransportReady(...)`
+- `HQServerTransportFactory::onQuicWriteCipherAvailable(...)`
+- `HQServer::startPacketForwarding(...)`
+- Use of `FollyQuicAsyncUDPSocket`, `QuicSharedUDPSocketFactory`
+
+are all **transport-layer concerns**, not just HTTP semantics.
+
+While `HQServer` looks like a server, it's specifically designed for **HTTP/3 over QUIC**, and its core innovation is the transport integration — not generic HTTP server scaffolding.
+
+In Proxygen’s architecture:
+- `httpserver/` is for HTTP/1.1 and HTTP/2 servers (e.g., `HTTPServer`, `SimpleReplyHandler`).
+- HTTP/3 (HQ) samples live under `httpserver/samples/hq/`, but their implementation leans heavily on `quic/` and transport abstractions — and such samples are often considered part of the **transport module** when they implement the QUIC transport binding.
+
+Looking at reference examples (implied by prompt), if a file deeply integrates QUIC socket, transport callbacks, and ALPN handling for HTTP/3, it belongs to **transport**.
+
+### Final Decision:
+The file implements:
+- A session controller tied to QUIC transport readiness
+- A transport factory handling QUIC socket lifecycle
+- Server logic that is QUIC-specific (not generic HTTP server)
+
+→ This is best classified under the **transport** module.
+
+**Assigned Module**: [transport]

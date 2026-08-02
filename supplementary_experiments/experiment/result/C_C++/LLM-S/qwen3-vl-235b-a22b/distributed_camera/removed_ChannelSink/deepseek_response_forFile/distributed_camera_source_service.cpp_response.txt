@@ -1,0 +1,88 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **1. Key Observations from File Content**
+
+#### **File Identity**
+- **Class**: `DistributedCameraSourceService`
+- **Namespace**: `OHOS::DistributedHardware`
+- **System Ability Registration**:
+  ```cpp
+  REGISTER_SYSTEM_ABILITY_BY_ID(DistributedCameraSourceService, DISTRIBUTED_HARDWARE_CAMERA_SOURCE_SA_ID, true);
+  ```
+  → This confirms it is a *SystemAbility* (SA) with ID `DISTRIBUTED_HARDWARE_CAMERA_SOURCE_SA_ID`, i.e., a **source-side service**.
+
+#### **Includes**
+- `distributed_camera_source_service.h` — core header for this class.
+- `dcamera_source_service_ipc.h` + `IPC_Skeleton`, `IPC_Types`, `IServiceRegistry` — indicates **IPC service implementation** on source side.
+- `if_system_ability_manager.h`, `system_ability_definition.h` — standard SA lifecycle management.
+- `dcamera_service_state_listener.h` — state listener (likely for service state changes).
+- `distributed_camera_errno.h`, `distributed_hardware_log.h` — error codes & logging.
+- `anonymous_string.h`, `string_ex.h` — utility strings.
+- **No sink-specific headers**, no SoftBus/channel headers like `softbus_xx.h`, no data processing headers (`codec`, `frame_rate`, `color_space`, etc.), no HDF device provider headers like `hdf_device.h`, `hdi_camera.h`.
+
+#### **Functions**
+Key methods:
+- `OnStart()`, `OnStop()`, `Init()` — standard SA lifecycle.
+- `InitSource()`, `ReleaseSource()` — manage camera source initialization/release.
+- `RegisterDistributedHardware()`, `UnregisterDistributedHardware()` — register/unregister remote devices (i.e., controller-side registration of controlled devices).
+- `DCameraNotify()` — event notification handler (likely from sink side).
+- `LoadDCameraHDF()`, `UnLoadCameraHDF()` — load/unload HDF virtual camera driver (but note: this is *triggered by source*, not implementing HDF itself).
+
+→ This is clearly the **controller-side system service** that:
+- Starts/stops as a SystemAbility,
+- Publishes itself via IPC,
+- Handles registration of remote cameras (devices),
+- Initializes/releases the local *virtual camera* (via HDF), but does **not implement** the HDF driver itself — just loads/unloads it.
+
+Crucially, the class is named `DistributedCameraSourceService`, and its responsibilities align with **orchestrating the source-side logic**, including:
+- IPC interface exposure (`DCameraSourceServiceIpc`),
+- Managing callbacks (`callbackProxy_`),
+- State machine (`state_ = DCAMERA_SRV_STATE_RUNNING`),
+- Triggering HDF load/unload (delegation to HDF layer).
+
+It does **not**:
+- Handle raw image transmission (no SoftBus/session/channel code),
+- Perform data preprocessing/postprocessing (no codec, frame conversion, resolution scaling),
+- Implement HDF device/provider directly (only calls `LoadDCameraHDF()` — likely a wrapper calling into `VirtualCameraHdf`),
+- Manage sink-side events or output streams.
+
+---
+
+### **2. Candidate Module Comparison**
+
+| Module | Match? | Reason |
+|--------|--------|--------|
+| **DistributedCameraSourceMgr** | ✅ Strong match | Described as: *“lifecycle, state machine, controller, input stream, data processing, IPC service, and callback management on the source side… enabling the controller to invoke distributed camera capabilities”*. This file implements exactly that: SA lifecycle (`OnStart/OnStop`), state machine (`state_`), IPC (`DCameraSourceServiceIpc`), callback management (`callbackProxy_`), and registration of remote devices. It is the **manager/controller service** on source side. |
+| **DistributedCameraSinkMgr** | ❌ No | Sink side; this file is explicitly source-side (SA ID, naming, function semantics). No sink-specific logic (e.g., receiving commands, outputting frames). |
+| **ChannelCommon** | ❌ No | No SoftBus, session, or channel interface code. Only IPC (binder-like), not transport-layer channels. |
+| **ChannelSource** | ❌ No | ChannelSource would handle SoftBus connections, sessions, sending control commands over channel — none present here. This file only exposes IPC interface; actual channel comms are likely delegated elsewhere. |
+| **CameraDataProcessCommon** | ❌ No | No data pipeline, codecs, color space, frame rate control. Pure service orchestration. |
+| **CameraDataPreProcess** | ❌ No | Preprocessing happens on sink side; this is source side and has no image processing. |
+| **CameraDataPostProcess** | ❌ No | Post-processing (decoding, format conversion) would be on source side *after* receiving data — but this file doesn’t receive or process image data; it only initializes the virtual camera and registers devices. |
+| **CameraServiceCommon** | ⚠️ Partial | Provides shared basic service capabilities (commands, protocols, metadata, etc.). While this file uses some common types (e.g., `EnableParam`, `DCameraIndex`), it is a concrete *implementation* of a SystemAbility, not a shared utility header/interface. Not the best fit. |
+| **VirtualCameraHdf** | ❌ No | Though it calls `LoadDCameraHDF()`, it does **not implement** HDF device/provider/stream operator — that would require `HDF_DEVICE`, `IDevice`, `IStreamOperator`, etc. This file only *uses* the HDF virtual camera; it's a client of `VirtualCameraHdf`, not part of it. |
+| **utils** | ❌ No | No generic utilities (buffers, indexes, constants); this is a full SystemAbility class with business logic. |
+
+---
+
+### **3. Final Assessment**
+
+The file implements the **core source-side SystemAbility** that:
+- Registers as a system service,
+- Manages lifecycle and state,
+- Exposes IPC interface for clients (e.g., CameraClient),
+- Coordinates registration of remote devices,
+- Triggers loading of virtual camera via HDF (but doesn’t implement HDF),
+- Handles callbacks and notifications.
+
+This matches **exactly** the description of **DistributedCameraSourceMgr**, which is defined as the module responsible for “lifecycle, state machine, controller, … IPC service, and callback management on the source side”.
+
+> Note: The name `DistributedCameraSourceService` strongly suggests it is the *service implementation* of the `DistributedCameraSourceMgr` module — i.e., the mgr module likely contains this service class plus possibly helper classes.
+
+Thus, the probability is very high.
+
+---
+
+**The probability that this file belongs to module 'DistributedCameraSourceMgr' is 95%.**

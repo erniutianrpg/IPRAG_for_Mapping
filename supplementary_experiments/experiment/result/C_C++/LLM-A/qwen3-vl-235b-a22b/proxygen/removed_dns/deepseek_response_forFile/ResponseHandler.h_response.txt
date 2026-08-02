@@ -1,0 +1,48 @@
+Let’s analyze the file step by step:
+
+### 1. **File content summary**
+- **Language**: C/C++
+- **Includes**:
+  - `folly/Expected.h`: A general utility from Folly (used for error-aware return types).
+  - `proxygen/lib/http/session/HTTPTransaction.h`: This is a core HTTP session/transaction header — indicates this file is tightly coupled with HTTP transaction handling.
+- **Namespace**: `proxygen`
+- **Types defined**:
+  - `RequestHandler`
+  - `PushHandler`
+  - `ResponseHandler` — the main class in this file, with many pure virtual methods related to sending HTTP responses (headers, body chunks, EOM, abort, etc.), managing timeouts, ingress flow control, and push handling.
+- **Functions**:
+  - Destructor `~ResponseHandler()`
+  - `getCurrentTransportInfo(wangle::TransportInfo* tinfo)` — interacts with transport info (from `wangle`, Facebook’s networking library), but it's *not* defining transport logic itself; rather, it's querying transport metadata.
+- **Key observations**:
+  - The `ResponseHandler` is an abstract interface used to drive response generation from the server side.
+  - It holds a pointer to `HTTPTransaction* txn_`, and its methods map directly to HTTP response lifecycle events (e.g., `sendHeaders`, `sendBody`, `sendEOM`, `sendAbort`).
+  - It supports HTTP/2 push via `newPushedResponse(PushHandler*)`.
+  - It does **not** implement transport (e.g., socket I/O, QUIC, TLS); instead, it operates at the HTTP transaction/session layer.
+  - It’s part of the *server-side* HTTP response pipeline, sitting above raw transport, below high-level service logic.
+
+### 2. **Compare with candidate modules**
+
+| Module | Relevance |
+|--------|-----------|
+| `pools` | ❌ No backend pool configuration or server list logic here. |
+| `sampling` | ❌ No sampling logic. |
+| `ssl` | ❌ No SSL/TLS context, certificates, or encryption handling. |
+| `general` | ⚠️ Partial: includes `folly/Expected.h`, and `wangle::TransportInfo`, but the core purpose is not generic utilities—it’s specifically about HTTP response handling. `general` is more for utils like `Timer`, `AsyncTimeout`, `ScopedEventBaseThread`, etc. Not a strong fit. |
+| `http_general` | ✅ Strong fit: This module is described as *"Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*<br>— `ResponseHandler` is clearly part of the HTTP transaction/response abstraction.<br>— It’s defined in namespace `proxygen`, and includes `HTTPTransaction.h`, which lives under `proxygen/lib/http/session/` — exactly where `http_general` is said to correspond.<br>— Abstract handlers like `RequestHandler`, `ResponseHandler`, `PushHandler` are classic components of the HTTP core layer (e.g., used by `HTTPServerCodec`, `HTTPSession`, `HTTPTransaction`). |
+| `services` | ⚠️ Partial: `services` is for *connection management and server-side infrastructure* (workers, service execution). But `ResponseHandler` is not about connection acceptance or threading — it’s a per-transaction callback interface. So it's lower-level than `services`. |
+| `httpserver` | ❌ This is for *high-level APIs* (e.g., `HTTPServer`, `RequestHandler` implementations like `SimpleReplyHandler`). This file defines an *abstract interface*, not a concrete server API wrapper. |
+| `transport` | ❌ No QUIC, socket, or low-level transport code. Uses `wangle::TransportInfo` only for inspection, not implementation. |
+
+### 3. **Reference examples (implied)**  
+Although no explicit examples were given, the description of `http_general` matches known Proxygen structure:
+- `proxygen/lib/http/session/HTTPTransaction.h` → core transaction
+- `ResponseHandler` is used by `HTTPTransaction` to deliver response data back to the client — it's part of the HTTP session/transaction layer.
+
+This file is likely from `proxygen/lib/http/server/` or similar, and belongs to the **HTTP core abstraction layer**, not higher-level services or transport.
+
+---
+
+### ✅ Conclusion:
+The file defines an abstract HTTP response handler interface tightly integrated with `HTTPTransaction`, part of the HTTP protocol stack — precisely what `http_general` covers.
+
+**Assigned Module**: [http_general]

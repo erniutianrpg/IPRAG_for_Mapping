@@ -1,0 +1,60 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File metadata**
+- **Language**: C/C++
+- **Include**: `#include <proxygen/lib/http/connpool/ServerIdleSessionController.h>`
+  - Path: `proxygen/lib/http/connpool/` → strongly suggests this is part of the **HTTP connection pooling** subsystem.
+- **Namespace**: `proxygen`
+- **Functions**:
+  - `ServerIdleSessionController::getIdleSession()`
+  - `addIdleSession(...)`
+  - `removeIdleSession(...)`
+  - `markForDeath()`
+  - `popBestIdlePool()`
+  - All revolve around managing *idle HTTP sessions* in a pool, with thread safety (`std::lock_guard`), event-base threading (`runInEventBaseThread`), and session lifecycle (detach thread locals, removal, marking for death).
+- **Data structures used**:
+  - `sessionMap_`: maps session pointer → iterator into list
+  - `sessionsByIdleAge_`: likely an ordered container (e.g., `std::list` or `std::deque`) tracking idle sessions by age
+  - `maxIdleCount_`, `markedForDeath_`, `lock_`
+  - Uses `SessionPool*`, `HTTPSessionBase*`, `folly::Future`, `folly::Promise`, `EventBase`
+
+### 2. **Key Observations**
+- The class `ServerIdleSessionController` manages *idle HTTP sessions* — i.e., sessions that are not currently active but may be reused.
+- It lives under `proxygen/lib/http/connpool/`, which is a subdirectory of `proxygen/lib/http/`.
+- This is **not** about DNS resolution → rules out **dns**.
+- Not about SSL/TLS contexts → rules out **ssl**.
+- Not about sampling logic → rules out **sampling**.
+- Not about QUIC/transport-layer concerns → rules out **transport**.
+- Not about high-level server APIs (like `httpserver`’s `RequestHandler`, `ResponseBuilder`, etc.) → unlikely **httpserver**.
+- Not about backend server lists / service discovery configuration → rules out **pools** (note: while “pool” appears in name, this is *connection pooling*, not *backend server pools*; the candidate **pools** module description explicitly says “server lists or backend member pools”, which is different).
+- The module **services** is described as:  
+  > *"used for connection management and server-side related code. On top of the low-level HTTP abstractions, it provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration."*  
+  While idle session management is *related* to connection management, `ServerIdleSessionController` is more tightly coupled with **HTTP session lifecycle and connection pooling**, and resides under `lib/http/connpool/`, not `lib/services/`.
+
+- The module **http_general** is described as:  
+  > *"mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+  Crucially, it explicitly includes **session management** — and idle session reuse is a core part of HTTP session management for performance (e.g., keep-alive, connection reuse). The file is directly under `proxygen/lib/http/connpool/`, which is a logical subcomponent of the HTTP core layer (not a separate top-level module like services or httpserver).
+
+Also note:
+- `HTTPSessionBase` and `SessionPool` are internal HTTP session/connection abstractions — part of the HTTP core.
+- Use of `folly::Future`, `EventBase`, and thread-affinity checks aligns with how Proxygen’s HTTP core handles asynchronous session acquisition.
+- `ServerIdleSessionController` is specifically for *server-side* idle session management (as opposed to client-side connection pooling), but still sits within the HTTP layer — not the higher-level service orchestration layer.
+
+### 3. Module Mapping Confidence
+
+| Module | Reasoning | Likelihood |
+|--------|-----------|------------|
+| **dns** | No DNS-related types/functions (e.g., `DnsResolver`, `Query`, `Record`) | ~0% |
+| **pools** | Described as backend server list/config; this is *connection/session pooling*, not backend pool config | ~5% (name similarity only) |
+| **sampling** | No sampling logic (e.g., rate limiting, probabilistic decisions) | ~0% |
+| **ssl** | No SSL context, certs, handshake logic | ~0% |
+| **http_general** | Directly under `lib/http/`, deals with HTTP session lifecycle, idle session reuse — core session management per description | **~95%** |
+| **services** | Could be argued, but `services` is higher-level (e.g., `ServiceHandler`, `ServerTransport`, `Worker`) — this is lower-level session pooling inside HTTP layer | ~10% |
+| **httpserver** | High-level API (e.g., `HTTPServer`, `RequestHandler`); this is internal implementation detail | ~0% |
+| **transport** | No QUIC, socket, datagram, or transport-level primitives | ~0% |
+
+### Final Decision
+The file implements idle HTTP session management inside the HTTP layer, specifically under `proxygen/lib/http/connpool/`, and matches the **http_general** module’s scope (HTTP protocol core, session management). The presence of `HTTPSessionBase`, `SessionPool`, and fine-grained session lifecycle control confirms it belongs to the HTTP core layer.
+
+"The probability that this file belongs to module 'http_general' is 95%."

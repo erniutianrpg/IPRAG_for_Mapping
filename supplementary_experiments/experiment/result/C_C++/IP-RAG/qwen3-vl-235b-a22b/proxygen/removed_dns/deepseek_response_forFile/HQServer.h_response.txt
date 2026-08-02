@@ -1,0 +1,102 @@
+Let’s analyze the file `proxygen/httpserver/samples/hq/HQServer.h` step by step, using the provided context, includes, types, functions, and candidate modules.
+
+---
+
+### 1. **File Location**
+- Path: `proxygen/httpserver/samples/hq/HQServer.h`
+- This is under `httpserver/samples/hq/`, indicating it's a *sample* implementation of an HTTP/3 (HTTP over QUIC, “HQ” = HTTP/3 over QUIC) server using Proxygen.
+
+Note: While it's in `samples/`, the module assignment should reflect *what the code implements*, not just its location — especially since samples often demonstrate usage of core modules.
+
+---
+
+### 2. **Key Includes**
+Relevant includes:
+- `<proxygen/lib/http/codec/H3EarlyDataHandler.h>` → HTTP/3 early data handling (part of HTTP protocol layer)
+- `<proxygen/lib/http/session/HTTPTransaction.h>` → Core HTTP transaction abstraction
+- `<quic/server/QuicHandshakeSocketHolder.h>`, `<quic/server/QuicServer.h>`, `<quic/state/EarlyDataAppParamsHandler.h>` → QUIC transport-level server infrastructure
+- `<proxygen/httpserver/samples/hq/FizzContext.h>`, `<proxygen/httpserver/samples/hq/HQParams.h>` → Sample-specific config/context for HQ
+- `<folly/io/async/EventBaseLocal.h>` → Folly event loop support
+
+This shows tight coupling with:
+- **QUIC transport layer** (`quic::QuicServer`, `QuicHandshakeSocketHolder`)
+- **HTTP/3 codec/session layer** (`H3EarlyDataHandler`, `HTTPTransaction`)
+- **Fizz (TLS)** for encryption — but only via context; no TLS logic implemented here.
+
+---
+
+### 3. **Class Definitions & Responsibilities**
+- `HQServer`: Main class that starts/stops a QUIC-based HTTP/3 server.
+  - Uses `quic::QuicServer` internally (`server_` member).
+  - Manages ALPN negotiation, early data, Fizz context, connection setup, etc.
+  - Provides high-level API to start server, set certs/keys, configure transport settings, etc.
+- `HQSession`: Likely represents a per-connection HTTP/3 session (implied by name and usage).
+- `HQServerTransportFactory`, `ScopedHQServer`, `AlpnEntry`: Supporting infrastructure for transport factory pattern, RAII, and ALPN dispatch.
+
+The class acts as a *high-level wrapper* around QUIC + HTTP/3 stack — but notably, it lives under `httpserver/samples/`, not `lib/`.
+
+---
+
+### 4. **Comparison with Candidate Modules**
+
+Let’s evaluate each candidate:
+
+#### ✅ `transport`
+> *"This module mainly corresponds to lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3. It is Proxygen's transport-layer support module for HTTP/3/QUIC scenarios..."*
+
+- The file uses `quic::QuicServer`, `QuicHandshakeSocketHolder`, `EarlyDataAppParamsHandler`, and deals with QUIC socket lifecycle, ALPN, early data, connection ID, etc.
+- However, this file is **not** in `lib/transport/`. It’s a *sample* that *uses* the transport module.
+- But the question asks: *“map code files to architecture modules”* — i.e., what module does this file *belong to* architecturally? Since it’s implementing an HTTP/3 server using QUIC transport, and is tightly coupled to QUIC transport APIs (not generic HTTP), `transport` is a strong candidate.
+
+#### ✅ `httpserver`
+> *"This module mainly corresponds to proxygen/httpserver/. It wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers..."*
+
+- The file is literally under `proxygen/httpserver/samples/`, so syntactically it belongs to the `httpserver` module.
+- However, `httpserver` typically wraps *HTTP/1.1 and HTTP/2* servers (e.g., `HTTPServer`, `HTTPServerOptions`). HQ (HTTP/3) is a newer, QUIC-based extension.
+- The `httpserver` module historically does *not* include QUIC logic — that’s delegated to `transport`.
+- But samples are part of the `httpserver` module by directory structure, even if they use lower-level components.
+
+#### ⚠️ `http_general`
+> *"common HTTP implementation under proxygen/lib/http/... responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management..."*
+
+- The file uses `HTTPTransaction`, `H3EarlyDataHandler`, which are from `lib/http/`, but it does *not implement* protocol logic — it consumes it.
+- It’s not part of `lib/http/`; it’s a top-level server orchestrator.
+
+#### ❌ `services`, `pools`, `sampling`, `general`, `ssl`
+- `services`: deals with connection management *on top of HTTP*, but usually for generic service frameworks — not QUIC-specific.
+- `pools`, `sampling`, `general`: clearly irrelevant.
+- `ssl`: uses Fizz context, but doesn’t implement SSL/TLS logic — just passes context to QUIC stack.
+
+---
+
+### 5. **Critical Insight: Is this a *server framework* or a *transport adapter*?**
+
+- `HQServer` is not a generic server framework like `HTTPServer`; it’s specifically for **HTTP/3 over QUIC**, and it directly embeds and configures `quic::QuicServer`.
+- In Proxygen’s architecture:
+  - `lib/transport/` contains QUIC-related transport abstractions.
+  - `httpserver/` contains high-level HTTP server APIs — but HQ is a *special case* that bridges HTTP and QUIC.
+- However, the official Proxygen repo structure shows that `httpserver/samples/hq/` is indeed considered part of the **HTTP server sample ecosystem**, and such samples are meant to demonstrate how to use the transport+HTTP layers together.
+
+But the key question: *Which module owns the responsibility of providing HTTP/3 server capability?*  
+From Facebook’s Proxygen design:
+- HTTP/3 support is built on top of `quic::QuicServer` (from `folly/quic` or internal QUIC lib), and the HTTP/3 codec sits in `lib/http/codec/`.
+- The *orchestration* of QUIC + HTTP/3 into a server is done in **samples**, not in core modules — meaning it doesn’t strictly belong to any core module, but the closest architectural fit is `transport`, because:
+  - It’s transport-focused (QUIC),
+  - It handles socket, handshake, early data, connection IDs — all transport concerns,
+  - `httpserver` is for traditional TCP-based HTTP servers.
+
+Also note: the file includes `<quic/server/QuicServer.h>` and delegates almost all heavy lifting to `quic::QuicServer`. The `HQServer` class is essentially a thin wrapper/configurator for QUIC server + HTTP transaction handler binding.
+
+In Facebook’s internal modularization (inferred from includes and naming), `transport` is the module that owns QUIC integration for HTTP/3.
+
+---
+
+### 6. **Conclusion**
+
+While the file resides under `httpserver/samples/`, its *functional responsibility* is to instantiate and manage a **QUIC-based HTTP/3 server**, heavily relying on QUIC transport primitives and early-data handling — aligning best with the **`transport`** module definition.
+
+The `httpserver` module is more about *generic HTTP server APIs* (e.g., `HTTPServer`, request routing, middleware), whereas this is a specialized QUIC transport server.
+
+Thus:
+
+**Assigned Module**: [`transport`]

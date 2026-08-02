@@ -1,0 +1,51 @@
+Let’s analyze the file step by step:
+
+### 1. **File content summary**
+- Header: `#include <proxygen/lib/http/HTTP3ErrorCode.h>`, `<proxygen/lib/http/HTTPMessage.h>`, `<proxygen/lib/http/codec/ErrorCode.h>`, `<proxygen/lib/utils/Exception.h>`
+- Namespace: `proxygen`
+- Class: `HTTPException`, derived from `proxygen::Exception`
+- Functions:
+  - `toHTTP3ErrorCode(proxygen::ErrorCode err)`
+  - Destructor, constructors, accessors/mutators for:
+    - HTTP status code (`setHttpStatusCode`)
+    - HTTP/3 error code (`setHttp3ErrorCode`)
+    - Codec-level error code (`setCodecStatusCode`)
+    - errno (`setErrno`)
+    - Partial HTTP message (`setPartialMsg`)
+- Internal state includes `HTTP3::ErrorCode`, `ErrorCode` (from codec), `HTTPMessage`, and direction (`INGRESS`, `EGRESS`)
+- Uses `folly::Optional`, `std::unique_ptr`, `folly/Memory.h`
+
+### 2. **Key observations**
+- The class `HTTPException` is a *protocol-level exception* used to represent errors that occur during HTTP processing — including HTTP/1.x, HTTP/2, and especially **HTTP/3** (given use of `HTTP3::ErrorCode`).
+- It aggregates multiple error contexts: HTTP status codes (application-layer), HTTP/3 error codes (transport-layer protocol), codec-level errors (e.g., framing issues), and even OS-level `errno`.
+- It holds a partial `HTTPMessage`, suggesting it's used when parsing fails mid-message.
+- The exception is tightly coupled with HTTP message structures and error semantics defined in `proxygen/lib/http/` (e.g., `HTTPMessage`, `HTTP3ErrorCode`, `ErrorCode` from codec).
+- The helper function `toHTTP3ErrorCode()` maps generic `proxygen::ErrorCode` (likely from codec or transport) to HTTP/3-specific error codes — indicating cross-layer error translation.
+
+### 3. **Candidate module comparison**
+- **dns**: ❌ No DNS-related types/functions.
+- **sampling**: ❌ No sampling logic.
+- **ssl**: ❌ No SSL/TLS context, certs, or crypto; no TLS-specific errors.
+- **general**: This covers `proxygen/lib/utils/`, and `Exception.h` is indeed from utils. However, this class is *not* a generic utility — it's deeply tied to HTTP protocol semantics (status codes, messages, HTTP/3 errors). While it inherits from `proxygen::Exception`, its purpose is HTTP-specific.
+- **http_general**: ✅ Matches best. This module is defined as:
+  > *"common HTTP implementation under proxygen/lib/http/... responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+  
+  `HTTPException` fits here because:
+  - It lives in `proxygen::` namespace and depends on core HTTP headers (`HTTPMessage`, `HTTP3ErrorCode`, `ErrorCode` from codec).
+  - It handles exceptions arising during HTTP message processing — a core part of the HTTP protocol layer.
+  - Exception handling for protocol errors (e.g., malformed headers, invalid frames, HTTP/3 stream errors) is part of the *HTTP general* abstraction layer, not transport or services.
+- **services**: ❌ This is server-side infrastructure (connection acceptance, workers, service execution). `HTTPException` is not about connection management or service lifecycle.
+- **httpserver**: ❌ High-level server API wrapper (e.g., `RequestHandler`, `Server`, etc.). This is lower-level.
+- **transport**: ❌ While it uses `HTTP3::ErrorCode`, the class itself is not implementing QUIC transport or socket I/O. It's an *exception type* used *by* transport and codec layers, but its definition belongs to the HTTP protocol layer that consumes those errors. Transport modules would *throw* this exception, but the exception class is defined in the HTTP domain.
+
+### 4. **Reference examples guidance**
+Though no explicit examples are given, standard Proxygen structure places:
+- `HTTPException`, `HTTPMessage`, `HTTPHeaders`, `ErrorCode`, `HTTP3ErrorCode` all under `proxygen/lib/http/` → part of `http_general`.
+- `Exception.h` is in `utils/`, but specialized exceptions like `HTTPException` are typically colocated with their domain (i.e., HTTP), even if they inherit from a base utility exception.
+
+Indeed, in real Proxygen codebase, `HTTPException.h` resides in `proxygen/lib/http/`, confirming it belongs to the HTTP core layer.
+
+---
+
+### ✅ Final Decision:
+**Assigned Module**: [http_general]

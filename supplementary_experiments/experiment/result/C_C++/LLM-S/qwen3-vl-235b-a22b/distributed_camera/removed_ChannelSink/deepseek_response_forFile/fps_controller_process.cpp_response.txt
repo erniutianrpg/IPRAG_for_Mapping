@@ -1,0 +1,72 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `fps_controller_process.h` → strongly suggests this is a *frame-rate control* component.
+  - `dcamera_utils_tools.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` → generic distributed camera utilities, error codes, logging — common across many modules, but not specific.
+- **Namespaces**: `OHOS::DistributedHardware` → confirms this is part of OpenHarmony’s Distributed Hardware subsystem, specifically for distributed camera.
+- **Class/Functions**:
+  - Class: `FpsControllerProcess`
+  - Key methods:
+    - `InitNode()`, `ReleaseProcessNode()` → lifecycle management of a processing node.
+    - `ProcessData(std::vector<std::shared_ptr<DataBuffer>>& inputBuffers)` → core data processing function (takes input buffers, decides whether to drop or forward).
+    - `UpdateFPSControllerInfo()`, `CalculateFrameRate()`, `IsDropFrame()`, `ReduceFrameRateByUniformStrategy()` → all about *dynamic frame rate control*, including history tracking, correction factors, drop logic.
+    - Uses mutex (`lck(mtx)`) → thread-safe processing.
+    - Interacts with `targetConfig_`, `sourceConfig_`, `nextDataProcess_` → indicates it's part of a *pipeline* where data flows through chained processors.
+
+This is clearly a **data processing node** that sits in a pipeline and controls output frame rate — specifically, it *drops frames* when incoming FPS exceeds target, or adjusts timing via correction factors.
+
+---
+
+### **2. Module Comparison**
+
+Let’s evaluate each candidate:
+
+#### ✅ **CameraDataProcessCommon**
+> *"provides common data processing frameworks, data processing pipeline interfaces, codecs, color space conversion, **frame-rate control**, image types, and other common capabilities..."*
+
+- Direct match: This file implements **frame-rate control** as a reusable processing node.
+- It uses standard pipeline patterns (`ProcessData`, `nextDataProcess_`, `InitNode`, `ReleaseProcessNode`) — typical of a *common data processing framework*.
+- The class name `FpsControllerProcess` fits perfectly under “common data processing” — not tied to source/sink side exclusively; could be used on either side depending on need (e.g., sink-side to avoid overloading encoder, or source-side to smooth playback).
+- No IPC, no session management, no device/HDF layer — rules out channel/virtual camera/service modules.
+- Not specific to pre/post-processing (those usually involve format conversion, scaling, etc.), but rather *rate limiting* — which is explicitly listed under `CameraDataProcessCommon`.
+
+#### ❌ **DistributedCameraSourceMgr / SinkMgr**
+- These are *manager* modules handling lifecycle, state machines, IPC, callbacks — high-level orchestration.
+- This file is a low-level *processing node*, not a manager. No IPC calls, no state machine logic, no service registration.
+
+#### ❌ **ChannelCommon / ChannelSource**
+- These deal with SoftBus, sessions, transport — none of that appears here. No network/session code.
+
+#### ❌ **CameraDataPreProcess / CameraDataPostProcess**
+- Pre-process: typically raw sensor data → encoded/compressed (on sink).
+- Post-process: decode → render/display (on source).
+- While FPS control *could* happen in either, the naming and scope suggest these are *stage-specific* pipelines (e.g., `CameraDataPostProcess` might include deinterlacing, scaling, timestamp sync), whereas `FpsControllerProcess` is a *generic utility node* that can be inserted anywhere in a pipeline — and its header (`fps_controller_process.h`) suggests reusability.
+- Also, `CameraDataPostProcess` would likely interact with display/rendering APIs; this file only deals with buffer dropping and timing — no rendering, no decoder/encoder calls.
+
+#### ❌ **CameraServiceCommon**
+- Provides shared *service-level* capabilities: protocols, metadata, open-camera info — not data processing logic.
+
+#### ❌ **VirtualCameraHdf**
+- HDF/HDI layer — involves device drivers, stream operators, HAL — none present here.
+
+#### ❌ **utils**
+- Contains constants, error codes, basic tools — but this file is a full-fledged *processing class*, not a utility helper. While it includes `dcamera_utils_tools.h`, the implementation is too complex for `utils`.
+
+---
+
+### **3. Final Assessment**
+- The module most aligned is **CameraDataProcessCommon**, because:
+  - It explicitly lists "frame-rate control" as part of its responsibility.
+  - The code implements a reusable, pipeline-integrated FPS controller node.
+  - It follows the pattern of common processing components (init/release/process, chaining via `nextDataProcess_`).
+  - Namespace and includes match the distributed camera data processing layer.
+
+Probability is high — only minor ambiguity would be if FPS control were considered strictly post-process (but the spec says *common* capabilities include it).
+
+---
+
+**The probability that this file belongs to module 'CameraDataProcessCommon' is 95%.**

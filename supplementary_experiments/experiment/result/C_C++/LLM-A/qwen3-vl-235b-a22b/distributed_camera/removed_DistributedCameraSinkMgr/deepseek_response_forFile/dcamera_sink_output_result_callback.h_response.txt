@@ -1,0 +1,94 @@
+Let’s analyze the file step by step:
+
+### File Overview:
+- **File name (inferred from macro)**: `OHOS_DCAMERA_SINK_OUTPUT_RESULT_CALLBACK_H`
+- **Includes**:
+  - `icamera_operator.h` → suggests interaction with camera operator interfaces (likely part of camera service or client-side callbacks)
+  - `dcamera_sink_output.h` → clearly indicates this is related to *sink-side output* functionality
+- **Namespace**: `OHOS::DistributedHardware`
+- **Class**: `DCameraSinkOutputResultCallback`, inherits from `ResultCallback`
+- **Constructor**: takes `std::shared_ptr<DCameraSinkOutput>& output` → implies it's tightly coupled with a sink output object
+- **Methods**:
+  - `OnPhotoResult(std::shared_ptr<DataBuffer>& buffer)`
+  - `OnVideoResult(std::shared_ptr<DataBuffer>& buffer)`
+  → These are callback methods for receiving photo/video data — i.e., *results* from camera operations, likely triggered after capture/recording on the sink side.
+
+### Key Observations:
+- The class is named `DCameraSinkOutputResultCallback`, emphasizing:
+  - **Sink-side** (controlled device)
+  - **Output** (i.e., data being sent out — but note: here “output” refers to the *local output* of the sink device — e.g., the result of a photo/video operation performed locally on the sink device).
+  - **ResultCallback** → standard pattern for asynchronous operation completion (e.g., after `TakePhoto()` or `StartRecording()` completes).
+- It holds a weak pointer to `DCameraSinkOutput`, which likely represents the sink-side output interface responsible for handling data transmission or local processing.
+- This callback is used to notify the sink-side logic when photo/video results are ready — i.e., after the camera hardware has produced data (buffer), and before that data is transmitted (e.g., via channel) or post-processed.
+
+### Compare with Candidate Modules:
+
+1. **DistributedCameraSourceMgr**  
+   → Source-side lifecycle/controller — not applicable; this is sink-side.
+
+2. **ChannelCommon / ChannelSource / ChannelSink**  
+   → These handle *transport* (SoftBus sessions, IPC). This class is not about channel establishment or transport; it's about *receiving results* from camera operations — higher-level than raw channel.
+
+3. **CameraDataProcessCommon**  
+   → General data processing framework. While it deals with buffers, this class is not implementing pipelines, codecs, or conversion — just a callback interface.
+
+4. **CameraDataPreProcess**  
+   → *"Responsible for the data preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow."*  
+   ✅ This fits well:  
+   - It's on the **sink side**
+   - It handles **image data returned by the camera framework** (i.e., `OnPhotoResult`/`OnVideoResult`)
+   - The callback likely triggers preprocessing (e.g., format conversion, metadata attachment, frame rate control) before sending over channel.
+
+5. **CameraDataPostProcess**  
+   → Source-side post-processing (decoding, etc.) — not applicable.
+
+6. **CameraServiceCommon**  
+   → Shared basic services like commands, protocols, metadata settings. This class is more specific: it’s a concrete callback implementation tied to sink output, not a generic service.
+
+7. **VirtualCameraHdf**  
+   → HDF/HDI layer virtual device implementation — this is C++ user-space, not driver/HDI level.
+
+8. **utils**  
+   → General utilities, buffers, error codes, *callback handling*. Note: the description says: *"including local camera query, open, close, stream acquisition, and preview/photo/video callback handling."*  
+   This is tempting — but note: the class is specifically `DCameraSinkOutputResultCallback`, tightly coupled with `DCameraSinkOutput`, and lives in `DistributedHardware` namespace — suggesting it's part of the distributed camera *core logic*, not a generic utility.
+
+However, let’s compare carefully:
+- `utils` includes “preview/photo/video callback handling” — yes, this is a photo/video result callback.
+- But the class is not a generic utility; it’s specialized for *sink output*, and depends on `dcamera_sink_output.h`, which likely belongs to the sink-side data path.
+
+Now consider: In distributed camera architecture, the **sink side** receives control commands (via ChannelSink), executes camera operations (using local camera HAL), and then must process the resulting frames before sending them back. The `DCameraSinkOutputResultCallback` is the mechanism that receives the raw `DataBuffer` from the local camera operation and likely forwards it to preprocessing (e.g., to `CameraDataPreProcess`).
+
+But the question is: **Which module does this file belong to?**
+
+The class itself is a *callback adapter* that bridges camera operator results to the sink output logic. Given:
+- Its name contains “SinkOutput”
+- It’s defined in header with `_RESULT_CALLBACK_H`
+- It’s used by sink-side components to handle results
+
+Looking again at **CameraDataPreProcess**:  
+> *"responsible for the data preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow."*
+
+A result callback like this is typically the *entry point* into the preprocessing pipeline — i.e., when the camera framework delivers a buffer, this callback is invoked, and then it dispatches to preprocessing modules.
+
+In many architectures, such callback classes are colocated with the preprocessing module, especially if they’re not generic utilities but tightly integrated.
+
+Also, note that `dcamera_sink_output.h` is likely part of the sink-side output management — which would be owned by the preprocessing/data path on sink.
+
+Compare with reference examples (implied by instruction): although no explicit examples given, the naming convention suggests:
+- `*_Sink_*` → sink-side modules
+- `ResultCallback` for photo/video → part of data handling flow
+
+Given all this, the strongest match is:
+
+### ✅ **CameraDataPreProcess**
+
+Because:
+- It’s sink-side
+- It handles camera result buffers (`DataBuffer`)
+- It’s the logical place where such a callback would reside — as the first handler after camera capture, before transmission.
+
+Alternative: Could it be `utils`? Only if this were a generic callback base class reused across modules. But here it’s specialized: `DCameraSinkOutputResultCallback`, depends on `DCameraSinkOutput`, and is in `DistributedHardware` namespace — indicating it's part of the core distributed camera sink data path, not a general utility.
+
+Thus:
+
+**Assigned Module**: [CameraDataPreProcess]

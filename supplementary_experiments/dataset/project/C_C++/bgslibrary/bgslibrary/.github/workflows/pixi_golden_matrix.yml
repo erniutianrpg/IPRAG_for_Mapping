@@ -1,0 +1,111 @@
+name: Pixi golden-master matrix (OS×arch × OpenCV 4)
+
+# Phase 0 safety net — trilha (ii). Builds pybgs and the C++ BGS_Factory emitter with Pixi
+# across OS/arch (conda-forge OpenCV, pinned to 4.13.x in pixi.toml) and runs the
+# golden-master --check for each (OS, arch, OpenCV) cell, at BOTH levels (Python + C++).
+#
+# Cells WITH a committed baseline GATE (a diff fails the job). Cells WITHOUT one BOOTSTRAP:
+# they --generate and upload the result as the "golden-<cell>" artifact (a warning, non-
+# blocking). Download it, commit goldens/<cell>.json (+ -cpp.json), and the gate turns on
+# next PR. The dev box is linux-64, so the linux-aarch64/osx-*/win-64 baselines must be
+# bootstrapped here (macOS works again after the libpython-link fix, PR #235).
+#
+# This is a NEW, non-required check: the existing autobuild jobs (OpenCV 3.4.7/3.4.16/4.6.0)
+# remain the required gate. fail-fast:false keeps one cell's failure from masking the others.
+
+on:
+  pull_request:
+    branches: [ "master" ]
+    # Skip CI for docs-only changes (markdown/docs/help/LICENSE) to save runner time.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'help/**'
+      - 'LICENSE'
+  workflow_dispatch: {}
+
+jobs:
+  golden:
+    name: ${{ matrix.cell }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    cell: linux-64,      cpp: true }
+          - { os: ubuntu-24.04-arm, cell: linux-aarch64, cpp: true }
+          - { os: macos-14,         cell: osx-arm64,     cpp: true }
+          - { os: windows-latest,   cell: win-64,        cpp: false }   # C++ emitter DLL link unresolved on Windows — TODO
+          # macos-13 (osx-64, Intel) intentionally omitted: the hosted Intel runner queues for hours
+          # and Intel macs are EOL; osx-arm64 (Apple Silicon) is the representative macOS cell.
+          # (osx-64 stays in pixi.toml `platforms` so Intel-mac devs can still use the env locally.)
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # modules/pybind11 is required by the Python build
+
+      - uses: prefix-dev/setup-pixi@v0.9.6
+
+      - name: Build + install pybgs into the pixi env
+        # install_python -> build_python -> configure_python; lands pybgs on the env's
+        # import path, so `pixi run python -c "import pybgs"` works on every OS (no PYTHONPATH).
+        run: pixi run install_python
+
+      - name: Golden-master regression (Python wrapper)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # In the pixi env, `cv2` IS the conda-forge OpenCV the wrapper/core compiled against,
+          # so its MAJ.MIN is the correct, stable cell key (pinned to 4.13.x in pixi.toml).
+          OCV=$(pixi run python -c "import cv2; print('.'.join(cv2.__version__.split('.')[:2]))")
+          CELL="${{ matrix.cell }}-opencv${OCV}"
+          echo "::notice::cell=${CELL}"
+          # On Windows, `cmake --install --prefix` doesn't land pybgs on the env's sys.path
+          # (platlib/prefix mismatch), so point PYTHONPATH at the build_py output (the .pyd),
+          # mirroring the docker autobuild jobs. Subprocesses (run_algorithm.py) inherit it.
+          if [ "${{ matrix.cell }}" = "win-64" ]; then
+            PYBGS_DIR=$(pixi run python -c "import glob,os; h=glob.glob('build_py/**/pybgs*.pyd', recursive=True); print(os.path.dirname(os.path.abspath(h[0])).replace(os.sep,'/') if h else '')")
+            export PYTHONPATH="${PYBGS_DIR}"
+            echo "::notice::win-64 PYTHONPATH=${PYBGS_DIR}"
+          fi
+          # Import numpy + cv2 BEFORE pybgs (the order run_algorithm.py uses) — importing the
+          # pybind11 module on its own segfaults on macOS.
+          pixi run python -c "import numpy, cv2, pybgs; print('pybgs', len([n for n in dir(pybgs) if n[0].isupper()]), 'classes')"
+          if [ -f "tests/golden/goldens/${CELL}.json" ]; then
+            echo "::notice::Python golden ${CELL} present — checking (gate)"
+            pixi run python tests/golden/golden_test.py --check --opencv "${OCV}"
+          else
+            echo "::warning::no committed Python golden for ${CELL}; generating (bootstrap, non-gating)"
+            pixi run python tests/golden/golden_test.py --generate --opencv "${OCV}"
+          fi
+
+      # The C++ (BGS_Factory) emitter builds bgslibrary_core as a DLL with
+      # CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS, which doesn't resolve OpenCV symbols on Windows yet
+      # (TODO: fix the win-64 link). Until then the C++ level runs on Linux/macOS only (matrix.cpp).
+      - name: Build the C++ golden emitter (BGS_Factory)
+        if: ${{ matrix.cpp }}
+        run: pixi run build_golden_cpp
+
+      - name: Golden-master regression (C++ core)
+        if: ${{ matrix.cpp }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          OCV=$(pixi run python -c "import cv2; print('.'.join(cv2.__version__.split('.')[:2]))")
+          CELL="${{ matrix.cell }}-opencv${OCV}"
+          if [ -f "tests/golden/goldens/${CELL}-cpp.json" ]; then
+            echo "::notice::C++ golden ${CELL}-cpp present — checking (gate)"
+            pixi run python tests/golden/golden_cpp.py --check --opencv "${OCV}"
+          else
+            echo "::warning::no committed C++ golden for ${CELL}-cpp; generating (bootstrap, non-gating)"
+            pixi run python tests/golden/golden_cpp.py --generate --opencv "${OCV}"
+          fi
+
+      - name: Upload generated goldens (bootstrap)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-${{ matrix.cell }}
+          path: tests/golden/goldens/*.json
+          if-no-files-found: ignore

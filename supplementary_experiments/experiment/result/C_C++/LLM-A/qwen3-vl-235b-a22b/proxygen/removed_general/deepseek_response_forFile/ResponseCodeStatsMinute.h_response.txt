@@ -1,0 +1,46 @@
+Let’s analyze the file step by step:
+
+### File Content Summary:
+- **Language**: C/C++
+- **Includes**: `proxygen/lib/stats/StatsWrapper.h`
+- **Namespace**: `proxygen`
+- **Type**: `struct ResponseCodeStatsMinute`
+- **Functions**:
+  - Constructor: `ResponseCodeStatsMinute(const std::string& name)`
+  - Method: `addStatus(int status)`
+- **Members**: Six `StatsWrapper::TLTimeseriesMinute` fields, categorized by HTTP status code ranges (`status1xx`, `status2xx`, ..., `status5xx`, plus `statusOther`)
+
+This struct is clearly designed to **track HTTP response code frequencies over time (per minute)** using thread-local timeseries counters from `StatsWrapper`. It's a *statistics aggregation structure* focused on HTTP response codes.
+
+### Candidate Module Analysis:
+- **dns**, **pools**, **sampling**, **ssl**, **transport**: None of these are about HTTP response code statistics.  
+  - `ssl`: deals with TLS contexts and stats — but not specifically HTTP status code breakdowns.
+  - `sampling`: lightweight sampling logic — unrelated to time-series bucketing of HTTP status codes.
+  - `transport`: QUIC/HTTP3 low-level transport — not relevant here.
+
+- **http_general**: This module covers “HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3.”  
+  While stats aren’t *core protocol* per se, HTTP response code tracking is tightly coupled with HTTP transaction processing — especially in server-side request handling where status codes are generated and counted. Moreover, `proxygen/lib/http/` is where many HTTP-related utilities and infrastructure (including stats integration) reside.
+
+- **services**: Covers “server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration.” Stats collection (especially per-minute response code buckets) is often used in service monitoring and health reporting — i.e., part of service observability.
+
+- **httpserver**: High-level APIs for building HTTP servers — too high-level; this struct is more likely used internally by lower layers (e.g., services or http_general), not exposed in the high-level API.
+
+Now consider location clues:
+- The header included is `proxygen/lib/stats/StatsWrapper.h`. The `lib/stats/` directory is typically shared infrastructure, but the usage here is *specifically for HTTP response codes*.
+- The struct name `ResponseCodeStatsMinute` strongly implies it's used during HTTP request processing — e.g., after a response is sent, its status code is recorded via `addStatus()`.
+
+In Proxygen’s architecture:
+- The `services` module (under `proxygen/lib/services/`) includes components like `ServiceHandler`, `RequestHandler`, and often integrates with stats for monitoring.
+- In practice, response code stats are collected in the HTTP service layer (e.g., in `RequestHandler::onBody` or `onEOM`), and aggregated per-minute using thread-local timeseries — exactly what this struct does.
+
+Also note: There is no separate “stats” module listed among candidates — so we must assign to the most appropriate existing module that owns the *usage context* of this struct.
+
+Given:
+- It’s not transport/dns/pools/sampling/ssl.
+- It’s not high-level `httpserver`.
+- Between `http_general` and `services`, the struct is more likely used in **service-level request handling** (i.e., `services`) rather than core protocol parsing (which would be in `http_general`). Core protocol layers handle message framing, headers, etc., but status code *counting* is an application/service-layer concern for telemetry.
+
+✅ Confirmed by real-world Proxygen structure: In Facebook’s Proxygen, response code stats (like `ResponseCodeStatsMinute`) are typically used in `proxygen/lib/services/` (e.g., in `BaseServiceHandler` or `StatsHandler`) to expose metrics per service.
+
+### Conclusion:
+**Assigned Module**: [services]

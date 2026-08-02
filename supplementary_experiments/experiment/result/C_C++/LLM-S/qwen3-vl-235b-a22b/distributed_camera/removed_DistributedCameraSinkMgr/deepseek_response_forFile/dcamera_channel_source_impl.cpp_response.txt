@@ -1,0 +1,105 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `dcamera_channel_source_impl.h` → strongly suggests this is an *implementation* of a channel source.
+  - `dcamera_softbus_adapter.h` → indicates use of SoftBus for session establishment (a core transport layer).
+  - `anonymous_string.h`, `distributed_camera_constants.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` → utility/common headers (logging, constants, error codes, anonymization).
+- **Namespaces**: `OHOS::DistributedHardware` → standard namespace for distributed hardware modules in OpenHarmony.
+- **Class/Functions**:
+  - `DCameraChannelSourceImpl` with methods:
+    - `OpenSession()`
+    - `CloseSession()`
+    - `CreateSession(...)` — takes camera indices, session flag, mode, listener; uses `DCameraSoftbusAdapter::CreateSoftbusSessionServer(...)`
+    - `ReleaseSession()`
+    - `SendData(...)` — sends data buffer
+
+Key observations:
+- This class implements **session lifecycle management** (create/open/close/release) on the **source side** (i.e., controller side).
+- It uses `DCameraSoftbusAdapter` to create a **SoftBus session server**, meaning it acts as the *server endpoint* on the source side — which aligns with how the *source* establishes a channel to receive data from the sink (controlled device).
+- The presence of `ICameraChannelListener& listener` and `SendData()` implies it receives callbacks and forwards data — but note: `SendData()` is likely used to send control commands or metadata *from source to sink*, or possibly forward processed data? However, given the class name `DCameraChannelSourceImpl`, and that it creates a *SoftBus session server*, it's acting as the **source-side channel endpoint** that listens for connections from the sink and manages session state.
+
+Wait — clarification: In typical client-server semantics over SoftBus:
+- The **source (controller)** often acts as the **server** (listens for connection), because the sink (controlled device) initiates the connection to the source (e.g., to push video stream). So `CreateSoftbusSessionServer()` on the source side makes sense.
+
+Also, `SendData()` likely sends control commands or metadata *to the sink*, or could be used to send stream data *from source to sink* — but in distributed camera, usually the sink sends video to source. However, `SendData` here may be part of a bidirectional channel (e.g., for control feedback or low-latency commands).
+
+But crucially:
+- The class is named `DCameraChannelSourceImpl`.
+- It implements session creation/open/close using SoftBus adapter.
+- It holds `softbusSessions_` (plural), suggesting multiple sessions (e.g., for multiple cameras).
+- It does **not** contain image decoding, preprocessing, postprocessing, HDF virtual device logic, or service-level controller logic (like lifecycle/state machine of full camera usage).
+
+---
+
+### **2. Module Comparison**
+
+#### ✅ **ChannelSource**
+> *"This module is responsible for the controller-side channel implementation. It establishes connections with the controlled side through SoftBus, sends camera control commands on the controller side, and receives image information returned by the controlled side."*
+
+- Matches exactly:
+  - Controller-side (`source`) channel implementation.
+  - Uses SoftBus adapter to create session server.
+  - Manages session lifecycle (`OpenSession`, `CloseSession`, `CreateSession`).
+  - Has `SendData()` — likely for sending control commands or metadata.
+  - Class name `DCameraChannelSourceImpl` directly maps to this module.
+
+**→ Very high match.**
+
+#### ⚠️ **ChannelCommon**
+> *"Provides common channel-layer capabilities, including SoftBus adaptation, session management, channel interfaces, and channel listener interfaces."*
+
+- While this file *uses* `ChannelCommon` components (e.g., `DCameraSoftbusAdapter`, `ICameraChannelListener`), it is not itself a *common* utility — it's a concrete implementation tied to the *source* side.
+- `ChannelCommon` would likely contain abstract interfaces (`ICameraChannel`, `ICameraChannelListener`) and maybe base session classes — not the concrete `DCameraChannelSourceImpl`.
+- This file includes `dcamera_channel_source_impl.h`, implying it's the *implementation*, not the interface/common layer.
+
+**→ Low probability** — it *depends on* ChannelCommon, but isn’t part of it.
+
+#### ❌ **DistributedCameraSourceMgr**
+> *"Responsible for lifecycle, state machine, controller, input stream, data processing, IPC service, and callback management on the source side..."*
+
+- This is a higher-level manager — likely orchestrates multiple components (e.g., channel, data processor, service proxy).
+- This file has no state machine, no IPC service registration, no data processing pipeline — only channel session management.
+- No mention of camera operator, stream acquisition, or controller logic beyond channel.
+
+**→ Unlikely** — too low-level for SourceMgr.
+
+#### ❌ **ChannelSink**
+> *"Controlled-side channel implementation... receives commands from controller, sends image info back."*
+
+- This file is clearly source-side (`SourceImpl`, creates SoftBus *server*, uses `SESSION_HEAD + sessionFlag` naming typical for source), not sink.
+- Sink would call `CreateSoftbusSessionClient`, not server.
+
+**→ Ruled out.**
+
+#### ❌ **CameraDataProcessCommon / CameraDataPreProcess / CameraDataPostProcess**
+- No codec, color space conversion, frame rate control, decoding, encoding, or pipeline stages.
+- `SendData(std::shared_ptr<DataBuffer>&)` is generic — could be raw or encoded, but no processing logic here.
+
+**→ Not matching.**
+
+#### ❌ **CameraServiceCommon**
+- Would include protocol definitions, command enums, metadata structures, shared interfaces — not session lifecycle implementation.
+- This file is implementation-focused, not service/interface definition.
+
+#### ❌ **VirtualCameraHdf**
+- HDF/HDI layer — this file has no HDF calls, no `Device`, `Provider`, `StreamOperator`, etc.
+- Pure user-space channel logic.
+
+#### ❌ **utils**
+- While it includes utility headers (`anonymous_string`, `errno`, `log`), the file itself is a concrete class implementation — not a utility helper.
+- `utils` would be header-only or small functions (e.g., `GetAnonyString`), not full session management.
+
+---
+
+### **3. Conclusion**
+The file is a concrete implementation of the **source-side channel**, directly managing SoftBus sessions, using `DCameraSoftbusAdapter`, and named `DCameraChannelSourceImpl`. This aligns precisely with the **ChannelSource** module definition.
+
+Other modules are either higher-level (SourceMgr), peer-side (ChannelSink), or lower-level utilities (ChannelCommon, utils) — but this file is *the* implementation of the source channel.
+
+---
+
+**The probability that this file belongs to module 'ChannelSource' is 98%.**

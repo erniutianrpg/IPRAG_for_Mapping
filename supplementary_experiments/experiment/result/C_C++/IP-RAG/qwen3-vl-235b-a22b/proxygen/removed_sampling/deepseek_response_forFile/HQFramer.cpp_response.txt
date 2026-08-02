@@ -1,0 +1,51 @@
+Let’s analyze the file `proxygen/lib/http/codec/HQFramer.cpp` step by step.
+
+### 1. **File Path and Context**
+- Path: `proxygen/lib/http/codec/HQFramer.cpp`
+  - `proxygen/lib/http/` → strongly suggests HTTP protocol layer.
+  - `codec/` → indicates encoding/decoding logic.
+  - `HQFramer` → “HQ” stands for **HTTP/3 over QUIC**, as per Proxygen’s naming convention (e.g., `HQ` = HTTP/3, `H2` = HTTP/2).
+  - The file implements framing logic for HTTP/3 frames (e.g., parsing `DATA`, `HEADERS`, `CANCEL_PUSH`, `SETTINGS`, writing `SETTINGS`, `WTStreamPreface`, etc.).
+
+### 2. **Includes Analysis**
+Key includes:
+- `proxygen/lib/http/codec/HQFramer.h` → self-header; confirms this is part of HTTP/3 codec.
+- `proxygen/lib/http/codec/HQUtils.h` → utility functions specific to HQ (HTTP/3).
+- `quic/codec/QuicInteger.h`, `quic/folly_utils/Utils.h` → QUIC-specific decoding (e.g., variable-length integer decoding), which is required for HTTP/3 framing (since HTTP/3 uses QUIC frame formats).
+- `proxygen/lib/http/HTTPPriorityFunctions.h` → HTTP priority handling (relevant for HTTP/3 prioritization semantics).
+- No DNS, SSL, pools, services, or high-level server APIs included.
+
+### 3. **Functionality Observed**
+The file contains:
+- Frame parsing: `parseData`, `parseHeaders`, `parseCancelPush`, `parseIdOnlyFrame`, `decodeSettingValue`
+- Frame writing: `writeSettings`, `writeWTStreamPreface`
+- GREASE ID utilities (`isGreaseId`, `getGreaseId`)
+- Uses `HTTP3::ErrorCode`, `FrameType`, `SettingId`, `PushId`, `WebTransportStreamType` — all HTTP/3-specific types.
+- Relies on `quic::follyutils::decodeQuicInteger` — QUIC integer decoding (transport-layer detail), but used *within* the HTTP/3 codec.
+
+This is **not** transport-layer code per se (like QUIC connection state, packet encryption, stream management), but rather the **HTTP/3 framing layer** that sits *on top* of QUIC — i.e., mapping HTTP/3 frames (as defined in RFC 9114) into/from binary wire format.
+
+### 4. **Module Comparison**
+Let’s evaluate candidate modules:
+
+- **dns**: ❌ No DNS resolution logic.
+- **pools**: ❌ No backend pool or load-balancing config.
+- **ssl**: ❌ No TLS context, certs, handshake logic.
+- **general**: ❌ While it includes some utilities (e.g., `folly::Random`, `Utils.h`), the core functionality is highly specialized to HTTP/3 framing, not general-purpose utils.
+- **http_general**: ✅ This module is described as:  
+  > *"mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*  
+  The file is under `lib/http/codec/`, implements HTTP/3 frame parsing/encoding — exactly what `http_general` covers. Note that HTTP/3 is explicitly mentioned in its scope.
+- **services**: ❌ No service execution, connection acceptance, worker threads.
+- **httpserver**: ❌ Not a high-level server API; no request/response handling or server setup.
+- **transport**: ⚠️ This is tempting because of QUIC dependencies, but the description says:  
+  > *"lower-level transport capabilities [...] especially transport support related to QUIC / HTTP/3. It is Proxygen's transport-layer support module for HTTP/3/QUIC scenarios, responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."*  
+  However, `HQFramer.cpp` does **not** handle QUIC transport (e.g., packets, streams, congestion control, crypto). It only handles *framing* of HTTP/3 messages *on top* of QUIC streams — i.e., application-layer framing. In IETF terms, this is the HTTP/3 *mapping* layer, not the transport layer. Proxygen places this under `lib/http/codec/`, not `lib/transport/`.
+
+Indeed, in Proxygen’s structure:
+- `lib/transport/` contains QUIC transport primitives (e.g., `QuicSocket`, `QuicPacketBuilder`, `QuicConnection`).
+- `lib/http/codec/` contains H2Framer, HQFramer — the HTTP protocol framing logic.
+
+Thus, `HQFramer.cpp` belongs to the **HTTP protocol core layer**, specifically for HTTP/3 — squarely within `http_general`.
+
+### ✅ Final Decision:
+**Assigned Module**: [http_general]

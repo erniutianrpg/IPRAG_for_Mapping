@@ -1,0 +1,68 @@
+Let’s analyze the file step by step:
+
+### 1. **File path and inclusion**
+- The file includes:  
+  `#include <proxygen/lib/http/connpool/ServerIdleSessionController.h>`  
+  → This indicates it's part of `proxygen/lib/http/connpool/`, a subdirectory under `proxygen/lib/http/`.
+
+### 2. **Namespace**
+- `namespace proxygen { ... }` — standard for Proxygen core code.
+
+### 3. **Class and functionality**
+The class `ServerIdleSessionController`:
+- Manages **idle HTTP sessions** (i.e., sessions that are not currently in use but kept alive for reuse).
+- Provides methods to:
+  - `getIdleSession()` — retrieve an idle session (asynchronously, via `folly::Future`), moving it off the idle list.
+  - `addIdleSession()` / `removeIdleSession()` — manage membership in the idle set.
+  - `markForDeath()` — signal shutdown/cleanup of all idle sessions.
+  - `popBestIdlePool()` — select the best (oldest?) idle session pool for reuse.
+
+Key data structures:
+- `sessionMap_`: maps session pointer → iterator in `sessionsByIdleAge_`
+- `sessionsByIdleAge_`: likely an ordered container (e.g., `std::list` or `std::deque`) of `{session, sessionPool}` pairs, sorted by idle age (LIFO/FIFO? Based on `.begin()` being popped, likely oldest first).
+
+This is clearly about **connection pooling for HTTP sessions on the server side**, specifically managing *idle* sessions to avoid repeated connection setup overhead.
+
+### 4. **Relation to candidate modules**
+
+Let’s evaluate each candidate:
+
+- **pools**:  
+  > *"mainly responsible for configuration and generation related to server lists or backend member pools... backend server-pool configuration support for proxy, load-balancing, or service-discovery"*  
+  → This is about *backend* pools (e.g., upstream servers), not *idle client-facing HTTP sessions* on the server side. Not a match.
+
+- **sampling**:  
+  Clearly unrelated — no sampling logic here.
+
+- **ssl**:  
+  No SSL/TLS context or handshake handling; not relevant.
+
+- **general**:  
+  > *"common utility and support code... foundational support for core HTTP abstractions, service frameworks, network processing"*  
+  While this class uses utilities (`std::mutex`, `folly::Future`, logging), its purpose is highly specific: idle session management within HTTP server connection pooling. It's not generic utility code like string helpers or time utilities.
+
+- **http_general**:  
+  > *"common HTTP implementation under proxygen/lib/http/... responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management..."*  
+  ✅ This includes **session management**, which matches exactly: managing idle HTTP sessions is a form of *server-side session lifecycle management*.  
+  Also, the path `proxygen/lib/http/connpool/` strongly suggests it's part of the HTTP layer’s connection/session infrastructure — not transport, not services, not high-level httpserver.
+
+- **services**:  
+  > *"provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration"*  
+  While `ServerIdleSessionController` is used *by* server-side components, it does **not** handle connection acceptance, workers, or service execution. It’s a lower-level helper for session reuse — more tightly coupled with HTTP session semantics than with service orchestration.
+
+- **transport**:  
+  No QUIC, no socket-level transport; purely HTTP session-level logic.
+
+### 5. **Cross-check with known Proxygen structure**
+In Facebook’s Proxygen:
+- `lib/http/connpool/` is indeed where connection pooling logic lives for HTTP servers.
+- `ServerIdleSessionController` is part of the *server-side connection pooling* mechanism — reusing idle sessions (e.g., for keep-alive) to reduce latency and resource usage.
+- This sits *within* the HTTP layer, below `services` and above raw transport — fitting squarely under **http_general**, which covers HTTP session management.
+
+Note: Although “connpool” sounds like it might map to “pools", the key distinction is:
+- `pools` module = *backend* server pools (e.g., for load balancing to upstreams),
+- `connpool` here = *frontend* (server-side) HTTP session pooling for incoming connections.
+
+Thus, the correct module is:
+
+**Assigned Module**: [http_general]

@@ -1,0 +1,68 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `fizz/backend/openssl/certificate/CertUtils.h` → Fizz (Facebook’s TLS library) + OpenSSL cert utilities
+  - `fizz/client/PskCache.h`, `PskSerializationUtils.h` → Fizz PSK (Pre-Shared Key) handling
+  - `wangle/client/persistence/FilePersistentCache.h` → Wangle (Facebook’s async networking lib) persistent cache (file-backed)
+- Namespaces: `folly`, `proxygen`
+- Types:
+  - `struct PersistentCachedPsk`: holds serialized PSK + usage counter
+  - `class PersistentFizzPskCache`: implements `fizz::client::PskCache`, persists PSKs to disk using `FilePersistentCache`
+- Functions:
+  - Standard PSK cache operations (`getPsk`, `putPsk`, `removePsk`, etc.)
+  - Usage tracking (`getPskUses`, `setMaxPskUses`)
+  - Serialization/deserialization of PSKs using Fizz’s utilities
+  - Integration with `wangle::PersistentCacheConfig` and file persistence
+
+### 2. **What is this code doing?**
+This class provides a **persistent PSK cache** for Fizz (TLS client), storing PSKs on disk (via Wangle’s `FilePersistentCache`) and managing their usage count (e.g., limiting reuse). PSKs are used in TLS 1.3 for session resumption (e.g., via session tickets or external PSKs).
+
+This is **not** about:
+- DNS resolution → ❌ not `dns`
+- Sampling logic → ❌ not `sampling`
+- General HTTP parsing, encoding, sessions → ❌ not `http_general`
+- Server-side service infrastructure → ❌ not `services`
+- High-level HTTP server APIs → ❌ not `httpserver`
+
+It *is* about:
+- **TLS/SSL session resumption via PSKs**, specifically caching them persistently.
+- Uses **Fizz** (TLS stack), **Wangle** (persistence layer), and integrates into Proxygen context.
+
+Now consider candidate module `ssl` vs `transport`.
+
+#### Candidate: `ssl`
+> *"mainly responsible for SSL/TLS context and statistics-related capabilities, providing encrypted communication support for HTTPS or TLS-based connections."*
+
+- PSK caching is a core part of TLS session resumption (TLS 1.3).
+- Fizz is Facebook’s TLS library; `PskCache` is a standard interface in Fizz for client-side PSK management.
+- This class is a concrete implementation of that interface, adding persistence — clearly TLS-related.
+
+#### Candidate: `transport`
+> *"mainly corresponds to lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3... responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."*
+
+- Note: It explicitly mentions "**token/PSK cache**" — this is promising.
+- However, in Proxygen, the `transport` module is focused on **QUIC/HTTP/3 transport layer**, where PSKs may be used for connection resumption in QUIC (e.g., via TLS 1.3 early data or 0-RTT).
+- But this file uses `fizz::client::PskCache`, which is generic TLS client PSK caching — not QUIC-specific.
+- Also, it depends on `wangle::FilePersistentCache`, not QUIC transport internals.
+- There's no mention of QUIC, `quic::`, `Http3`, `DatagramTransport`, etc.
+
+Key distinction:
+- In HTTP/2 over TCP, TLS PSK caching is still relevant (e.g., for session resumption across restarts).
+- The `transport` module in Proxygen is specifically for *HTTP/3/QUIC*, while this code is generic TLS client PSK persistence — likely used by both HTTP/2 and HTTP/3 clients, but implemented at the TLS layer.
+
+Looking at Proxygen’s actual structure (based on public knowledge and the includes):
+- `proxygen/lib/ssl/` contains TLS-related helpers, certificate handling, and integration with Fizz.
+- `proxygen/lib/transport/` is QUIC-specific.
+- The use of `fizz/client/*` and `wangle/client/persistence/*` suggests this is client-side TLS session caching — fitting under **SSL** module, not transport.
+
+Also note: the struct `PersistentCachedPsk` and class `PersistentFizzPskCache` live in namespace `proxygen`, and the implementation directly wraps Fizz’s PSK API — this is a **TLS session management utility**, squarely in the domain of SSL/TLS.
+
+### 3. Comparison with Reference Examples (implied by instruction)
+Though no explicit reference examples are given, the module descriptions are precise. The `ssl` module explicitly covers “SSL/TLS context and statistics-related capabilities” and “encrypted communication support”. PSK caching is a fundamental part of TLS context management (especially for resumption), and persistence of PSKs is an extension of that.
+
+### ✅ Conclusion:
+The file implements a persistent cache for TLS PSKs using Fizz and Wangle — a **TLS/SSL session resumption support component**, belonging to the **`ssl`** module.
+
+**Assigned Module**: [ssl]

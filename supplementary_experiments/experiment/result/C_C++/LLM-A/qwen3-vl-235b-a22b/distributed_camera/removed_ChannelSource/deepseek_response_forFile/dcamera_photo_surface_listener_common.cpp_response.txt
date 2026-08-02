@@ -1,0 +1,76 @@
+Let’s analyze the provided file content step by step and map it to the most appropriate module among the candidates.
+
+---
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `dcamera_photo_surface_listener.h` → suggests this is a listener for photo surface buffer events.
+  - `securec.h` → secure memory operations (e.g., `memcpy_s`)
+  - `data_buffer.h` → used for wrapping raw data in a `DataBuffer`
+  - `distributed_camera_errno.h`, `distributed_hardware_log.h` → standard error and logging utilities
+- **Namespace**: `OHOS::DistributedHardware`
+- **Function**: `DCameraPhotoSurfaceListener::OnBufferAvailable()`
+  - This function is called when a buffer becomes available on a Surface (likely from a camera preview/photo output).
+  - It:
+    - Acquires a `SurfaceBuffer` from the `surface_`.
+    - Extracts its virtual address and size.
+    - Copies the raw pixel/data into a `DataBuffer`.
+    - Invokes a `ResultCallback::OnPhotoResult(dataBuffer)` — i.e., delivers the photo data to a callback.
+    - Releases the buffer.
+
+This is clearly a **callback handler** that receives a buffer from a Surface (likely from a local camera or virtual camera), copies it, and forwards it via a callback — typical of a **sink-side** component that captures photo data and sends it upstream (to controller).
+
+Note: The class name `DCameraPhotoSurfaceListener` strongly implies it's listening for photo buffers from a Surface — likely tied to a camera output stream on the *controlled* (sink) side.
+
+---
+
+### 2. **Candidate Module Analysis**
+
+#### ✅ **DistributedCameraSinkMgr**
+> *"responsible for lifecycle, access control, controller, data processing, image/video output, event notification, and IPC services on the sink side... enabling the controlled side to receive commands from the controller and use the local camera to provide image data to the controller."*
+
+- This file is part of the **sink side**, handling photo buffer acquisition and delivery.
+- It does not handle IPC directly (no SoftBus code here), but it *does* process data and notify via callback — consistent with “event notification” and “data processing” responsibilities of SinkMgr.
+- The `ResultCallback` likely connects to IPC/Channel layers higher up (e.g., ChannelSink), but this listener is a lower-level component *within* the sink manager’s data path.
+
+#### ⚠️ **CameraDataPreProcess**
+> *"responsible for the data preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow."*
+
+- This function does minimal processing: just copying raw buffer into `DataBuffer`.
+- No format conversion, no scaling, no color space conversion — just extraction and forwarding.
+- So while it's *on the sink side*, it's more of a **buffer listener/callback bridge**, not a full preprocessing pipeline.
+
+#### ⚠️ **utils**
+> *"provides common distributed camera utilities, data buffers, indexes, constants, error codes... including local camera query, open, close, stream acquisition, and preview/photo/video callback handling."*
+
+- The file uses `DataBuffer`, `distributed_camera_errno.h`, `distributed_hardware_log.h` — all utility-like.
+- However, `DCameraPhotoSurfaceListener` is a *specific* class implementing a concrete callback interface for photo surfaces — not a generic utility.
+- The presence of constructor with `Surface` and `ResultCallback` suggests it's tightly coupled to the sink-side workflow, not a standalone utility.
+
+#### ❌ Other modules:
+- `DistributedCameraSourceMgr`: source/controller side — this is sink-side.
+- `ChannelCommon` / `ChannelSink`: no SoftBus/session/channel logic here — pure buffer handling.
+- `CameraDataPostProcess`: source/output side — this is sink/input.
+- `CameraServiceCommon`: provides shared protocols/events — not this low-level buffer listener.
+- `VirtualCameraHdf`: HDF/HDI layer — this is above HDF, using `Surface`, which is typically AAF/AIUI layer (not HDF directly).
+
+---
+
+### 3. **Key Clue: Class Name & Role**
+- `DCameraPhotoSurfaceListener` is analogous to Android’s `SurfaceTexture.OnFrameAvailableListener`, but for distributed camera photo capture.
+- In OHOS distributed camera architecture, such listeners are typically owned by the **Sink Manager**, which sets up the Surface (e.g., via `SurfaceProducer`) and registers this listener to receive buffers from the camera HAL or virtual camera.
+
+The fact that it calls `callback_->OnPhotoResult(dataBuffer)` suggests it's feeding into the sink manager’s result dispatching mechanism — likely part of the sink-side data ingestion path.
+
+---
+
+### ✅ Conclusion
+
+The file implements a **sink-side buffer listener** that acquires photo buffers from a Surface and forwards them via a callback — core responsibility of **DistributedCameraSinkMgr**, which manages data ingestion, event notification, and coordination with the controller on the sink side.
+
+While it uses utilities (`DataBuffer`, `securec`), the class itself is not a generic utility — it's a functional component tightly integrated with the sink manager’s workflow.
+
+---
+
+**Assigned Module**: [DistributedCameraSinkMgr]

@@ -1,0 +1,76 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+services\cameraservice\cameraoperator\client\src\listener\dcamera_video_surface_listener_common.cpp
+```
+- Located under `cameraoperator/client/src/listener/`: indicates this is a **client-side** (i.e., **source side**, controller side) component.
+- The term `listener` suggests it's reacting to events — specifically, surface buffer availability.
+- `dcamera_video_surface_listener_common.cpp` implies it handles video frame buffers from a Surface (likely Android-style `Surface`/`SurfaceBuffer`, used for rendering or data acquisition).
+
+### 2. **Includes**
+```cpp
+#include "dcamera_video_surface_listener.h"
+#include <securec.h>
+#include "data_buffer.h"
+#include "distributed_camera_errno.h"
+#include "distributed_hardware_log.h"
+```
+- Uses `data_buffer.h` → suggests handling of raw pixel data (buffer copying).
+- Uses `distributed_camera_errno.h`, `distributed_hardware_log.h` → standard distributed camera infrastructure.
+- No direct SoftBus, IPC, HDF, or codec headers — not low-level transport or device driver.
+
+### 3. **Key Function: `DCameraVideoSurfaceListener::OnBufferAvailable()`**
+- Called when a new buffer becomes available on a `Surface`.
+- Acquires a `SurfaceBuffer` via `surface_->AcquireBuffer(...)`.
+- Copies raw pixel data (`GetVirAddr()`) into a `DataBuffer`.
+- Invokes `callback_->OnVideoResult(dataBuffer)` — i.e., delivers the frame to a higher-level consumer.
+
+This is **not**:
+- A channel implementation (no SoftBus, session, or transport logic).
+- A sink-side module (sink would *produce* frames from local camera and send them; here, it's *consuming* frames from a Surface — typical of source/controller side preview/rendering).
+- A preprocessing/postprocessing pipeline (no format conversion, scaling, color space transform, encoding/decoding).
+- An HDF/HDI virtual camera driver (no device/operator/metadata logic at hardware abstraction layer).
+- A service manager (no lifecycle/state machine/controller logic).
+
+Rather, it is:
+- A **client-side listener** that receives video frames from a Surface (e.g., a preview Surface provided by the sink side over IPC), copies the data, and forwards it via callback.
+- This fits the **source side’s consumption of video data**, likely for preview on the controller device.
+
+Now compare with candidate modules:
+
+#### ✅ `CameraDataPostProcess`
+> *"responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution, and related properties of received image data so that the controller can use distributed camera data as if using a local Camera."*
+
+- This file does **not** decode, convert formats, adjust frame rate, or handle resolution scaling — it just copies raw buffer data and passes it along.
+- So it's *pre*-post-processing: just basic buffer acquisition and delivery.
+
+#### ✅ `utils`
+> *"provides common distributed camera utilities, data buffers, indexes, constants, error codes, and general support capabilities related to CameraClient/CameraOperator, including local camera query, open, close, stream acquisition, and preview/photo/video callback handling."*
+
+- This file implements a **callback handler** (`OnBufferAvailable`) for video surface buffers — exactly matching “preview/photo/video callback handling”.
+- It uses `DataBuffer`, `ResultCallback`, and logs — all utility-level concerns.
+- It resides in `cameraoperator/client/src/listener/`, which aligns with client-side utility components.
+- The class name `DCameraVideoSurfaceListener` suggests it's a generic helper, not tied to a specific pipeline stage.
+
+#### ❌ `DistributedCameraSourceMgr`
+- Manages lifecycle, state machine, controller, input stream, IPC service — too high-level; this is a single listener class, not a manager.
+
+#### ❌ `ChannelSink` / `ChannelCommon`
+- No channel/session/SoftBus code here.
+
+#### ❌ `CameraDataPreProcess`
+- Preprocess happens on sink side before transmission — this is on client/source side, after receiving data.
+
+#### ❌ `VirtualCameraHdf`
+- No HDF/HDI interface usage.
+
+### Conclusion:
+The file implements a **utility-level callback listener** that acquires video frames from a Surface and forwards them via a result callback — a typical pattern in client-side camera operator code for preview/data consumption. It does not perform processing, channel management, or device control.
+
+This matches best with:
+> **utils**: provides common utilities, including preview/photo/video callback handling.
+
+Thus:
+
+**Assigned Module**: [utils]

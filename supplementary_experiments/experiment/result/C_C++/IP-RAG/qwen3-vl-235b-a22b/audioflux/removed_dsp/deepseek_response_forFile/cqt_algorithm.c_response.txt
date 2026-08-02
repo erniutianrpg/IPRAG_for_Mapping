@@ -1,0 +1,104 @@
+Let’s analyze the file `src/cqt_algorithm.c` step by step to determine its most appropriate module assignment.
+
+---
+
+### 1. **File Content Overview**
+- **Language**: C/C++
+- **Includes**:
+  - Vector utilities: `flux_vector.h`, `flux_complex.h`
+  - Utilities: `flux_util.h`
+  - DSP primitives: `fft_algorithm.h`, `dct_algorithm.h`, `resample_algorithm.h`
+  - Filter banks: `cqt_filterBank.h`, `chroma_filterBank.h`
+  - Algorithms: `stft_algorithm.h`, `cqt_algorithm.h`
+  
+  → This shows heavy reliance on **filter banks**, **FFT/DCT/resampling**, and **STFT**, all in service of computing **Constant-Q Transform (CQT)** and derived features (e.g., chroma, CQCC, CQHC, deconvolution).
+
+- **Struct**: `OpaqueCQT` — encapsulates:
+  - STFT object (`stftObj`)
+  - Resample object (`resampleObj`)
+  - FFT/DCT objects (`fftObj`, `dctObj`)
+  - Filter bank data (`mRealFilterBankArr`, `mImageFilterBankArr`, `mChromaFilterBank`)
+  - Time-frequency parameters (`fftLength`, `slideLength`, `timeLength`, `radix2Exp`, etc.)
+  - Output buffers for real/imag parts, chroma, cepstral, deconvolved data
+
+- **Functions**:
+  - Initialization: `cqtObj_new`, `cqtObj_newWith`
+  - Core computation: `_cqtObj_cqt`, `cqtObj_cqt`
+  - Derived feature extraction:
+    - `cqtObj_chroma` → chroma features
+    - `cqtObj_cqcc` → Constant-Q Cepstral Coefficients (CQCC)
+    - `cqtObj_cqhc` → Constant-Q Harmonic Coefficients (CQHC)
+    - `cqtObj_deconv` → spectral deconvolution (likely for source-filter separation)
+  - Helper functions for filter bank setup, STFT handling, resampling, DCT, data buffering, etc.
+
+→ The file implements a full **CQT pipeline**, including:
+- Construction of CQT filter banks (log-spaced frequency bins),
+- STFT-based time-frequency analysis,
+- Optional resampling (to handle non-power-of-2 or variable rates),
+- Deconvolution (to separate source/excitation from filter),
+- DCT for cepstral coefficients (CQCC),
+- Chroma mapping (music-relevant),
+- And output of complex spectrogram, chroma, cepstral, harmonic features.
+
+---
+
+### 2. **Compare with Candidate Modules**
+
+#### ✅ `feature` module:
+> *"This module is used to extract audio features from spectral, cepstral, and time-domain data. It mainly covers Spectral, XXCC, Deconv, Cepstrogram, Temporal, and FeatureExtractor functionality..."*
+
+- `cqtObj_cqcc` → matches **XXCC** (cepstral coefficients, specifically *Constant-Q* variant).
+- `cqtObj_deconv` → matches **Deconv**.
+- `cqtObj_chroma` → chroma is a *spectral-derived feature*, commonly used in MIR but also categorized under *feature extraction*.
+- `cqtObj_cqhc` → harmonic coefficients → related to spectral/harmonic feature extraction.
+- The core `cqtObj_cqt` outputs a complex spectrogram (real/imag), i.e., a **spectral representation**, which is foundational for many features.
+
+The `feature` module explicitly includes **Spectral**, **XXCC**, **Deconv**, and **Cepstrogram** — all directly implemented here.
+
+#### ⚠️ `filter_bank` module:
+> *"mainly responsible for constructing and applying different types of spectral filter banks..."*
+
+- While the file *uses* `cqt_filterBank.h` and `chroma_filterBank.h`, it does **not define** the filter bank construction logic — those are likely in separate `.c` files under `filterbank/`.
+- This file uses filter banks as *components*, but its primary role is to orchestrate the full CQT transform and derived features — not just build or apply filter banks in isolation.
+
+So `filter_bank` is too narrow.
+
+#### ⚠️ `general` module:
+> *"centralizing major time-frequency transforms, spectral computation, basic audio I/O, and common utilities... spectrogram generation as well as multiple time-frequency transforms..."*
+
+- CQT *is* a time-frequency transform, and this file implements it.
+- However, note that `general` is described as the **core general algorithm layer**, covering *basic* transforms like STFT, FFT, resampling, etc.
+- But here, CQT is **not a basic transform** — it's a *specialized perceptually-motivated* transform, often used for music/audio analysis, and its implementation heavily depends on *derived features* (chroma, CQCC, deconv) that go beyond generic spectrogram generation.
+
+Also, the presence of `chroma`, `cqcc`, `cqhc`, and `deconv` pushes this toward *feature extraction*, not just transform infrastructure.
+
+#### ⚠️ `mir` module:
+> *"targets music information retrieval tasks, mainly including pitch estimation, onset detection, harmonic/percussive separation, harmonic analysis..."*
+
+- Chroma is definitely MIR-related.
+- But `cqt_algorithm.c` is not performing *pitch estimation* or *onset detection* directly — it provides the *representation* (CQT, chroma, CQCC) that MIR algorithms might consume.
+- The module description emphasizes *high-level MIR tasks*, whereas this file is lower-level: it builds the feature representations themselves.
+
+Thus, while MIR *uses* this, the file itself is more about **feature generation** than MIR task execution.
+
+---
+
+### 3. **Key Differentiator: Is it a *transform* or a *feature extractor*?**
+- In AudioFlux architecture (inferred from module names and reference examples), **`general`** hosts *generic* transforms (STFT, FFT, resample), while **`feature`** hosts *application-oriented* feature extractors built *on top* of those transforms.
+- CQT is a transform, but the file does much more than just compute a CQT spectrogram:
+  - It computes **chroma vectors** (musical feature),
+  - **CQCC** (cepstral feature, analogous to MFCC but on CQT),
+  - **CQHC** (harmonic feature),
+  - **Deconvolution** (source-filter modeling),
+  - All wrapped in an object-oriented interface (`CQTObj`) for repeated use.
+
+This matches the `feature` module’s scope: *"extract audio features from spectral, cepstral, and time-domain data"* — precisely what this file does.
+
+Additionally, the inclusion of `XXCC`, `Deconv`, `Cepstrogram` in the `feature` description aligns directly with `cqcc`, `deconv`, and `dct` usage here.
+
+---
+
+### ✅ Conclusion:
+The file `cqt_algorithm.c` implements a **feature extraction pipeline** centered around the Constant-Q Transform, producing multiple derived features (chroma, CQCC, CQHC, deconvolved spectra), and fits best under the **`feature`** module.
+
+**Assigned Module**: [`feature`]

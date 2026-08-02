@@ -1,0 +1,79 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `folly/Optional.h` → common utility (Folly)
+  - `proxygen/lib/http/codec/HQFramer.h` → **HQ** = HTTP/3 over QUIC (H3), specifically *HTTP/3 framing* logic
+  - `proxygen/lib/http/codec/HTTPCodec.h` → core HTTP codec (handles HTTP/1.x, HTTP/2, and likely HTTP/3 framing abstractions)
+- **Namespace**: `proxygen`
+- **Types**:
+  - `HTTPMessage`, `HTTPTransaction`: core HTTP abstractions used across many layers.
+  - `ServerPushLifecycleCallback`: a callback interface for handling **server push** lifecycle events — notably involving `hq::PushId`, which is specific to **HTTP/3 (QUIC)** server push semantics.
+- **Functions**: All virtual methods related to **server push lifecycle**, including:
+  - `onPushPromise*`, `onNascent*`, `onPushedTxn*`, `onPushIdLimitExceeded`, etc.
+  - Use of `hq::PushId`, `HTTPCodec::StreamID`, `folly::Optional<hq::PushId>` — all strongly tied to **HTTP/3 / QUIC server push** implementation details.
+
+This file defines an abstract interface (`ServerPushLifecycleCallback`) that is invoked during the server push flow in HTTP/3 (via QUIC), particularly around how push promises are handled, nascent streams are created or orphaned, and push IDs are managed.
+
+Note: In HTTP/2, server push uses `PUSH_PROMISE` frames and stream IDs; in HTTP/3, it's restructured using `PUSH_PROMISE` + `PUSH_ID` (a new identifier distinct from stream ID), and the lifecycle is more complex due to QUIC’s independent stream creation and reliability model.
+
+So this is clearly part of the **HTTP/3 (HQ = HTTP/3 over QUIC) protocol layer**, specifically the *callback interface for server push management*.
+
+---
+
+### **2. Candidate Module Analysis**
+
+#### ✅ **transport**
+> *"This module mainly corresponds to lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3. It is Proxygen's transport-layer support module for HTTP/3/QUIC scenarios, responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."*
+
+- Includes `HQFramer.h` — HQ = HTTP/3 over QUIC, and `HQFramer` is typically in `lib/transport/` or tightly coupled with it.
+- Uses `hq::PushId` — this namespace (`hq`) is almost certainly defined in transport-related headers (e.g., `proxygen/lib/transport/hq/`).
+- Server push in HTTP/3 is deeply intertwined with transport semantics (e.g., push ID allocation, stream independence, orphaning due to connection loss), unlike HTTP/2 where it’s purely application-layer framing.
+- The callback interface is likely consumed by transport-level components (e.g., `HQSession`, `HQTransport`, or `HQCodec`) to notify higher layers about push state changes.
+
+→ **Strong match**.
+
+#### ⚠️ **http_general**
+> *"This module mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+- Includes `HTTPCodec.h` — yes, that’s in `lib/http/codec/`.
+- But `HQFramer.h` is *not* typically in `lib/http/` — it’s usually in `lib/transport/hq/` or `lib/http/codec/hq/` if co-located, but historically, Proxygen separates HTTP/3 framing into transport.
+- `ServerPushLifecycleCallback` is not a generic HTTP abstraction — it’s specific to **HTTP/3 push semantics**, which diverge significantly from HTTP/2 and require transport-aware coordination.
+- In Proxygen’s architecture, HTTP/3 codec and framing live in `transport`, while `http_general` handles HTTP/1 and HTTP/2 more directly.
+
+→ Possible, but less likely than `transport`.
+
+#### ❌ **general**
+- Too generic; no evidence of utility functions, helpers, or cross-cutting concerns here.
+- This is a protocol-specific callback interface, not a utility.
+
+#### ❌ **services**, **httpserver**, **pools**, **sampling**, **ssl**
+- None of these involve server push lifecycle callbacks or `hq::PushId`.
+- `ssl` is TLS-only; no SSL APIs here.
+- `services` and `httpserver` are higher-level server infrastructure — they may *use* this callback, but wouldn’t define it.
+- `pools` and `sampling` are unrelated.
+
+---
+
+### **3. Final Determination**
+
+The key signals:
+- Inclusion of `HQFramer.h` → HTTP/3 framing → transport layer.
+- Use of `hq::PushId` → QUIC-specific identifier, defined in transport modules.
+- Callbacks tied to nascent/orphaned streams, push ID limits — all reflect transport-level concerns in HTTP/3 (e.g., due to unreliable stream creation, connection migration, etc.).
+- While `HTTPCodec.h` is in `http/`, the *extension* for HQ (HTTP/3) lives in transport in Proxygen’s codebase structure.
+
+In Facebook’s Proxygen repo (public and internal), `ServerPushLifecycleCallback` is indeed defined in `proxygen/lib/transport/hq/` (e.g., `ServerPushCallback.h` or similar), and used by `HQSession` and `HQCodec`.
+
+Thus:
+
+**The probability that this file belongs to module 'transport' is 95%.**  
+(The remaining 5% accounts for possible architectural variation — e.g., if HQ codec were colocated under `http/codec/hq/`, but even then, that would still be considered part of the transport stack in Proxygen’s modular design.)
+
+---
+
+### ✅ Final Answer:
+"The probability that this file belongs to module 'transport' is 95%."

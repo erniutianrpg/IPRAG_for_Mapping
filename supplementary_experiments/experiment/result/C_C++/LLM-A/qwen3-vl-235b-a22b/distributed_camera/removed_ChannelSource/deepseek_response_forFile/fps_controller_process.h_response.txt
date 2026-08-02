@@ -1,0 +1,60 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `abstract_data_process.h` → suggests this is part of a data processing pipeline.
+  - `dcamera_pipeline_source.h` → implies connection to the *source-side* pipeline (i.e., controller side).
+  - Standard headers: `<cstdint>`, `<vector>`
+- **Macro**: `OHOS_FPS_CONTROLLER_PROCESS_H` → clearly indicates this is an FPS (frames per second) controller component.
+- **Namespaces**: `OHOS::DistributedHardware` → consistent with distributed camera subsystem.
+- **Types**:
+  - `class DCameraPipelineSource` (forward-declared)
+  - `class FpsControllerProcess : public AbstractDataProcess` → key: inherits from `AbstractDataProcess`, meaning it's a *data processing node* in a pipeline.
+- **Functions**:
+  - Core pipeline interface: `InitNode()`, `ProcessData()`, `ReleaseProcessNode()` → standard for data processors.
+  - FPS-related logic: `UpdateFPSControllerInfo`, `CalculateFrameRate`, `IsDropFrame`, `ReduceFrameRateByUniformStrategy`, `FpsControllerDone`
+  - Uses frame timing history, correction factors, drop strategies — all classic *frame rate control* logic.
+
+### 2. **What does this class do?**
+- It receives input buffers (`std::vector<std::shared_ptr<DataBuffer>>`) and processes them to control output frame rate.
+- It adjusts frame rate based on incoming frame timestamps and target configuration.
+- It decides whether to drop frames or adjust timing to meet target FPS (e.g., max 30 fps).
+- It interacts with `DCameraPipelineSource` via weak pointer — likely to notify or coordinate with source pipeline.
+- It is *not* handling IPC, channel transport, camera device abstraction (HDF), or lifecycle management — purely a *data processing node* focused on **frame rate control**.
+
+### 3. **Compare with Candidate Modules**
+
+| Module | Relevance |
+|--------|-----------|
+| **DistributedCameraSourceMgr** | Manages lifecycle, state machine, IPC, callbacks — too high-level; this is just one processing node. ❌ |
+| **DistributedCameraSinkMgr** | Sink-side manager — but this class uses `DCameraPipelineSource`, implying *source-side* usage. Also, FPS control is typically applied on the *source side* (to regulate what is sent). Still, not a manager. ❌ |
+| **ChannelCommon / ChannelSink** | These are about communication channels/SoftBus — no network/session logic here. ❌ |
+| **CameraDataProcessCommon** | ✅ *"provides common data processing frameworks, data processing pipeline interfaces, codecs, color space conversion, **frame-rate control**, image types..."* — explicitly mentions **frame-rate control** as part of its scope. This class is a concrete implementation of frame-rate control within a data processing pipeline. |
+| **CameraDataPreProcess** | Preprocessing on sink/input side — but this class is tied to `DCameraPipelineSource`, suggesting it runs on the *source* side, after data is captured but before transmission. Also, FPS control is usually applied *before* encoding/transmission — i.e., in the *post-capture, pre-transmit* stage, which aligns more with **post-processing on source side**, but note: the module description says *“on the source side or output side”* for **CameraDataPostProcess**. Let’s check that. |
+| **CameraDataPostProcess** | *"decodes, converts formats, and processes frame rate, resolution... on the source side or output side"* — this also includes frame rate processing on source side. So both `CameraDataProcessCommon` and `CameraDataPostProcess` mention frame rate. Need to distinguish. |
+| **CameraServiceCommon / VirtualCameraHdf / utils** | Not relevant — no service APIs, HDF drivers, or generic utilities here. ❌ |
+
+### 4. **Key Differentiator: Common vs. Post-Process**
+- `CameraDataProcessCommon`: Described as providing *common frameworks*, *interfaces*, and *foundational components* for data processing flows — i.e., reusable building blocks.
+- `FpsControllerProcess` is a concrete class inheriting `AbstractDataProcess`, implementing frame-rate control logic — it looks like a *specific processor* that would be plugged into a pipeline (e.g., in source or sink side).
+- However, the presence of `DCameraPipelineSource` (source-side) and the fact that it controls output frame rate *before sending data* suggests it’s part of the **source-side post-processing pipeline**, i.e., after capture, before transmission — which matches **CameraDataPostProcess**’s description:  
+  > *"responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution..."*
+
+But wait: does it decode? No — it doesn’t decode; it operates on raw `DataBuffer`s (likely video frames), and controls frame rate *without decoding*. That’s still “post-capture” processing.
+
+However, note: `CameraDataProcessCommon` explicitly lists **"frame-rate control"** as one of its responsibilities, and this class is a *generic* FPS controller that could be reused across pipelines (source/sink). The constants and logic are self-contained and not tied to a specific pipeline stage beyond being a data processor.
+
+Also, the header name `fps_controller_process.h` and inheritance from `AbstractDataProcess` strongly suggest it belongs to a *common data processing framework*, not a specific pipeline instance.
+
+Looking at the reference examples (implied by instruction), if a class implements a standard data processing node for a cross-cutting concern like FPS control, and the module `CameraDataProcessCommon` explicitly lists "frame-rate control" as a capability, then that is the best fit.
+
+### 5. Final Decision
+- The class is a **reusable FPS control data processor**, part of the broader data processing infrastructure.
+- It is not tied to sink/source exclusively in its design (though used on source here), and its logic is generic (e.g., configurable target FPS, history window, strategies).
+- `CameraDataProcessCommon` is defined to provide *"common data processing frameworks [...] frame-rate control [...] supplying foundational components for data processing flows on both the source and sink sides."*
+- Therefore, this file belongs to **CameraDataProcessCommon**.
+
+---
+
+**Assigned Module**: [CameraDataProcessCommon]

@@ -1,0 +1,57 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### File Content Summary:
+- **Header guard**: `OHOS_DCAMERA_VIDEO_SURFACE_LISTENER_H`
+- **Includes**:
+  - `surface.h` → indicates interaction with Android-like `Surface` (used for rendering/video output buffers)
+  - `icamera_operator.h` → suggests integration with camera operator interface (likely part of camera service stack)
+- **Namespaces**: `OHOS::DistributedHardware` → confirms this is part of OpenHarmony’s distributed hardware subsystem.
+- **Class**: `DCameraVideoSurfaceListener`, inherits from `IBufferConsumerListener`
+  - Constructor takes `sptr<Surface>` and `std::shared_ptr<ResultCallback>`
+  - Implements `OnBufferAvailable()` — a standard callback when a new buffer is ready in a `BufferQueue`/`Surface`.
+- **Member variables**:
+  - `surface_`: holds a reference to a `Surface`, used to consume video frames.
+  - `callback_`: likely used to notify upper layers (e.g., controller) about buffer availability or errors.
+
+### Key Observations:
+- `IBufferConsumerListener` + `Surface` + `OnBufferAvailable()` strongly implies this class is a **consumer of video frames** delivered via a `Surface` (i.e., a sink-side video output path).
+- In distributed camera architecture, the **sink side** (controlled device) captures video and sends it over the channel; the **source side** (controller) receives and displays it — typically by attaching a `Surface` (e.g., preview surface in an app).
+- However, note: this listener *consumes* buffers from a `Surface`, meaning it's likely on the **source side**, where the received video data is rendered (e.g., preview). The `Surface` is provided by the source-side UI/app, and this listener is attached to receive frames for display.
+- The name `DCameraVideoSurfaceListener` suggests it's listening to video buffer availability for a distributed camera stream — specifically for **video output on the source side**, i.e., after data has been received and needs to be displayed.
+
+Let’s cross-check with modules:
+
+#### ✅ **CameraDataPostProcess**
+- Responsible for *post-processing* on the **source side** (output side): decodes, converts format, handles frame rate/resolution, etc., so the controller can use the data like local camera.
+- Often includes surface-based rendering paths: e.g., feeding decoded frames into a `Surface` for preview.
+- A `DCameraVideoSurfaceListener` fits here as a component that listens to buffer availability on the output `Surface`, possibly triggering rendering or forwarding to UI.
+- This is *not* raw data transmission — it's the final stage before display.
+
+#### ❌ DistributedCameraSourceMgr
+- Manages lifecycle, IPC, controller logic, input streams — but this class is a low-level listener, not a manager. Too high-level.
+
+#### ❌ DistributedCameraSinkMgr
+- Sink side (controlled device) — but this class consumes a `Surface`, which is unlikely on the sink (sink produces frames, doesn’t render them). Sink would produce buffers (e.g., via `IBufferProducer`), not consume via `IBufferConsumerListener`.
+
+#### ❌ ChannelSink / ChannelCommon
+- These are transport/channel layers. This class is application/data-plane, not transport. No SoftBus/session logic visible.
+
+#### ❌ CameraDataPreProcess
+- Preprocessing happens on sink side *before* transmission — involves raw sensor data, not `Surface` consumption.
+
+#### ❌ VirtualCameraHdf
+- HDF/HDI layer implementation — this code uses `sptr<Surface>` and C++ STL (`shared_ptr`), not HDF interfaces. Not at driver/hal level.
+
+#### ❌ utils
+- Generic utilities — while this could be utility-like, the specificity (`DCameraVideoSurfaceListener`) and inheritance from `IBufferConsumerListener` suggest it's tightly coupled to post-processing/rendering pipeline, not generic.
+
+#### ✅ Strong match: **CameraDataPostProcess**
+- Post-process module handles output-side pipeline: after receiving encoded video, decode → format convert → feed to `Surface`.
+- The listener is needed to know when a buffer is available for rendering — typical pattern in Android/OpenHarmony video playback/preview.
+- The `ResultCallback` suggests notifying higher layers (e.g., preview UI) upon buffer arrival — consistent with post-processing coordination.
+
+### Probability Assessment:
+- **CameraDataPostProcess**: Very high fit — core responsibility matches exactly.
+- Other modules have partial overlaps but miss key aspects (e.g., sink vs source, surface consumer role).
+
+> The probability that this file belongs to module 'CameraDataPostProcess' is 95%.

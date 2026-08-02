@@ -1,0 +1,58 @@
+Let’s analyze the file content step by step and compare it with the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `decode_video_callback.h` → suggests this is a callback handler for video decoding.
+  - `distributed_hardware_log.h` → logging specific to distributed hardware (likely part of Distributed Hardware subsystem).
+- Namespaces: `OHOS::DistributedHardware` → confirms this is part of OpenHarmony’s Distributed Hardware component.
+- Functions implemented:
+  - `DecodeVideoCallback::OnError(...)`
+  - `DecodeVideoCallback::OnInputBufferAvailable(...)`
+  - `DecodeVideoCallback::OnOutputFormatChanged(...)`
+  - `DecodeVideoCallback::OnOutputBufferAvailable(...)`
+
+These are standard AV codec callback methods used in media decoding (e.g., similar to Android’s `MediaCodec.Callback` or OHOS Media framework callbacks). The class `DecodeVideoCallback` forwards these events to a `DecodeDataProcess` instance via weak pointer (`decodeVideoNode_.lock()`), indicating it acts as an intermediary between the media decoder and data processing logic.
+
+### 2. **Key Observations**
+- The class is named `DecodeVideoCallback`, clearly indicating **video decoding**.
+- It handles buffer availability, format changes, and errors — typical of a **decoder-side callback**.
+- It delegates to `DecodeDataProcess`, which likely performs post-decoding operations (e.g., format conversion, frame rate control, etc.).
+- The namespace `DistributedHardware` and usage of `DHLOG*` confirm it's part of the distributed hardware subsystem — specifically, likely involved in **receiving and decoding remote video streams**, i.e., on the **sink side** (controlled device receiving video from source).
+
+### 3. **Compare with Candidate Modules**
+
+| Module | Relevance |
+|--------|-----------|
+| **DistributedCameraSourceMgr** | Source-side controller; handles *sending* camera data (preview/recording). Not relevant — this is about *decoding* received data. |
+| **DistributedCameraSinkMgr** | Sink-side manager; handles receiving commands and providing image/video data. This includes data processing and output — possible match. But does it handle *decoding*? Possibly, but this file is more granular — a callback, not a manager. |
+| **ChannelSource / ChannelSink** | These are transport/IPC layers (SoftBus). This file doesn’t deal with network/transport; it’s media-level callback. Not a match. |
+| **CameraDataProcessCommon** | Provides *common* data processing frameworks, codecs, color space conversion, etc. The presence of `DecodeDataProcess` being invoked suggests this callback is part of a broader data processing pipeline. Since it's handling decoding callbacks and forwarding to a data processor, and it's in `DistributedHardware`, this is plausible. |
+| **CameraDataPreProcess** | Preprocessing on sink/input side *before* transmission/encoding. But this is *after* transmission — it's decoding incoming stream, so it's **post-reception**, not pre-transmission. So unlikely. |
+| **CameraDataPostProcess** | ✅ Strong candidate. Definition: *"responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution..."* Wait — note: it says “on the source side or output side”. But in distributed camera context:  
+   - **Source side** = controller (initiates request)  
+   - **Sink side** = controlled device (captures & sends raw frames)  
+   However, the *decoding* happens on the **controller side** (source), because the sink sends encoded video (e.g., H.264), and the controller decodes it for display/use. So if this callback is on the controller side, then `CameraDataPostProcess` fits — it decodes and post-processes received encoded video.  
+   The namespace `DistributedHardware` and use of `DecodeDataProcess` align with this: the controller receives encoded stream via channel, decodes it using media framework, and uses `DecodeVideoCallback` to drive post-processing. |
+| **CameraServiceCommon** | Shared basic services (commands, protocols, metadata). Not focused on decoding logic. Unlikely. |
+| **VirtualCameraHdf** | HDF/HDI layer virtual camera device implementation. This is higher-level application/service logic, not driver/HDI. Not a match. |
+| **utils** | General utilities, buffers, constants, callbacks — but this is a *specific* callback class tied to video decoding, not generic utility. Less likely. |
+
+### 4. **Critical Clarification: Where does decoding happen?**
+In distributed camera architecture:
+- Sink (controlled device): captures raw frames → encodes (e.g., H.264) → sends over SoftBus.
+- Source (controller device): receives encoded stream → **decodes** → displays or processes.
+
+Thus, `DecodeVideoCallback` is almost certainly on the **source side**, handling decoded output for consumption — i.e., part of **post-processing** on the source side.
+
+The module `CameraDataPostProcess` explicitly says:
+> *"It decodes, converts formats, and processes frame rate, resolution, and related properties of received image data so that the controller can use distributed camera data as if using a local Camera."*
+
+This matches exactly: this callback is the glue between the media decoder and the post-processing logic (`DecodeDataProcess`), enabling the controller to consume remote camera video seamlessly.
+
+### 5. **Conclusion**
+The file implements a video decoding callback that forwards events to a data processing component on the **controller (source) side**, fitting squarely under **CameraDataPostProcess**, which handles decoding and post-processing of received video streams.
+
+---
+
+- **Assigned Module**: [CameraDataPostProcess]

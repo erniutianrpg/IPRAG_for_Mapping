@@ -1,0 +1,81 @@
+Let’s analyze the file `proxygen/lib/http/session/HQSession.h` step by step, using the provided content, path, includes, types, functions, and candidate modules.
+
+---
+
+### 1. **File Path & Context**
+- Path: `proxygen/lib/http/session/HQSession.h`
+  - This is under `proxygen/lib/http/session/`, which strongly suggests it belongs to the **HTTP session layer**, specifically for **HTTP/3 (HQ = HTTP over QUIC)**.
+  - The filename `HQSession.h` explicitly refers to *HQ* — a shorthand used in Proxygen for *HTTP over QUIC*, i.e., HTTP/3 (and sometimes internal variants like H1Q_FB_V1).
+
+---
+
+### 2. **Key Inclusions**
+The header includes:
+- `proxygen/lib/http/codec/*`: codecs for HQ, HTTP1x, HTTP2, H3EarlyDataHandler — all protocol encoding/decoding logic.
+- `proxygen/lib/http/session/*`: base session classes (`HTTPSessionBase`, `HQStreamBase`, `HQStreamDispatcher`, `ServerPushLifecycle`, etc.)
+- `quic/api/QuicSocket.h`, `quic/common/BufUtil.h`, `quic/priority/*`: direct integration with QUIC transport layer.
+- `folly/io/async/*`, `folly/container/*`: low-level async I/O and utilities (common across modules).
+- Notably **no DNS**, **no SSL-specific headers** (e.g., `SSLContext`, `OpenSSL`), and no `services/` or `httpserver/` paths.
+
+So this is clearly **not**:
+- `dns` (no DNS resolution logic),
+- `ssl` (no TLS context or handshake handling),
+- `sampling` (no sampling logic),
+- `general` (though it uses some utils, the core is not generic utility),
+- `services` (no service registration, worker threads, connection acceptance),
+- `httpserver` (this is not a high-level server API; it's a session implementation detail).
+
+It **is** deeply tied to:
+- HTTP session management (`HTTPSessionBase`, `HTTPTransaction`, `SessionLoopCallback`),
+- QUIC transport integration (`QuicSocket::ConnectionSetupCallback`, etc.),
+- HTTP/3-specific constructs: `HQControlCodec`, `HQUnidirectionalCodec`, `H3EarlyDataHandler`, `HQVersion`, `PushId`, `WebTransportFilter`, `DatagramScheduler`, etc.
+
+---
+
+### 3. **Class Definition & Role**
+- `class HQSession` inherits from:
+  - Multiple `quic::QuicSocket::*Callback` interfaces → handles QUIC-level events (read/write/delivery/ping/datagram).
+  - `HTTPSessionBase` → standard HTTP session abstraction.
+  - `SessionLoopCallback`, `HQUniStreamDispatcher::Callback`, etc. → session lifecycle and stream dispatch logic.
+
+This class is the **core session manager for HTTP/3 (HQ)** — it coordinates:
+- QUIC socket interaction,
+- Stream creation/dispatch (request, push, control, WebTransport),
+- Codec stack (HQ codecs),
+- Priority handling (`HTTPPriorityQueue`),
+- Server push lifecycle,
+- Early data,
+- Datagram support,
+- Session stats, flow control, settings, etc.
+
+This is **exactly** what the `http_general` module description says:
+
+> *"This module mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+Note: While `transport` module is described as *"lower-level transport capabilities... especially transport support related to QUIC / HTTP/3"*, the key distinction is:
+- `transport` = raw QUIC socket, datagram, token cache, PSK, etc. (i.e., `quic/` and `proxygen/lib/transport/`)
+- `http_general` = higher-level HTTP semantics built *on top* of transport — including session, codec, transaction, priority, push — even when using QUIC.
+
+Indeed, `HQSession.h` lives under `proxygen/lib/http/session/`, not `proxygen/lib/transport/`. And its responsibilities are **HTTP session semantics over QUIC**, not raw transport.
+
+Also, the reference examples (though not listed) would likely align with this: e.g., `HTTPSessionBase.h` → `http_general`, `HTTP2Session.h` → `http_general`, so `HQSession.h` follows the same pattern.
+
+---
+
+### 4. **Comparison with Candidate Modules**
+| Module | Fit? | Reason |
+|--------|------|--------|
+| `dns` | ❌ | No DNS logic. |
+| `sampling` | ❌ | No sampling code. |
+| `ssl` | ❌ | No SSL/TLS context or handshake. |
+| `general` | ⚠️ Partial | Uses some utils, but core is HTTP protocol/session — too specific. |
+| `services` | ❌ | No service framework, worker, acceptor. |
+| `httpserver` | ❌ | Not a high-level server API; this is internal session impl. |
+| `transport` | ❌ (close but wrong layer) | While it uses QUIC, it’s not *transport* — it’s *HTTP session over transport*. Transport would be `QuicSocket`, `QuicTransport`, etc. |
+| `http_general` | ✅ | Matches: HTTP protocol core layer, session management, codec integration, HTTP/3 support. |
+
+---
+
+### ✅ Final Decision
+
+**Assigned Module**: [`http_general`]

@@ -1,0 +1,70 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `"StaticHandler.h"` → custom header, likely part of a static file-serving handler.
+  - `folly/FileUtil.h`, `folly/executors/GlobalExecutor.h`, `folly/io/async/EventBaseManager.h` → Folly async I/O and concurrency utilities.
+  - `proxygen/httpserver/ResponseBuilder.h` → high-level HTTP response construction (part of `httpserver` module).
+  - `proxygen/lib/utils/SafePathUtils.h` → path safety utilities (part of `general` utils).
+- **Namespaces**: `StaticService`, `proxygen`
+- **Functions**:
+  - `StaticHandler::onRequest(...)`: handles incoming HTTP request (GET only), validates method, sanitizes path, opens file, sends 200, schedules async read.
+  - `StaticHandler::readFile(...)`: reads file in chunks using `folly::readNoInt`, buffers with `IOBufQueue`, sends body chunks via `ResponseBuilder`.
+  - `onEgressPaused/resumed`: flow control for backpressure.
+- **Raw excerpt**: Implements a *static file server handler* using Proxygen’s high-level HTTP server APIs (`ResponseBuilder`) and Folly async I/O.
+
+Key observations:
+- It's a **server-side handler** that serves static files.
+- Uses `proxygen/httpserver/ResponseBuilder.h` — this is a *high-level* HTTP server API.
+- Not dealing with transport (e.g., no QUIC, TCP socket setup, or SSL handshake).
+- Not implementing core HTTP parsing/encoding (no `HTTPMessage` parsing beyond basic access — `headers->getPathAsStringPiece()` is already parsed).
+- Not related to pools, sampling, or SSL.
+- Uses utility like `SafePath::getPath` (from `lib/utils/`), but that’s incidental; the *primary role* is serving static content via an HTTP server handler.
+
+---
+
+### **2. Module Mapping**
+
+#### ✅ **httpserver**
+- Matches: `proxygen/httpserver/ResponseBuilder.h` is included directly.
+- Purpose: *“wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers”*.
+- This file implements a concrete handler (`StaticHandler`) that integrates into an HTTP server built with `httpserver` — exactly what this module is for.
+- The pattern (`onRequest`, `ResponseBuilder`, `downstream_`) is standard for `httpserver`-based handlers.
+
+#### ⚠️ **services**
+- Candidate: `proxygen/lib/services/`, for “server-side infrastructure such as service execution, connection acceptance, worker threads…”
+- But: This file does **not** handle connection acceptance, worker threads, or service lifecycle — it’s a *request handler*, not infrastructure.
+- Handlers like `StaticHandler` are typically used *with* services, but reside in application logic or `httpserver`-level code.
+
+#### ⚠️ **general**
+- Includes `SafePathUtils.h`, which is under `lib/utils/`.
+- However, the dominant logic is HTTP response handling + async file I/O — not generic utilities.
+- `general` is for *support code*, not full handlers.
+
+#### ❌ Others:
+- **pools**, **sampling**, **ssl**, **transport**, **http_general** — none match:
+  - No pool config, no sampling logic, no SSL/TLS, no transport layer (QUIC/TCP), no HTTP parsing/encoding core (that’s `http_general`).
+
+---
+
+### **3. Final Assessment**
+
+This file is a **custom HTTP handler** that uses:
+- High-level `httpserver` APIs (`ResponseBuilder`)
+- Folly for async I/O
+- Minor use of `general` utilities (`SafePath`)
+
+The *primary architectural home* for such a handler is the **`httpserver`** module — it's the layer where users implement request handlers (like `StaticHandler`) to plug into Proxygen’s high-level HTTP server framework.
+
+In Facebook’s Proxygen repo, `StaticHandler` is indeed part of examples or internal usage under `httpserver`-oriented code (e.g., `proxygen/httpserver/samples/` or similar).
+
+---
+
+### ✅ Final Answer:
+
+The probability that this file belongs to module 'httpserver' is **95%**.  
+The probability that this file belongs to module 'general' is **5%** (due to SafePathUtils inclusion, but not primary).  
+All other modules: **<1%**.

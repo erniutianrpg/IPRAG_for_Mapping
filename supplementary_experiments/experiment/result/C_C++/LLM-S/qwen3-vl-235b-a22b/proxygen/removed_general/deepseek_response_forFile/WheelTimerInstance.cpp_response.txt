@@ -1,0 +1,100 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `proxygen/lib/utils/WheelTimerInstance.h` → This is the header being implemented.
+  - `folly/Singleton.h`
+  - `folly/io/async/EventBase.h`
+  - `folly/io/async/EventBaseManager.h`
+- **Namespace**: `proxygen`
+- **Key Types/Functions**:
+  - `WheelTimerInstance` class (constructor, copy/move, assignment, `operator bool`, `getDefaultTimeout`, `setDefaultTimeout`, `scheduleTimeout`)
+  - Uses `folly::HHWheelTimer` (Folly’s hierarchical wheel timer) and `folly::EventBase`
+  - Manages a timer instance tied to an `EventBase`, with fallback to default timeout
+  - No HTTP-specific logic (no headers, no requests/responses, no streams, no codecs)
+  - No DNS, SSL, QUIC, pooling, or sampling logic
+
+### 2. **What is `WheelTimerInstance`?**
+From the code:
+- It wraps a `folly::HHWheelTimer*` (or derives one from `EventBase::timer()`)
+- Provides convenience methods for scheduling timeouts with optional default timeout
+- Supports move/copy semantics and boolean conversion (null-check)
+- Used as a utility for scheduling timed callbacks — common in async I/O systems
+
+This is clearly a **low-level utility** for time-based scheduling, not tied directly to HTTP protocol, transport, or service logic.
+
+### 3. **Where does this belong in Proxygen architecture?**
+Proxygen organizes utilities like this under:
+- `proxygen/lib/utils/` — as seen in the include path: `#include <proxygen/lib/utils/WheelTimerInstance.h>`
+- The `utils` directory typically contains cross-cutting concerns: timers, helpers, wrappers, etc., used across multiple modules (e.g., `http_general`, `services`, `transport`).
+
+None of the listed candidate modules explicitly name `utils`, but we must choose the *most likely* among the given options based on usage context.
+
+Let’s evaluate each candidate:
+
+#### ✅ **dns**
+- Involves DNS resolution (e.g., `DNSResolver`, `DnsCache`, `AsyncDnsResolver`)
+- No DNS-related types/functions here → **Unlikely**
+
+#### ✅ **pools**
+- Backend server pools, load balancing, health checks
+- Involves `ServerPool`, `Member`, `LoadBalancer`, etc.
+- No pool logic → **Unlikely**
+
+#### ✅ **sampling**
+- Sampling logic (e.g., rate limiting, probabilistic sampling for tracing/metrics)
+- Would involve `Sampler`, `RateLimiter`, `TraceSampler`, etc.
+- No sampling logic here → **Unlikely**
+
+#### ✅ **ssl**
+- TLS contexts, certificates, handshake logic
+- Involves `SSLContext`, `TLSTicketKeys`, `SSLUtil`, etc.
+- No SSL APIs → **Unlikely**
+
+#### ✅ **http_general**
+- Core HTTP parsing, encoding, sessions, transactions, HTTP/2/3 frames
+- Would include `HTTPMessage`, `HTTPCodec`, `Transaction`, `Session`, etc.
+- While timers *may be used* in HTTP transaction timeouts, this class is generic and not HTTP-specific — no HTTP types or protocol logic.
+- However, `WheelTimerInstance` is often used by HTTP components (e.g., for request timeouts), and lives in `lib/utils`, which is *used by* `http_general`.
+- But the module itself is not part of HTTP protocol implementation — it's infrastructure.
+
+#### ✅ **services**
+- Server-side infrastructure: connection acceptance, workers, service execution
+- Often uses timers for idle timeouts, keepalive, etc.
+- `services` may depend on `WheelTimerInstance`, but again, this is a utility, not service logic per se.
+
+#### ✅ **httpserver**
+- High-level HTTP server API (e.g., `HTTPServer`, `RequestHandler`, `ServerConfig`)
+- Wrapper layer — unlikely to contain low-level timer wrappers.
+- Not a match.
+
+#### ✅ **transport**
+- QUIC/HTTP/3 transport layer: `QuicTransport`, `QuicSocket`, `DatagramTransport`, etc.
+- May use timers for retransmission, pacing, etc.
+- But again, `WheelTimerInstance` is generic and not QUIC-specific.
+
+### 4. **Critical Observation**
+The file is in `proxygen/lib/utils/`, and the candidate modules are all *functional domains*, not infrastructure/utility layers.
+
+Among the candidates, **`http_general`** is the most plausible because:
+- `WheelTimerInstance` is commonly used in HTTP transaction timeout handling (e.g., `HTTPSession`, `TransactionTimeoutHandler`)
+- The `utils/` directory in Proxygen is primarily consumed by `http_general` and `services`, but `http_general` is the core layer that needs fine-grained timeout control for requests/responses.
+- In practice, Proxygen’s `http_general` uses `WheelTimerInstance` for per-transaction timeouts (e.g., in `HTTPTransaction`, `HTTPSession`).
+- No other module has as direct a dependency on generic timer wrappers as the HTTP core layer.
+
+While strictly speaking this is a *utility*, and not part of the HTTP protocol logic, **among the provided options**, `http_general` is the best fit.
+
+### 5. **Probability Assignment**
+- `http_general`: Strong indirect coupling; used extensively there; location (`lib/utils`) is adjacent to `lib/http/`.
+- All others: No evidence of usage or relevance.
+
+Thus:
+
+**The probability that this file belongs to module 'http_general' is 85%.**  
+(Remaining 15% reflects that it’s technically a utility used by multiple modules, but `http_general` is the primary consumer.)
+
+> Note: If a `utils` module were listed, it would be ~95%+; given only these choices, `http_general` is the most appropriate.
+
+Final answer:
+"The probability that this file belongs to module 'http_general' is 85%."

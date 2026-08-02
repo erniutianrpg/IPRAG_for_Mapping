@@ -1,0 +1,57 @@
+Let’s analyze the file content step by step to determine which module it belongs to.
+
+### 1. **File Purpose (from docstring)**:
+> "Task request.\n\nThis module defines the :class:`Request` class, that specifies how tasks are executed."
+
+So this is about the *request* object — the internal representation of a task invocation received by a worker, including metadata, execution context, and methods for handling lifecycle events (ack, retry, failure, etc.).
+
+### 2. **Key Imports**:
+- `billiard.*`: low-level multiprocessing (used by prefork pool).
+- `kombu.*`: message transport (AMQP/serialization).
+- `celery.app.trace.*`: task tracing and execution wrappers.
+- `celery.concurrency.base.BasePool`: concurrency pool interface.
+- `celery.exceptions.*`: task-related exceptions (Retry, Ignore, Revoked, etc.).
+- `celery.signals`, `celery.states`, `celery.utils.*`: utilities, signals, state management.
+- `celery.app.task.Context`, `celery.current_app`: app/task context.
+
+These imports suggest tight coupling with **worker runtime**, especially task execution, tracing, and lifecycle handling.
+
+### 3. **Main Class: `Request`**
+The `Request` class has many critical responsibilities:
+- Holds task metadata: `task_id`, `args`, `kwargs`, `eta`, `expires`, `headers`, `delivery_info`, etc.
+- Manages execution lifecycle: `execute()`, `execute_using_pool()`, `on_success()`, `on_failure()`, `on_retry()`, `on_timeout()`, `on_accepted()`.
+- Handles termination/cancellation: `terminate()`, `cancel()`, `_announce_cancelled()`, `revoked()`.
+- Integrates with event system: `send_event()`, `eventer`.
+- Interacts with pools (`BasePool`) for execution.
+- Supports chord/group/stamp functionality.
+- Has methods like `acknowledge()`, `reject()`, `info()`, `humaninfo()` — typical of worker-side request handling.
+
+This is **not** a backend (no result storage), not CLI (`bin`), not concurrency *implementation* (though it uses `BasePool`, it doesn’t define pools), not events alone (it *sends* events but isn’t the event subsystem), not utils (too high-level and specific), not loaders or security.
+
+### 4. **Comparison with Candidate Modules**:
+
+- **backends**: ❌ No result storage logic; no `get`, `set`, `forget`, etc.
+- **bin**: ❌ No CLI entry points or subcommands.
+- **concurrency**: ❌ While it uses `BasePool`, it doesn’t implement pools (e.g., `prefork.py`, `threads.py`). It *uses* concurrency, but isn’t the concurrency module.
+- **contrib**: ❌ No Django integration, abortable tasks, pytest helpers, etc.
+- **events**: ❌ It sends events via `eventer`, but the core purpose is request handling, not event routing/dumping/snapshots.
+- **fixups**: ❌ No framework-specific startup/config fixups.
+- **loaders**: ❌ No config loading or module importing logic.
+- **security**: ❌ No signing, certificates, secure serialization.
+- **utils**: ❌ While it uses many utils, the `Request` class is a central *runtime* object, not a utility helper.
+- **worker**: ✅ This matches best:
+  - The `Request` class is the core abstraction for a task request *inside the worker*.
+  - It handles consumption, execution, retries, revocation, timeouts, acknowledgment — all part of the worker’s internal request processing pipeline.
+  - In Celery source code, `celery.worker.request` (or similar) is where `Request` lives — indeed, in real Celery, `celery.worker.request.Request` is the canonical class for this.
+
+### 5. **Cross-check with Real Celery Structure**:
+In actual Celery codebase:
+- `celery/worker/request.py` defines the `Request` class.
+- It is imported and used by `celery.worker.consumer` and `celery.worker.strategy`.
+- It’s central to the worker’s task execution loop.
+
+Thus, this file clearly belongs to the **worker** module.
+
+---
+
+**Assigned Module**: ['worker']

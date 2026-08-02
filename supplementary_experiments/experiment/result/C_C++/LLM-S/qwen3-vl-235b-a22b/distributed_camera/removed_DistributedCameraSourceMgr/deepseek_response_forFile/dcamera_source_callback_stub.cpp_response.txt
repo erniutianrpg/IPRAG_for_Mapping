@@ -1,0 +1,78 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `dcamera_source_callback_stub.h` → clearly indicates this is a *callback stub* for the **source side** (i.e., controller side), since “source” in distributed camera context refers to the device that *controls* and *requests* camera data (the initiator).
+  - `distributed_camera_errno.h` → error codes specific to distributed camera.
+  - `distributed_hardware_log.h` → logging utility for distributed hardware subsystem.
+
+- **Namespaces**: `OHOS::DistributedHardware` — standard namespace for OHOS distributed hardware components.
+
+- **Class**: `DCameraSourceCallbackStub`
+  - Inherits from `IPCObjectStub` (implied by usage of `IPCObjectStub::OnRemoteRequest`).
+  - Implements `OnRemoteRequest`, which dispatches remote IPC calls based on `code`.
+  - Maps two commands: `NOTIFY_REG_RESULT` and `NOTIFY_UNREG_RESULT` to inner handlers.
+  - Inner handlers (`NotifyRegResultInner`, `NotifyUnregResultInner`) read strings/integers from `MessageParcel` and call virtual methods:
+    - `OnNotifyRegResult(devId, dhId, reqId, status, result)`
+    - `OnNotifyUnregResult(...)`  
+    → These are **callback methods** invoked by the *sink side* (controlled device) to notify the *source side* (controller) about registration/unregistration results.
+
+This is a classic **IPC stub** used on the **source side** to receive callbacks from the sink side — i.e., the *controller* receives asynchronous notifications from the *controlled device*.
+
+---
+
+### **2. Key Clues**
+- The class name: `DCameraSourceCallbackStub` → “Source” = controller side.
+- It handles **callback notifications** (reg/unreg results), not command sending or data transmission.
+- It does **not** handle:
+  - Channel establishment (SoftBus/session) → rules out `ChannelCommon`, `ChannelSource`, `ChannelSink`.
+  - Data processing (pre/post) → rules out `CameraDataPreProcess`, `CameraDataPostProcess`, `CameraDataProcessCommon`.
+  - Virtual camera/HDF device implementation → rules out `VirtualCameraHdf`.
+  - General utilities only → `utils` is too generic; this is a structured IPC stub with business logic.
+
+- It's part of the **IPC interface layer** for callback communication from sink to source.
+
+Now consider:
+
+#### ✅ **CameraServiceCommon**
+> *"Provides shared basic service capabilities for the source and sink sides... including basic commands, protocols, camera information, channel information, events, Metadata settings, open-camera information, and controller interfaces."*
+
+- Callback stubs like `DCameraSourceCallbackStub` are typically defined in the *service interface layer*, often alongside `.h` files defining the IPC interface (e.g., `IDCameraSourceCallback.h`), and implemented in `.cpp` files like this one.
+- The stub handles event notifications (registration/unregistration results), which are part of the *controller interface* — exactly what `CameraServiceCommon` claims to cover.
+- It uses distributed camera-specific error codes and logs, consistent with shared service infrastructure.
+
+#### ❌ DistributedCameraSinkMgr
+> *"…on the sink side, namely the controlled side…"*
+- This file is clearly on the **source/controller side**, not sink. So **not this**.
+
+#### ❌ Channel* modules
+- These deal with transport (SoftBus), sessions, and raw channel I/O — but this file deals with **higher-level IPC callback dispatch**, not channel management.
+- No SoftBus, session, or packet handling here.
+
+#### ❌ utils
+- While it uses utility headers (`distributed_hardware_log.h`, `distributed_camera_errno.h`), the core logic is a structured IPC stub tied to a specific service interface — too domain-specific for generic `utils`.
+
+---
+
+### **3. Cross-check with naming conventions**
+In OHOS distributed hardware:
+- `_stub.h` / `_stub.cpp` files are typically part of the **service interface implementation**, placed under modules that define the service contracts (e.g., `CameraServiceCommon`).
+- For example, in `distributedcamera` subsystem, `DCameraSourceCallbackStub` would be implemented in the source-side service module that hosts the controller logic — which is usually part of the shared service layer (`CameraServiceCommon`) rather than the sink manager or channel layers.
+
+Also note: the virtual methods `OnNotifyRegResult`/`OnNotifyUnregResult` are likely declared in an abstract interface (e.g., `IDCameraSourceCallback`), and this stub is the IPC glue — typical pattern in `CameraServiceCommon`.
+
+---
+
+### **Conclusion**
+The file implements an IPC callback stub for the **source/controller side**, handling sink-initiated notifications (reg/unreg results), using distributed camera-specific interfaces and error codes. This fits best under:
+
+> **CameraServiceCommon** — as it provides shared service capabilities including controller interfaces and event/callback handling across source/sink.
+
+Other modules are either on the wrong side (sink), too low-level (channel), or too generic (utils).
+
+---
+
+**The probability that this file belongs to module 'CameraServiceCommon' is 95%.**

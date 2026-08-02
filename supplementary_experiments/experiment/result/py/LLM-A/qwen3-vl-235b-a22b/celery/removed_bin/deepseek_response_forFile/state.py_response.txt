@@ -1,0 +1,59 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### File Overview:
+- **Module docstring**: *"Internal worker state (global). This includes the currently active and reserved tasks, statistics, and revoked tasks."*
+  - Clearly indicates this is about **worker internal state management**, not application-level logic, backends, or concurrency pools.
+  
+- **Imports**:
+  - `kombu.serialization.pickle`, `kombu.utils.objects.cached_property`: low-level utilities, but used in worker context.
+  - `celery.exceptions.WorkerShutdown`, `WorkerTerminate`: exceptions specific to worker lifecycle.
+  - `celery.utils.collections.LimitedSet`: utility for bounded sets (e.g., revocation cache).
+  - No imports from `backends`, `events`, `concurrency`, `app`, etc. — no backend storage logic (like Redis/DB), no event dispatching, no pool management.
+
+- **Constants**:
+  - `REVOKES_MAX`, `SUCCESSFUL_MAX`, `REVOKE_EXPIRES`, `SUCCESSFUL_EXPIRES`: revocation and success tracking limits — typical for worker state persistence.
+  - `C_BENCH`, `C_BENCH_EVERY`: likely related to internal worker benchmarking/state sampling.
+
+- **Functions**:
+  - `reset_state()`, `maybe_shutdown()`: worker lifecycle/state reset/shutdown handling.
+  - `task_reserved()`, `task_accepted()`, `task_ready()`: **core request state transitions** during task processing — exactly what a worker does when consuming and executing tasks.
+
+- **Class `Persistent`**:
+  - Manages persistent storage of worker state via `shelve`.
+  - Methods like `merge`, `sync`, `save`, `_merge_revoked_v1/v2/v3`: handles versioned revocation state merging — critical for worker restart resilience.
+  - Uses `zlib` compression, pickle serialization — consistent with local state persistence (not backend result storage).
+  - Not a result backend (those are in `backends`), because:
+    - It stores *worker-local* state: active/reserved/revoked tasks, not task results.
+    - Uses `shelve`, not Redis/DB/RPC — so not a result backend.
+    - Revoked tasks here are for *in-flight* task cancellation, not result retrieval.
+
+### Comparison with Candidate Modules:
+
+- **app**: No — no app object, config, routing, task registration. This is not high-level app logic.
+
+- **backends**: No — backends store *task results*, not worker internal state. This uses `shelve`, not AMQP/RPC/Redis/DB. Also, no `Backend` interface usage.
+
+- **concurrency**: No — no pool implementation (`prefork`, `thread`, etc.), no process/thread management.
+
+- **contrib**: No — no Django integration, pytest helpers, abortable tasks, etc.
+
+- **events**: No — no event sending/receiving, no `EventDispatcher`, `EventReceiver`.
+
+- **fixups**: No — no framework-specific startup fixups (e.g., Django).
+
+- **loaders**: No — no config loading, module importing, or loader lifecycle hooks.
+
+- **security**: No — no signing, certificates, secure serialization.
+
+- **utils**: Partial overlap (e.g., `LimitedSet`, `cached_property`), but this file is *not* a generic utility — it’s tightly coupled to worker state lifecycle and task request handling. The functions and class are specifically about maintaining and persisting *worker runtime state*, not general-purpose utilities.
+
+- **worker**: ✅ Strong match:
+  - Docstring explicitly says “Internal worker state (global)”.
+  - Functions track task request lifecycle: reserved → accepted → ready — core worker request handling.
+  - `Persistent` class manages durable state for worker restarts (revoked tasks, stats), which is part of the worker’s internal state management (e.g., used by `celery.worker.state`).
+  - In Celery source code, this file corresponds to `celery/worker/state.py`, which is indeed part of the `worker` module.
+
+### Conclusion:
+The file is clearly part of the **worker** module — it implements internal state tracking and persistence for the Celery worker, including task reservation, acceptance, completion, revocation, and shutdown coordination.
+
+**Assigned Module**: ['worker']

@@ -1,0 +1,72 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+services\cameraservice\sourceservice\src\distributedcamera\dcamera_source_callback_proxy.cpp
+```
+- Located under `sourceservice` → indicates this is on the **source side** (i.e., the *controller* side in distributed camera architecture).
+- The filename includes `callback_proxy`, and specifically `DCameraSourceCallbackProxy`.
+
+### 2. **Content Analysis**
+- Includes:
+  - `"dcamera_source_callback_proxy.h"` — header defining a proxy for callbacks from source to remote.
+  - `"parcel.h"`, `"anonymous_string.h"`, `"distributed_camera_errno.h"`, `"distributed_hardware_log.h"` — typical IPC/serialization and logging utilities used in OHOS IPC (RemoteObject-based communication).
+- Namespace: `OHOS::DistributedHardware`
+- Functions:
+  - `DCameraSourceCallbackProxy::OnNotifyRegResult(...)`
+  - `DCameraSourceCallbackProxy::OnNotifyUnregResult(...)`
+
+These functions:
+- Are **proxy implementations** that forward callback notifications (e.g., registration/unregistration results) over IPC using `SendRequest()` to a remote service.
+- Use `MessageParcel` to serialize parameters (`devId`, `dhId`, `reqId`, `status`, `data`) and send via `NOTIFY_REG_RESULT` / `NOTIFY_UNREG_RESULT` commands.
+- Return result codes from the remote reply.
+
+This is clearly an **IPC proxy** for callbacks *from the source side* — i.e., the controller side sends requests, and this proxy allows the remote sink side to notify the source side about registration/unregistration outcomes.
+
+Note: In OHOS distributed hardware architecture, *callback proxies* are used when the **remote side (sink)** needs to invoke methods on the **local side (source)** — i.e., the source implements a callback interface, and the sink holds a proxy to call it remotely.
+
+So `DCameraSourceCallbackProxy` is the **proxy on the source side**, used by the sink to notify the source about events (like registration result). That means:
+- The *interface* (`DCameraSourceCallback`) is implemented on the **source side**.
+- The *proxy* is used by the **sink side** to call into the source.
+- But this file (`dcamera_source_callback_proxy.cpp`) is the **implementation of the proxy**, which resides on the **source side codebase** (since it's in `sourceservice`), but is meant to be passed to the sink side as a remote object reference.
+
+However, module assignment should be based on **responsibility and functional domain**, not just location.
+
+### 3. **Compare with Candidate Modules**
+
+Let’s evaluate each candidate:
+
+- **DistributedCameraSinkMgr**: Focuses on sink-side lifecycle, access control, controller, data output, event notification, IPC services *on the sink side*. This file is not sink-side logic; it's a proxy used *by* sink to talk to source. ❌
+
+- **ChannelCommon**: Provides common channel-layer capabilities (SoftBus adaptation, session mgmt, channel interfaces/listeners). This file does *not* deal with SoftBus or sessions directly — it uses generic OHOS IPC (`IRemoteObject`, `MessageParcel`). It’s higher-level than channel layer. ❌
+
+- **ChannelSource**: Responsible for *controller-side channel implementation*, establishing connections, sending commands, receiving image info. While this is on the source side, this file is not about channel establishment or data transmission — it's about *callback notification handling* (a specific IPC pattern), not channel management per se. Still possible, but let’s check others.
+
+- **ChannelSink**: Controlled-side channel implementation — but this file is in `sourceservice`, so unlikely. ❌
+
+- **CameraDataProcessCommon**, **CameraDataPreProcess**, **CameraDataPostProcess**: All related to *data processing pipelines* (encoding, decoding, format conversion, etc.). This file handles *control-plane notifications*, not media/data frames. ❌
+
+- **CameraServiceCommon**: Provides shared basic service capabilities for source/sink: basic commands, protocols, camera info, channel info, events, metadata, open-camera info, controller interfaces.  
+  → This includes **events** and **controller interfaces**. Callbacks like registration/unregistration results are part of the *control protocol* and event notification mechanism between source and sink.  
+  → The `DCameraSourceCallback` interface is likely part of the shared service contract defined in `CameraServiceCommon`.  
+  → Proxy classes like this are typically part of the *common service layer*, especially when they implement IPC stubs/proxies for cross-process callbacks used by both sides.
+
+- **VirtualCameraHdf**: HDF/HDI layer virtual camera device implementation — this is at a lower level (HDF driver/framework), while this file is in application/service layer using OHOS IPC. ❌
+
+- **utils**: General utilities — error codes, buffers, constants. While it includes `distributed_camera_errno.h`, the file itself is not a utility; it's a concrete proxy class implementing a specific callback interface. Not generic enough for `utils`. ❌
+
+### 4. **Key Insight**
+The class `DCameraSourceCallbackProxy` implements the client-side (proxy) of a callback interface that the *sink* will use to notify the *source* of registration/unregistration results. Such callback proxies are part of the **service contract definition**, which belongs to the **shared service layer** — i.e., `CameraServiceCommon`.
+
+In OHOS distributed hardware design:
+- `CameraServiceCommon` defines shared interfaces (e.g., `IDCameraSourceCallback`, `IDCameraSinkCallback`), their proxy/stub implementations, and common structs/enums.
+- Proxy classes like `DCameraSourceCallbackProxy` and `DCameraSourceCallbackStub` are usually placed in the common module (or sometimes in source/sink, but logically belong to the shared contract).
+
+Given:
+- The file is in `sourceservice`, but that’s likely for build convenience.
+- Its purpose is to support the *control-plane event notification* between source and sink — exactly what `CameraServiceCommon` covers ("events", "controller interfaces", "basic commands", "protocols").
+
+### ✅ Conclusion:
+The most appropriate module is:
+
+**Assigned Module**: [CameraServiceCommon]

@@ -1,0 +1,55 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `dcamera_channel_source_impl.h` → strongly suggests this is an *implementation* of a channel source.
+  - `dcamera_softbus_adapter.h` → indicates use of SoftBus for communication (a key transport layer in distributed systems).
+  - `anonymous_string.h`, `distributed_camera_constants.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` → utility/infrastructure headers, common across modules.
+- Namespace: `OHOS::DistributedHardware`
+- Class: `DCameraChannelSourceImpl`
+- Key functions:
+  - `OpenSession()`
+  - `CloseSession()`
+  - `CreateSession(...)` — creates a SoftBus session server (`DCameraSoftbusAdapter::CreateSoftbusSessionServer(...)`)
+  - `ReleaseSession()`
+  - `SendData(...)` — sends data via channel
+
+The class manages **session lifecycle** (create/open/close/release) and uses **SoftBus** to establish communication with remote side (sink). It also holds a listener (`ICameraChannelListener`) and sends data buffers.
+
+Crucially, `CreateSession` calls:
+```cpp
+DCameraSoftbusAdapter::GetInstance().CreateSoftbusSessionServer(mySessionName_, DCAMERA_CHANNLE_ROLE_SOURCE);
+```
+→ This confirms it's acting as the **source-side (controller)** endpoint that *hosts* a SoftBus session server — i.e., it listens for connections from the sink side (controlled device), which aligns with typical source-side channel behavior.
+
+Also, `SendData()` implies it pushes data *to* the sink (e.g., control commands or metadata), though note: in camera context, “source” often means *controller*, and “sink” means *controlled device*. However, here:
+- `DCameraChannelSourceImpl` is on the **controller side**, establishing a session server so the **sink (controlled device)** can connect to it — this is consistent with how some distributed systems reverse roles for pull-based data flow (e.g., sink pulls video from source).
+
+But more importantly: the naming `ChannelSourceImpl`, usage of `DCAMERA_CHANNLE_ROLE_SOURCE`, and reliance on `SoftbusAdapter` point clearly to **channel-layer implementation on the source side**.
+
+### 2. **Compare with Candidate Modules**
+
+| Module | Relevance |
+|--------|-----------|
+| **DistributedCameraSourceMgr** | Manages *lifecycle, state machine, controller, input stream, data processing, IPC service, callback* on source side. This is higher-level (manager/controller), not channel implementation. Our file is lower-level: session/channel establishment via SoftBus — not full manager logic. ❌ |
+| **DistributedCameraSinkMgr** | Sink-side; our file is source-side (role = SOURCE). ❌ |
+| **ChannelCommon** | Provides *common* channel capabilities: SoftBus adaptation, session mgmt interfaces, listeners. But this file is an *implementation*, not just interfaces. Also, it's specifically `ChannelSourceImpl`, not generic/common. Partial match, but too generic. ⚠️ |
+| **ChannelSource** | ✅ *"responsible for the controller-side channel implementation. It establishes connections with the controlled side through SoftBus, sends camera control commands on the controller side, and receives image information returned by the controlled side."*<br>Our file: implements `DCameraChannelSourceImpl`, creates SoftBus session server (so sink connects to it), has `SendData`, manages sessions — exactly matches this description. ✔️ |
+| CameraDataProcessCommon / Pre/PostProcess | These are about *data processing pipelines* (codec, color space, frame rate), not session/channel setup. No evidence of such logic here. ❌ |
+| CameraServiceCommon | Shared basic service capabilities (commands, protocols, metadata, etc.). This file doesn’t handle protocols or metadata directly — it’s purely channel/session plumbing. ❌ |
+| VirtualCameraHdf | HDF/HDI layer virtual camera device — no HDF-related code here. ❌ |
+| utils | Utilities only; this is a concrete class implementation, not a utility header/lib. ❌ |
+
+### 3. **Key Evidence**
+- Class name: `DCameraChannelSourceImpl`
+- Role constant used: `DCAMERA_CHANNLE_ROLE_SOURCE`
+- Uses `DCameraSoftbusAdapter` to create a **session server** (i.e., source waits for sink to connect)
+- Functions are all about session lifecycle and sending data over channel
+- Belongs to `DistributedHardware` namespace — consistent with channel layer
+
+This is a textbook implementation of the **ChannelSource** module.
+
+---
+
+- **Assigned Module**: [ChannelSource]

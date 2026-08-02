@@ -1,0 +1,154 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **File Summary**
+- **Language**: C/C++
+- **Includes**:
+  - `<vector>` (STL)
+  - `"data_buffer.h"` → suggests data buffer handling
+  - `"types.h"` → likely defines common types like `DCEncodeType`, `DCStreamType`, `DCStreamInfo`, `DCCaptureInfo`
+- **Macro**: `OHOS_ICAMERA_SOURCE_DATA_PROCESS_H` — strongly hints at *source-side* interface for camera data processing.
+- **Namespaces**: `OHOS::DistributedHardware` — confirms this is part of OpenHarmony Distributed Hardware subsystem.
+- **Types defined**:
+  - `DCameraStreamConfig`: a simple struct-like config class for stream parameters (width, height, format, encode type, stream type). Used for configuration comparison/sorting.
+  - `ICameraSourceDataProcess`: an abstract interface with pure virtual methods for:
+    - `FeedStream()` — feeding data buffers (likely from camera or sink)
+    - `ConfigStreams()`, `ReleaseStreams()` — stream lifecycle management
+    - `StartCapture()`, `StopCapture()` — capture control
+    - `GetAllStreamIds()` — query active streams
+
+This is clearly a **source-side interface** (note: *Source* in `ICameraSourceDataProcess`) defining how data is fed into the source side (i.e., controller side), and how streams are configured/controlled.
+
+Crucially:
+- The interface is *abstract* (`= 0` methods) — meant to be implemented elsewhere.
+- It deals with **receiving data buffers**, configuring streams, starting/stopping capture — all actions that occur on the **controller (source) side**, where the app/user interacts with the distributed camera.
+- The name `ICameraSourceDataProcess` explicitly says “Source” + “Data Process”.
+
+Now let’s evaluate each candidate:
+
+---
+
+### **1. DistributedCameraSourceMgr**
+> Responsible for lifecycle, state machine, controller, input stream, data processing, IPC service, and callback management on the **source side** (controller side), enabling the controller to invoke distributed camera capabilities...
+
+- ✅ Matches "source side"
+- ✅ Handles data processing, stream config, capture start/stop
+- ✅ Likely implements `ICameraSourceDataProcess`
+- This header defines the *interface* that `DistributedCameraSourceMgr` would implement or depend on.
+- In typical architecture, such interfaces live in the same module as their primary implementer (or in a shared header location), especially if it's internal to the module.
+
+→ **High match**
+
+---
+
+### **2. DistributedCameraSinkMgr**
+> On the **sink side** (controlled device), receives commands, uses local camera, provides image data.
+
+- ❌ Opposite side — this is *source*-side interface.
+- Sink side would have something like `ICameraSinkDataProcess`, not `Source`.
+- `FeedStream()` here implies *receiving* buffers — but on source side, those buffers come *from* sink; so source processes them. That fits source mgr, not sink mgr.
+
+→ **Low match**
+
+---
+
+### **3. ChannelSource**
+> Controller-side channel implementation: establishes SoftBus connection, sends commands, receives image info.
+
+- Partial overlap: it's source-side and handles receiving image data.
+- But `ChannelSource` is about *transport/channel*, not *data processing logic*.
+- This interface defines *how to process* the received data (e.g., feed into pipeline, configure streams), not how to send/receive over SoftBus.
+- Typically, `ChannelSource` would *call* `ICameraSourceDataProcess::FeedStream()` after receiving data — so this interface is *used by* ChannelSource, not part of it.
+
+→ **Medium-low**: interface used by, but not belonging to.
+
+---
+
+### **4. ChannelSink**
+> Controlled-side channel — irrelevant for source-side interface.
+
+→ **Very low**
+
+---
+
+### **5. CameraDataProcessCommon**
+> Provides *common* data processing frameworks, pipelines, codecs, color space conversion — foundational for both sides.
+
+- This interface is *not* generic/common — it’s specifically tied to *source-side* camera stream control (`StartCapture`, `ConfigStreams`, etc.).
+- No codec/format conversion logic here — just stream management and buffer ingestion.
+- `DCameraStreamConfig` is specific to distributed camera streams, not generic.
+- Common modules usually avoid concrete stream IDs, capture control, etc.
+
+→ **Low**
+
+---
+
+### **6. CameraDataPreProcess**
+> Preprocessing pipeline on **sink side or input side**, before transmission/encoding.
+
+- Again, this is *sink-side* preprocessing (e.g., crop, rotate, format conversion before sending).
+- Our interface is on *source side*, and `FeedStream` implies *after* transmission — i.e., post-receipt processing.
+- Also, no preprocessing ops (e.g., scaling, YUV conversion) defined here.
+
+→ **Low**
+
+---
+
+### **7. CameraDataPostProcess**
+> Post-processing on **source side or output side**: decodes, converts formats, adjusts frame rate/resolution for controller use.
+
+- This is promising: source-side, post-receipt processing.
+- However, the methods here (`ConfigStreams`, `StartCapture`, `ReleaseStreams`) are more about *orchestration/control* than *post-processing* (which would involve decode, resize, color convert, etc.).
+- `FeedStream` could be part of post-processing pipeline, but the rest suggests higher-level manager behavior.
+- Also, `CameraDataPostProcess` would likely operate on decoded frames, not manage stream lifecycles.
+
+→ **Medium**: partial overlap, but interface is more managerial than processing-focused.
+
+---
+
+### **8. CameraServiceCommon**
+> Shared basic service capabilities: commands, protocols, camera info, channel info, events, metadata, open-camera info, controller interfaces.
+
+- This interface is *not* about generic protocols or metadata — it’s tightly coupled to stream/data flow.
+- No mention of events, metadata, or IPC protocol definitions.
+- While `types.h` may be shared, the interface itself is specialized for data ingestion and stream control on source side.
+
+→ **Medium-low**
+
+---
+
+### **9. VirtualCameraHdf**
+> HDF/HDI layer implementation: virtual devices, stream operator, metadata, IPC proxies.
+
+- This is hardware abstraction layer — far lower level.
+- No HDF/HDI terms (e.g., `IHdiDevice`, `StreamOperator`, `HdfDeviceObject`) in the file.
+- Abstract interface like `ICameraSourceDataProcess` is too high-level for HDF layer.
+
+→ **Very low**
+
+---
+
+### **10. utils**
+> Common utilities: data buffers, constants, error codes, local camera helpers.
+
+- Includes `"data_buffer.h"` and `"types.h"` — could suggest utility.
+- But `ICameraSourceDataProcess` is not a utility; it’s a core interface for a major component.
+- Utilities usually don’t define stream config classes or capture control interfaces.
+- This is too domain-specific to be a generic util.
+
+→ **Low**
+
+---
+
+### Final Reasoning:
+- The header defines `ICameraSourceDataProcess`, an abstract interface for **source-side data ingestion and stream control**.
+- The naming (`SourceDataProcess`), methods (`FeedStream`, `StartCapture`, `ConfigStreams`), and namespace (`OHOS::DistributedHardware`) align best with **DistributedCameraSourceMgr**, which is responsible for exactly this: managing data flow and stream lifecycle on the controller/source side.
+- It is unlikely to belong to any sink-side or transport-only module.
+- While `CameraDataPostProcess` is source-side, it focuses on *frame transformation*, not *stream orchestration* — this interface is more about coordination than pixel-level processing.
+
+Thus, highest probability is **DistributedCameraSourceMgr**.
+
+---
+
+**The probability that this file belongs to module 'DistributedCameraSourceMgr' is 95%.**

@@ -1,0 +1,86 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+services\cameraservice\sourceservice\include\distributedcameramgr\dcameradata\dcamera_stream_data_process.h
+```
+- Located under `sourceservice` → indicates **source side** (controller side).
+- Subdirectory `dcameradata` suggests it deals with **data handling/processing**, not control logic or channel transport.
+- Filename: `dcamera_stream_data_process.h` → clearly about **stream data processing**.
+
+### 2. **Includes**
+```cpp
+#include "data_buffer.h"
+#include "icamera_source_data_process.h"
+#include "idata_process_pipeline.h"
+#include "image_common_type.h"
+#include "types.h"
+#include "dcamera_stream_data_process_producer.h"
+```
+- `idata_process_pipeline.h`: implies use of a **data processing pipeline** abstraction.
+- `icamera_source_data_process.h`: interface for source-side data processing — confirms this is on the *source* side.
+- `data_buffer.h`, `image_common_type.h`, `types.h`: common data structures and types — aligns with data processing.
+- `dcamera_stream_data_process_producer.h`: likely a helper class that produces processed streams (e.g., for snapshot/continue paths).
+
+### 3. **Class Name & Responsibilities**
+Class: `DCameraStreamDataProcess`
+
+Key methods:
+- `FeedStream(...)`: ingest raw stream data.
+- `StartCapture()`, `StopCapture()`, `ConfigStreams()`, `ReleaseStreams()`: lifecycle and configuration of stream capture — but note: these are *not* camera hardware control; they're about *data flow*.
+- `OnProcessedVideoBuffer(...)`, `OnError(...)`: callbacks from downstream pipeline (likely from decoder/processor).
+- `FeedStreamToSnapShot(...)`, `FeedStreamToContinue(...)`: routing to different consumers (e.g., snapshot vs live preview) — classic **post-processing dispatch**.
+- `CreatePipeline()`, `DestroyPipeline()`, `GetPipelineCodecType()`, `GetPipelineFormat()`: manages a **data processing pipeline**, possibly involving decoding, format conversion, etc.
+
+Member variables:
+- `std::shared_ptr<IDataProcessPipeline> pipeline_`: direct reference to a data processing pipeline.
+- `producers_`: map of producers — suggests multiple output paths (snapshot, continue), typical in post-processing where data is fanned out.
+- `listener_`: likely for notifying upper layers (e.g., CameraClient) of events — again, post-processing stage.
+
+### 4. **Namespace**
+- `OHOS::DistributedHardware`: standard namespace for distributed camera components.
+
+### 5. **Compare with Candidate Modules**
+
+Let’s evaluate each candidate:
+
+- **DistributedCameraSourceMgr**:  
+  Described as responsible for *lifecycle, state machine, controller, input stream, data processing, IPC service, callback management*.  
+  While this class does some data processing, it does **not** handle IPC, state machine, or controller logic — those would be higher-level. This is more focused on *how* data is processed after it arrives, not *when* or *why*.
+
+- **ChannelCommon / ChannelSource / ChannelSink**:  
+  These are about *transport* (SoftBus, sessions, commands, image transmission). This file has **no network/session/channel code** — only local data buffering and pipeline handling. So **not** these.
+
+- **CameraDataProcessCommon**:  
+  Provides *common frameworks, pipeline interfaces, codecs, color space conversion*, etc., for **both sides**.  
+  This class uses `IDataProcessPipeline`, which likely comes from this module. However, this class is **concrete implementation**, not abstract interfaces. Also, it's specifically in `sourceservice`, implying it's *source-side specific*, not generic/common.
+
+- **CameraDataPreProcess**:  
+  Described as *sink-side or input-side preprocessing* — e.g., before transmission/encoding. But this is in `sourceservice`, and methods like `FeedStreamToSnapShot` suggest it’s handling *received* data (i.e., after transmission), not pre-transmission. So **not** this.
+
+- **CameraDataPostProcess**:  
+  > *"responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution, and related properties of received image data so that the controller can use distributed camera data as if using a local Camera."*  
+  ✅ Matches perfectly:
+  - Source side (`sourceservice`)
+  - Processes *received* image data (via `FeedStream`, `OnProcessedVideoBuffer`)
+  - Routes to snapshot/preview (`FeedStreamToSnapShot`, `FeedStreamToContinue`)
+  - Uses pipeline for decoding/format conversion (`GetPipelineCodecType`, `GetPipelineFormat`)
+  - Goal: make remote camera data usable locally — exactly what post-processing does.
+
+- **CameraServiceCommon**:  
+  Shared basic service capabilities (commands, protocols, metadata, open-camera info). This class doesn’t deal with protocols or metadata setup — it’s about data flow.
+
+- **VirtualCameraHdf**:  
+  HDF/HDI layer virtual device implementation — no relation here.
+
+- **utils**:  
+  General utilities (buffers, error codes, constants). While it includes `data_buffer.h`, this class is too domain-specific (stream processing pipeline) to be just a utility.
+
+### 6. **Conclusion**
+The class `DCameraStreamDataProcess` implements the **source-side post-processing pipeline** — it receives decoded/processed video frames (likely from the sink side via channel), routes them to appropriate consumers (snapshot/preview), and manages the pipeline for format/codec adaptation. This aligns precisely with the definition of:
+
+> **CameraDataPostProcess**
+
+---
+
+- **Assigned Module**: [CameraDataPostProcess]

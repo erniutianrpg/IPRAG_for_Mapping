@@ -1,0 +1,59 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File identity**
+- File path (from include): `proxygen/lib/http/HQConnector.h` → indicates this is part of **HTTP layer**, specifically for **HQ** (HTTP/3 over QUIC).
+- The class `HQConnector` implements connection setup logic for HTTP/3 (QUIC-based) clients.
+- Key responsibilities observed:
+  - Creates and manages a QUIC client transport (`quic::QuicClientTransport`)
+  - Uses Fizz (TLS 1.3 handshake library) via `FizzClientQuicHandshakeContext`
+  - Handles socket options, PSK cache, SNI, QLogger, etc.
+  - Integrates with `FollyQuicEventBase`, `FollyQuicAsyncUDPSocket`, and QUIC transport stack
+  - Manages session lifecycle (`session_->dropConnection()`) — likely an `HQSession`
+
+### 2. **Key dependencies**
+From includes:
+- `proxygen/lib/http/HQConnector.h`, `H3EarlyDataHandler.h`, `HQSession.h` → clearly HTTP/3-specific components in `proxygen/lib/http/`
+- `quic/api/QuicSocket.h`, `quic/common/udpsocket/FollyQuicAsyncUDPSocket.h`, `quic/fizz/client/handshake/FizzClientQuicHandshakeContext.h` → QUIC transport + TLS handshake layer
+- `folly/io/SocketOptionMap.h`, `FollyQuicEventBase.h` → Folly integration for event loops & sockets
+
+This shows tight coupling between:
+- HTTP protocol layer (`proxygen/lib/http/`)
+- QUIC transport layer (`quic/...`)
+- TLS handshake via Fizz
+
+But crucially: the *file itself* resides in `proxygen/lib/http/`, and its purpose is to **connect an HTTP/3 client**, i.e., to establish an HTTP session over QUIC — not raw transport or DNS or SSL alone.
+
+### 3. **Module comparison**
+
+| Module | Relevance |
+|--------|-----------|
+| **dns** | ❌ No DNS resolution logic; no use of DNS APIs (e.g., `DNSResolver`, `DnsCache`). Not relevant. |
+| **sampling** | ❌ No sampling logic, no metrics/sampling instrumentation beyond basic XLOG. Not relevant. |
+| **ssl** | ⚠️ Partial: uses Fizz/TLS via `FizzClientContext`, but does *not* implement SSL context management or statistics — just consumes it. SSL module would be lower-level (e.g., `proxygen/lib/ssl/`). This is a consumer, not provider. Low relevance. |
+| **general** | ⚠️ Some utility usage (`folly::Optional`, `XLOG`, `microsecondsSince`) — but those are generic; the core logic is *not* general-purpose utils. This is domain-specific (HTTP/3 connection). Unlikely. |
+| **http_general** | ✅ Strong match: lives under `proxygen/lib/http/`, implements `HQConnector`, which is part of HTTP session/connection establishment for HTTP/3. `HQSession`, `H3EarlyDataHandler` are also in same directory. This module covers HTTP protocol abstractions including HTTP/2 and HTTP/3 session/connection handling. |
+| **services** | ❌ Server-side focus (`proxygen/lib/services/`). This is a *client-side connector*, used by clients (e.g., `HTTPConnector`, `HQClient`). Not server infrastructure. |
+| **httpserver** | ❌ High-level server API (`proxygen/httpserver/`). This is client-side connection logic. Not applicable. |
+| **transport** | ⚠️ Medium: uses QUIC transport primitives heavily. But note: the **transport** module is described as *"lower-level transport capabilities under proxygen/lib/transport/"*, especially *transport support related to QUIC / HTTP/3*. However, `HQConnector.h` is **not** in `lib/transport/`, it's in `lib/http/`. In Proxygen’s architecture, `lib/http/` owns the HTTP/3 *application-layer connector*, while `lib/transport/` (if exists) would own raw QUIC socket wrappers, congestion control, etc. Since this file orchestrates the QUIC client *for HTTP*, it belongs to the HTTP layer — not pure transport. |
+
+### 4. **Architectural nuance**
+In Facebook’s Proxygen (and Meta’s open-source version):
+- `proxygen/lib/http/` contains:
+  - `HTTPConnector`, `HQConnector`
+  - `HTTPSession`, `HQSession`
+  - codec, headers, early data, etc.
+- These are considered part of the **HTTP protocol implementation**, even when using QUIC — because they map HTTP semantics (requests/responses, transactions, sessions) onto the transport.
+- The *pure* QUIC transport (e.g., `QuicSocket`, `FollyQuicAsyncUDPSocket`, `CongestionControllerFactory`) lives in `quic/` (external or internal), and `proxygen` consumes it.
+- So `HQConnector` is a bridge between HTTP and QUIC — but architecturally placed in `http_general`.
+
+### ✅ Conclusion
+The file is a client-side HTTP/3 connection initiator, implemented in `proxygen/lib/http/`, using QUIC underneath. It belongs to the **HTTP protocol core layer**, i.e., `http_general`.
+
+**Probability assessment**:
+- `http_general`: **95%** — direct location, naming, responsibilities align perfectly.
+- `transport`: ~30% — uses transport features, but not *part of* transport module per architecture.
+- Others: <5%.
+
+---
+
+The probability that this file belongs to module 'http_general' is 95%.

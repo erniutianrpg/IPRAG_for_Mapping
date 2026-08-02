@@ -1,0 +1,63 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `folly/io/async/DestructorCheck.h` → Folly utility for safe destruction (common in async code).
+  - `proxygen/lib/http/codec/compress/HPACKCodec.h` → Core HPACK (Header Compression for HTTP/2) codec logic.
+  - Standard STL: `<deque>`, `<memory>`, `<tuple>` → Used for queue management, smart pointers, and tuple-based storage.
+- **Namespace**: `proxygen`
+- **Class**: `HPACKQueue`
+- **Key Functions**:
+  - `enqueueHeaderBlock(...)`: Enqueues header blocks with sequence numbers, handles out-of-order (OOO) delivery.
+  - `decodeBlock(...)`: Decodes a header block using `HPACKCodec::decodeStreaming`.
+  - `drainQueue()`: Processes queued blocks in order.
+  - Uses `HPACK::StreamingCallback`, `HPACK::DecodeError`, and `HPACKCodec`.
+- **Raw Excerpt** shows:
+  - A queue (`std::deque`) of `(seqn, IOBuf, length, callback)` tuples.
+  - Sequence-number-based ordering (for HTTP/2 header block reassembly).
+  - Integration with `HPACKCodec.decodeStreaming()` — the core HPACK decoding interface.
+  - Safety check via `folly::DestructorCheck::Safety` (to avoid use-after-free during async callbacks).
+
+### 2. **What is this class doing?**
+This is a **header block reordering & streaming decoder queue** for HPACK in HTTP/2. It ensures:
+- Header blocks are decoded in correct sequence (or optionally allow OOO if permitted),
+- Handles head-of-line blocking (via `holBlockCount_`),
+- Manages memory (`IOBuf`), callbacks, and state safely across async boundaries.
+
+This is **deeply tied to HTTP/2 header compression semantics**, specifically the *streaming decoding* of HPACK blocks with sequence numbers — a standard part of HTTP/2 frame handling (e.g., `HEADERS`/`PUSH_PROMISE` frames with continuation).
+
+### 3. **Module Mapping**
+
+Let’s evaluate each candidate:
+
+- **pools**: ❌ No relation to backend pools or service discovery. Not relevant.
+
+- **sampling**: ❌ No sampling logic (e.g., rate limiting, probabilistic sampling). Not relevant.
+
+- **ssl**: ❌ No SSL/TLS context, certs, handshake logic. HPACK is application-layer (HTTP/2), not transport encryption.
+
+- **general**: ⚠️ Partially plausible — `utils/` sometimes contains helpers, but HPACK is *protocol-specific*, not generic utility. Also, the include path `proxygen/lib/http/codec/compress/HPACKCodec.h` strongly suggests this is under HTTP protocol layer, not general utils.
+
+- **http_general**: ✅ **Strong match**.  
+  - This module is defined as: *"common HTTP implementation under proxygen/lib/http/", "responsible for HTTP protocol parsing, encoding/decoding, session management... HTTP/2..."*  
+  - HPACK is a *mandatory part of HTTP/2 header encoding/decoding*.  
+  - `HPACKQueue` is a supporting class for the HPACK codec — it manages the *streaming decode queue*, which is essential for handling fragmented header blocks in HTTP/2.  
+  - The file lives logically alongside `HPACKCodec.h`, which is explicitly under `proxygen/lib/http/codec/compress/`. That path falls squarely under `http_general`.
+
+- **services**: ❌ This is about server-side infrastructure (connection acceptance, workers, etc.). `HPACKQueue` is a low-level codec helper, not service orchestration.
+
+- **httpserver**: ❌ High-level server APIs (e.g., `HTTPServer`, request handlers). This is internal codec logic, not exposed API.
+
+- **transport**: ❌ Transport layer (QUIC, sockets, datagrams). HPACK is application-layer (HTTP/2 framing), not transport. Even though HTTP/3 uses QPACK, this is clearly HPACK (HTTP/2), and no QUIC references.
+
+### 4. **Conclusion**
+The file implements a queueing mechanism for HPACK header block decoding in HTTP/2 — a core part of the HTTP protocol stack in Proxygen. It directly depends on `HPACKCodec`, resides in the HTTP codec subtree, and serves the HTTP/2 decoding pipeline.
+
+Thus, it belongs to the **http_general** module.
+
+Probability estimate:
+- Strong alignment with `http_general` (path, responsibility, dependencies).
+- No meaningful overlap with other modules.
+
+**The probability that this file belongs to module 'http_general' is 95%.**

@@ -1,0 +1,52 @@
+Let’s analyze the file `proxygen/lib/http/HQConnector.cpp` step by step:
+
+### 1. **File Path and Context**
+- Path: `proxygen/lib/http/HQConnector.cpp`
+- Belongs to `proxygen/lib/http/`, which is part of the HTTP protocol layer.
+- The class name `HQConnector` suggests it's related to **HTTP/3 (H3)** over **QUIC**, since “HQ” commonly stands for *HTTP over QUIC* in Proxygen (e.g., `HQSession`, `H3EarlyDataHandler`).
+
+### 2. **Includes Analysis**
+Key includes:
+- `proxygen/lib/http/HQConnector.h` — self header
+- `proxygen/lib/http/codec/H3EarlyDataHandler.h` — HTTP/3 early data handling (codec-level)
+- `proxygen/lib/http/session/HQSession.h` — session management for HTTP/3
+- `quic/api/QuicSocket.h`, `quic/fizz/client/handshake/FizzClientQuicHandshakeContext.h`, etc. — QUIC transport + TLS handshake via Fizz
+- `folly/io/SocketOptionMap.h`, `FollyQuicEventBase`, `FollyQuicAsyncUDPSocket` — low-level I/O and event loop integration with QUIC
+
+This shows a **tight coupling between HTTP/3 session logic and QUIC transport setup**, but the class itself is *not* implementing raw QUIC transport; rather, it's orchestrating the connection setup for an HTTP/3 client.
+
+### 3. **Class Responsibilities (from code)**
+- Constructor takes `Callback*`, timeout, error behavior — typical for connection initiation.
+- `connect()` method:
+  - Creates `FollyQuicEventBase`, `FollyQuicAsyncUDPSocket`
+  - Builds `QuicClientTransport` using `FizzClientQuicHandshakeContext`
+  - Sets hostname, PSK cache, etc.
+  - Ultimately initiates a QUIC connection that will be used for HTTP/3
+- Holds a `session_` (`HQSession`) and manages its lifecycle (`reset()` drops connection).
+- Uses `H3EarlyDataHandler` (implied via include), suggesting support for HTTP/3 early data.
+
+So: This class is the **client-side connector for HTTP/3**, bridging the HTTP layer (`HQSession`) with the QUIC transport layer.
+
+### 4. **Comparison with Candidate Modules**
+
+| Module | Relevance |
+|--------|-----------|
+| `dns` | ❌ No DNS resolution logic here. |
+| `pools` | ❌ Not involved in backend pooling or service discovery. |
+| `ssl` | ⚠️ Uses Fizz/TLS context, but only as a parameter — not managing SSL contexts or stats directly. Not core responsibility. |
+| `general` | ❌ Too generic; this is HTTP-specific and not a utility. |
+| `http_general` | ✅ Strong candidate: lives under `proxygen/lib/http/`, implements HTTP/3 connection orchestration, uses `HQSession`, `H3EarlyDataHandler`, and is part of the HTTP protocol stack (not transport abstraction). |
+| `services` | ❌ Server-side focus; this is client-side connection initiation. |
+| `httpserver` | ❌ High-level server framework; this is low-level client connector. |
+| `transport` | ⚠️ Tempting because of QUIC usage, but note: `transport` module is defined as *"lower-level transport capabilities under proxygen/lib/transport/"*, especially for QUIC/HTTP3 *transport*. However, this file is in `lib/http/`, not `lib/transport/`. Moreover, it does **not** implement socket/UDP/QUIC primitives — it consumes them via `QuicClientTransport`, `FollyQuicAsyncUDPSocket`, etc., to build an HTTP/3 connection. So it's *using* transport, not *being* the transport layer. |
+
+### 5. **Key Differentiator**
+- The `transport` module is for **raw transport abstractions** (e.g., QUIC socket wrappers, congestion control, packetization).
+- The `http_general` module covers **HTTP protocol logic**, including HTTP/3 session and connection setup *on top of* transport — exactly what `HQConnector` does: it creates a QUIC connection *to serve HTTP/3 transactions*, and hands off to `HQSession`.
+
+Also, reference examples (though none provided explicitly) would likely place `HQSession`, `H3Codec`, `HQConnector` under `http_general`, since they are part of the HTTP/3 implementation within the HTTP layer.
+
+### ✅ Conclusion
+The file is a client-side connector for initiating HTTP/3 (HQ) connections, residing in `proxygen/lib/http/`, tightly integrated with HTTP session management and using QUIC as a transport — but its primary role is HTTP protocol coordination, not transport implementation.
+
+**Assigned Module**: [`http_general`]

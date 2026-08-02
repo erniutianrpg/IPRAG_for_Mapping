@@ -1,0 +1,85 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `folly/Memory.h` → generic utility (Folly)
+  - `proxygen/lib/http/HTTP3ErrorCode.h`
+  - `proxygen/lib/http/HTTPMessage.h`
+  - `proxygen/lib/http/codec/ErrorCode.h`
+  - `proxygen/lib/utils/Exception.h`
+  
+  ⇒ Strong signal: this is in the `proxygen/lib/http/` ecosystem, specifically involving HTTP/3 error codes, HTTP messages, codec errors, and a base exception class from utils.
+
+- **Namespace**: `proxygen`
+- **Types**:
+  - `class HTTPException` — inherits from `proxygen::Exception`
+  - `enum class Direction` (inside `HTTPException`)
+- **Functions**:
+  - `toHTTP3ErrorCode(proxygen::ErrorCode err)` — conversion between generic proxygen error codes and HTTP/3-specific ones.
+  - Destructor and setters for:
+    - HTTP status code (`setHttpStatusCode`)
+    - HTTP/3 error code (`setHttp3ErrorCode`)
+    - Codec-level error code (`setCodecStatusCode`)
+    - errno
+    - Partial HTTP message (`setPartialMsg`)
+  - Helper methods to check presence of each field.
+
+- **Raw excerpt** confirms:
+  - The class `HTTPException` is central.
+  - It aggregates multiple protocol-layer error contexts: HTTP (1.x/2), HTTP/3, codec-level, system-level (`errno`), and partial message state.
+  - Uses `folly::Optional`, `std::unique_ptr<HTTPMessage>`, etc.
+
+---
+
+### 2. **Module Candidate Analysis**
+
+#### ✅ **http_general**
+- Definition: *“common HTTP implementation under `proxygen/lib/http/`... responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3.”*
+- Evidence:
+  - File includes `HTTPMessage.h`, `HTTP3ErrorCode.h`, `codec/ErrorCode.h` — all core HTTP protocol abstractions.
+  - `HTTPException` is a *protocol-level exception* that carries HTTP status, HTTP/3 error, codec error — exactly the kind of cross-layer error handling needed in the HTTP core layer.
+  - Lives in `proxygen::` namespace; no indication it's tied to transport (QUIC sockets), server infrastructure, or service logic.
+  - Not in `utils/` directly (though it inherits from `Exception` in `utils/`), but the *purpose* is HTTP-specific error aggregation — not general utility.
+  - The `toHTTP3ErrorCode` helper bridges generic `proxygen::ErrorCode` to `HTTP3::ErrorCode`, which is typical in the HTTP core layer where different protocol layers need translation.
+
+→ **Strong match**.
+
+#### ❌ **general**
+- Definition: *“corresponds to `proxygen/lib/utils/` and some common auxiliary capabilities… foundational support for core HTTP abstractions…”*
+- While `HTTPException` inherits from `proxygen::Exception` (from `utils/Exception.h`), the class itself is *not* a generic utility — it’s tightly coupled to HTTP semantics (status codes, partial messages, HTTP/3 errors).
+- Generic utilities would be things like logging, string helpers, time utilities, etc., not protocol-aware exceptions.
+- So while it *uses* a general utility, the file’s *purpose* is HTTP-specific.
+
+→ **Low match** (~20–30%).
+
+#### ❌ **transport**
+- Definition: *“lower-level transport capabilities… QUIC / HTTP/3… working with QUIC transport, datagram/socket, token/PSK cache.”*
+- This file does **not** include any transport headers (e.g., `QuicSocket`, `QuicTransport`, ` folly/io/async/AsyncSocket`, etc.).
+- Though it uses `HTTP3ErrorCode`, that’s a *protocol-level* error code enum, not transport-layer (e.g., QUIC transport error codes like `APPLICATION_ERROR`, `CONNECTION_REFUSED`). The `HTTP3::ErrorCode` here is likely the *HTTP/3 application-layer* error code (per RFC 9114), not QUIC transport errors.
+- No socket, connection, or QUIC-specific logic.
+
+→ **Very low match** (<5%).
+
+#### ❌ **services**, **httpserver**, **dns**, **pools**, **sampling**
+- These are higher-level or orthogonal:
+  - `services`: connection management, worker threads — no evidence here.
+  - `httpserver`: high-level server APIs — this is a low-level exception type, not server API.
+  - `dns`, `pools`, `sampling`: completely unrelated — no DNS, pool config, or sampling logic.
+
+→ **Negligible match** (0–5%).
+
+---
+
+### 3. **Conclusion**
+
+The file defines `HTTPException`, a central exception type used across HTTP protocol processing (including HTTP/3), and resides logically within the HTTP core layer (`proxygen/lib/http/`). It integrates HTTP status, codec errors, and HTTP/3 errors — precisely what `http_general` is designed for.
+
+**Probability assignment**:
+- `http_general`: **95%**
+- `general`: 3%
+- All others: ≤2% combined
+
+---
+
+"The probability that this file belongs to module 'http_general' is 95%."

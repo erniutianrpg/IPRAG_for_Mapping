@@ -1,0 +1,68 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+### File Summary:
+- **Module docstring**: *"Internal worker state (global). This includes the currently active and reserved tasks, statistics, and revoked tasks."*  
+  → Strong signal: this is about **worker runtime state**, not app-level config, backends, CLI, etc.
+
+- **Imports**:
+  - `kombu.serialization.pickle`, `kombu.utils.objects.cached_property`: low-level messaging/serialization utilities — used in worker internals.
+  - `celery.exceptions.WorkerShutdown`, `WorkerTerminate`: worker lifecycle exceptions.
+  - `celery.utils.collections.LimitedSet`: utility for bounded collections (e.g., revocation cache).
+  - No imports from `backends`, `app`, `events`, `bin`, `contrib`, `security`, or `loaders` — notably missing backend-specific modules (e.g., `redis`, `sqlalchemy`) or app-level config (`celery.app`).
+
+- **Constants**:  
+  `REVOKES_MAX`, `SUCCESSFUL_MAX`, `REVOKE_EXPIRES`, `SUCCESSFUL_EXPIRES`, `C_BENCH`, `C_BENCH_EVERY`  
+  → These are clearly **worker state tuning parameters**, especially around task revocation and success tracking — typical of internal worker state management.
+
+- **Functions**:
+  - `reset_state()`
+  - `maybe_shutdown()`
+  - `task_reserved(...)`
+  - `task_accepted(...)`
+  - `task_ready(...)`
+
+  These are **state transition handlers** for tasks as they move through the worker pipeline: reserved → accepted → ready (i.e., executed). This matches exactly how Celery workers manage request lifecycle internally.
+
+- **Class `Persistent`**:
+  - Handles persistence of worker state via `shelve`, with methods like `merge`, `sync`, `save`, `_merge_revoked_v1/v2/v3`.
+  - Manages revoked tasks across versions — critical for worker durability (e.g., after restart, avoid re-executing revoked tasks).
+  - Uses `zlib` compression, pickle serialization — consistent with worker-local state persistence (not backend result storage; backends store *results*, this stores *revoked/active/reserved* state).
+  - Note: This is *not* a result backend — it doesn’t interact with AMQP, Redis, DB, etc. It’s local to the worker process.
+
+### Comparison with Candidate Modules:
+
+- **app**: ❌ No — no app object, config, task registration, routing. This is not high-level app logic.
+
+- **backends**: ❌ No — no result storage logic, no interaction with external stores (Redis/DB/etc.), no `get`, `set`, `forget`. The `Persistent` class uses `shelve`, which is local disk-based and not exposed as a backend API.
+
+- **bin**: ❌ No — no CLI parsing, no command entry points, no subcommand logic.
+
+- **contrib**: ❌ No — no Django integration, no pytest helpers, no abortable tasks, etc.
+
+- **events**: ❌ No — no event sending/receiving, no `EventDispatcher`, no `snapshot`, no monitoring streams.
+
+- **fixups**: ❌ No — no framework-specific startup hooks or compatibility patches.
+
+- **loaders**: ❌ No — no config loading, no module importing, no app bootstrapping.
+
+- **security**: ❌ No — no signing, certificates, secure serialization — only standard `pickle`.
+
+- **utils**: ⚠️ Partial — it uses some utils (`LimitedSet`, `cached_property`), but the *purpose* is not generic utilities; it's highly specific to **worker state management**. `utils` would contain reusable helpers, not state machines tied to worker lifecycle.
+
+- **worker**: ✅✅✅ Strong match:
+  - Docstring explicitly says “Internal worker state (global)”.
+  - Functions model task state transitions inside the worker (`task_reserved`, `task_accepted`, `task_ready`).
+  - `Persistent` class handles durable worker state (revoked tasks, stats) — a known component in Celery’s worker module (e.g., `celery.worker.state` or `celery.worker.components`).
+  - Constants like `REVOKES_MAX`, `REVOKE_EXPIRES` are defined in worker state modules.
+  - Exceptions like `WorkerShutdown` are raised *by* the worker during shutdown — handled here.
+
+In fact, this file strongly resembles `celery/worker/state.py` (or similar), which maintains in-memory + optionally persistent state for the worker (active/reserved/revoked tasks, counters, etc.).
+
+### Probability Assessment:
+- **worker**: 95% — near-perfect match on semantics, structure, and purpose.
+- **utils**: 5% — only because it uses some utils, but the *role* is not utility; it’s core worker runtime state.
+- All others: <1%.
+
+---
+
+**The probability that this file belongs to module 'worker' is 95%.**

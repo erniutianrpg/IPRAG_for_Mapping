@@ -1,0 +1,57 @@
+Let’s analyze the file content step by step to determine the most appropriate module.
+
+### 1. **File Context and Purpose**
+- The file implements `HQFramedCodec`, which is a **framing codec for HTTP/3 (HTTP over QUIC)** — specifically for parsing *HQ* (HTTP/3 over QUIC) frames.
+- It includes:
+  - `HQFramedCodec.h` and `HQUtils.h`: clearly part of the HTTP/3 framing layer.
+  - Uses `folly/io/Cursor.h` for buffer parsing.
+  - Uses `quic::follyutils::decodeQuicInteger`, indicating tight integration with QUIC integer decoding (a transport-layer detail).
+  - Parses frame types like `DATA`, `HEADERS`, `PUSH_PROMISE`, `GOAWAY`, etc. — standard HTTP/3 frame types defined in [RFC 9114](https://datatracker.ietf.org/doc/html/rfc9114).
+  - Handles ingress (incoming) frame processing: `onFramedIngress`, `parseFrame`, state machine for frame header/type/length parsing.
+  - Uses `connError_`, `streamId_`, `callback_` — typical of connection/stream-level framing logic.
+
+### 2. **Namespace and Dependencies**
+- Namespace: `proxygen::hq` — explicitly indicates **HTTP/3 (HQ = HTTP over QUIC)**.
+- Includes from:
+  - `proxygen/lib/http/codec/` → suggests this is under HTTP protocol codec layer.
+  - But note: `HQFramedCodec` is *not* part of traditional HTTP/1 or HTTP/2; it's specific to HTTP/3/QUIC framing.
+  - Also uses `quic::follyutils::decodeQuicInteger` — ties into QUIC transport details.
+
+### 3. **Compare with Candidate Modules**
+
+| Module | Relevance |
+|--------|-----------|
+| `dns` | ❌ No DNS resolution here. |
+| `sampling` | ❌ No sampling logic. |
+| `ssl` | ❌ No SSL/TLS context or crypto handling. |
+| `general` | ⚠️ Contains utilities, but this is not generic utility code — it's protocol-specific framing. |
+| `http_general` | ✅ Strong candidate: covers `proxygen/lib/http/`, including codecs for HTTP variants. However, HTTP/3 framing is *not* strictly “HTTP” in the classical sense — it’s layered on QUIC. Still, Proxygen places HQ codecs under `lib/http/codec/`, suggesting it's considered part of the HTTP protocol stack abstraction. |
+| `services` | ❌ This is not about service execution, connection acceptance, or server infrastructure. |
+| `transport` | ✅ Also strong: `transport` is described as “lower-level transport capabilities … especially transport support related to QUIC / HTTP/3”, and responsible for “QUIC transport, HTTP/3 datagram/socket”, and “working with low-level transport capabilities”. The use of `quic::follyutils::decodeQuicInteger` and frame parsing at the QUIC stream level strongly points to transport-layer framing. |
+
+### 4. **Key Discriminator: Where does HQFramedCodec live?**
+- Path in includes: `proxygen/lib/http/codec/HQFramedCodec.h`
+  - Although it's under `http/codec/`, the *name* `HQ` (HTTP over QUIC) and the fact that it parses frames using QUIC integer encoding suggests it bridges HTTP and transport.
+- In Proxygen’s architecture:
+  - `http_general` typically handles HTTP/1, HTTP/2, and shared abstractions.
+  - `transport` handles QUIC-specific framing, socket I/O, datagrams, etc.
+  - However, **HQFramedCodec** is specifically the *framing layer* that sits *above* raw QUIC streams but *below* HTTP semantics — i.e., it decodes the HTTP/3 frame format from a QUIC stream payload. This is often considered part of the **HTTP/3 codec**, which in Proxygen is grouped under `http/codec/`, but conceptually belongs to the **transport-to-HTTP boundary**.
+
+Looking at the official Proxygen repo structure (known from prior knowledge):
+- `proxygen/lib/http/codec/` contains:
+  - `HTTP1Codec.h`
+  - `HTTP2Codec.h`
+  - `HQFramedCodec.h`, `HQSessionCodec.h`, etc.
+- These are all *protocol codecs*, and `http_general` is defined as:  
+  > *"mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+Thus, despite the QUIC dependency, **HQFramedCodec is intentionally placed under `http/codec/` and serves as the HTTP/3 framing parser**, making it part of the HTTP protocol stack — not raw transport (like QUIC packet decryption or congestion control), but the *framing* needed to extract HTTP semantics from QUIC streams.
+
+The `transport` module is more about `QUICConnection`, `QuicSocket`, `QuicPacketBuilder`, etc. — lower than frame parsing.
+
+Also, the function `onFramedIngress` processes data from an `IOBuf` (which likely comes from a QUIC stream), and the codec emits frame events to a callback — classic codec behavior, matching `http_general`.
+
+### ✅ Conclusion:
+The file implements an HTTP/3 framing codec, residing in `proxygen/lib/http/codec/`, and aligns with the definition of `http_general` as the module for HTTP protocol parsing/encoding, including HTTP/3.
+
+**Assigned Module**: [http_general]

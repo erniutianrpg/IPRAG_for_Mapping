@@ -1,0 +1,103 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `decode_data_process.h` → core header for decoding logic
+  - `distributed_hardware_log.h` → logging (common in DH modules)
+  - `graphic_common_c.h` → graphics-related utilities (e.g., image format handling)
+  - `convert_nv12_to_nv21.h` → YUV format conversion (NV12 ↔ NV21), typical in video decode/post-process
+  - `dcamera_utils_tools.h` → general DCamera utility functions
+  - `decode_video_callback.h` → callback interface for decoder events
+
+- **Namespaces**: `OHOS::DistributedHardware` → strongly indicates this is part of the **Distributed Hardware (DH)** subsystem, specifically the distributed camera feature.
+
+- **Key Classes & Functions**:
+  - `DecodeDataProcess`: main class handling video decoding logic.
+    - `InitNode()`, `InitDecoder()`, `FeedDecoderInputBuffer()`, `OnOutputBufferAvailable()`, etc. → full decoder lifecycle management.
+    - Uses `Media::AVCodecBufferInfo`, `sptr<Surface>`, `SurfaceBuffer` → integrates with OHOS media framework and graphic subsystem.
+    - Handles `DCameraCodecEvent`, `EventBus`, `CodecPacket` → event-driven pipeline integration.
+    - Performs format checks (`IsConvertible`, `IsInDecoderRange`), resolution alignment, YUV plane copying (`CopyYUVPlaneByRow`, `CheckCopyImageInfo`), color-space/format conversion logic.
+    - Has `DecodeSurfaceListener` inner class that listens for buffer availability on a Surface — used when output goes to a Surface (e.g., for display or further processing).
+  - Logging uses `DHLOGD/E` → Distributed Hardware logging macros.
+
+- **Raw excerpt highlights**:
+  - Destructor releases decoder resources.
+  - Initialization validates source/target configs and decides whether to enable decoding (e.g., if codec types match, skip decode).
+  - Decoding is conditional: only if source ≠ target codec (or target = NO_CODEC).
+  - Output data is copied from `SurfaceBuffer` → implies post-decode processing before handing off to consumer (e.g., app/UI).
+  - Event bus registration for `DCameraCodecEvent` → tightly coupled with DCamera pipeline.
+
+---
+
+### **2. Module Comparison**
+
+Let’s evaluate each candidate:
+
+#### ✅ **CameraDataPostProcess**
+- **Responsibility**: *“decodes, converts formats, and processes frame rate, resolution, and related properties of received image data so that the controller can use distributed camera data as if using a local Camera.”*
+- This matches **exactly**:
+  - The file is about **decoding** remote video streams (received over channel) and converting them (e.g., NV12→NV21) to usable formats.
+  - It operates on the **source side (controller side)** — because it receives encoded data (from sink), decodes it, and prepares it for local consumption (e.g. preview).
+  - Uses `Surface`/`SurfaceBuffer` → likely feeding into local preview/display.
+  - `DecodeDataProcess::PostOutputDataBuffers()` suggests handing decoded frames to next stage (e.g., preview pipeline).
+  - The class name `DecodeDataProcess` and inclusion of `decode_video_callback.h` align with post-processing after transmission.
+
+#### ❌ **DistributedCameraSourceMgr**
+- Manages **lifecycle, state machine, IPC service, callbacks**, but not low-level decoding/format conversion.
+- This file does **not** handle IPC, session management, or high-level control commands — it’s purely data processing.
+
+#### ❌ **ChannelCommon / ChannelSource / ChannelSink**
+- These are about **transport layer**: SoftBus, sessions, message passing.
+- This file has no network/socket code, no SoftBus APIs, no session management — only decoding logic *after* data is received.
+
+#### ❌ **CameraDataProcessCommon**
+- Provides *common frameworks*, interfaces, codecs, color space conversion — but this file is **concrete implementation**, not abstract interface or shared framework.
+- While it uses common utilities (`graphic_common_c.h`, `dcamera_utils_tools.h`), its role is specific: **post-receive decode**, not generic pipeline scaffolding.
+
+#### ❌ **CameraDataPreProcess**
+- Operates on **sink side / input side**, i.e., *before* transmission/encoding.
+- This file is clearly on the **receiving side** (decoding after transmission), so it's *post*-process, not pre-process.
+
+#### ❌ **CameraServiceCommon**
+- Shared basic services: commands, protocols, metadata, open-camera info.
+- No evidence of protocol handling, metadata setting, or camera device control here.
+
+#### ❌ **VirtualCameraHdf**
+- HDF/HDI layer virtual camera device implementation.
+- This file uses `sptr<Surface>`, `Media::Format`, `AVCodecBufferInfo` — all **user-space media framework**, not HDF driver layer.
+
+#### ❌ **utils**
+- Generic utilities: buffers, error codes, constants.
+- While it includes `dcamera_utils_tools.h`, the bulk of this file is a **dedicated decoder node**, not a utility helper.
+
+---
+
+### **3. Key Evidence Supporting CameraDataPostProcess**
+| Evidence | Match with CameraDataPostProcess |
+|--------|----------------------------------|
+| Decoding remote video stream | ✅ Core responsibility |
+| Format conversion (NV12↔NV21) | ✅ Part of post-processing |
+| Resolution/alignment handling | ✅ Adjusting for display/consumption |
+| Output to `Surface` via `DecodeSurfaceListener` | ✅ Feeding decoded frames to local preview/render |
+| Runs on source side (controller) after receiving encoded data | ✅ Explicitly stated in module description |
+| Integrates with DCamera pipeline event bus | ✅ Post-process node plugged into pipeline |
+
+Also note:  
+- The class is named `DecodeDataProcess`, and the module `CameraDataPostProcess` is expected to contain such decoding nodes.
+- In distributed camera architecture, the **source side must decode** the encoded stream sent by the sink to present it locally — exactly what this file does.
+
+---
+
+### ✅ Final Assessment
+
+The probability that this file belongs to module **CameraDataPostProcess** is **98%**.
+
+(2% uncertainty due to possible naming variations — e.g., some projects might put decode logic in `CameraDataProcessCommon`, but given the explicit module descriptions and concrete responsibilities, `CameraDataPostProcess` is overwhelmingly the best fit.)
+
+---
+
+**Answer**:  
+The probability that this file belongs to module 'CameraDataPostProcess' is 98%.

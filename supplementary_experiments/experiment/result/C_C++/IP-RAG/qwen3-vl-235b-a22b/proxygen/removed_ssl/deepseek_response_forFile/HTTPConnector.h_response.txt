@@ -1,0 +1,71 @@
+Let’s analyze the file `proxygen/lib/http/HTTPConnector.h` step by step, comparing its content and responsibilities with the candidate modules.
+
+---
+
+### 1. **File Location and Context**
+- Path: `proxygen/lib/http/HTTPConnector.h`
+  - Located under `proxygen/lib/http/`, which is a strong indicator it belongs to HTTP-related core functionality.
+  - Not under `utils/`, `services/`, `transport/`, or `httpserver/`.
+
+### 2. **Purpose of the Class**
+The `HTTPConnector` class:
+- Manages establishing TCP (and optionally TLS) connections to upstream HTTP servers.
+- Uses `folly::AsyncSocket` for async I/O.
+- Integrates with `HHWheelTimer` / `WheelTimerInstance` for timeouts.
+- Supports both plaintext and SSL connections via `connect()` and `connectSSL()`.
+- After successful connection, it creates or prepares an `HTTPUpstreamSession` (note: `HTTPUpstreamSession` is forward-declared; likely a session object that handles the HTTP protocol after transport is established).
+- Allows injection of an `HTTPCodecFactory`, indicating it participates in setting up the HTTP codec stack (i.e., protocol layer).
+- Implements `folly::AsyncSocket::ConnectCallback`, so it’s tightly coupled with socket-level connection handling.
+
+Key point: It is **not** doing DNS resolution (so not `dns`), nor managing pools (`pools`), nor sampling (`sampling`). It is not a high-level server framework (`httpserver`), nor QUIC/HTTP3 transport (`transport`). It is also not generic utility code (`general`) — it’s specifically about *connecting* to HTTP backends and preparing for HTTP session establishment.
+
+### 3. **Relationship to Candidate Modules**
+
+#### ✅ `http_general`
+- Definition: *"mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+- `HTTPConnector`:
+  - Lives under `proxygen/lib/http/`.
+  - Is used to establish connections *for HTTP sessions* (specifically `HTTPUpstreamSession`, implying client-side or proxy-to-upstream use).
+  - Coordinates with HTTP codecs via `setHTTPCodecFactory`.
+  - Is part of the infrastructure needed to *initiate* an HTTP session — a prerequisite for protocol processing.
+  - Not a codec itself, but tightly integrated with codec/session setup.
+
+This fits well: `http_general` is described as the *HTTP protocol core layer*, including session management. While `HTTPConnector` operates at the transport connection level, it does so *in service of HTTP session establishment*, and is colocated with other HTTP core components (e.g., `HTTPCodec`, `DefaultHTTPCodecFactory` are included).
+
+#### ❌ `general`
+- Defined as utils/common auxiliary capabilities (e.g., `proxygen/lib/utils/`).
+- This file is not in `utils/`, and its responsibilities are HTTP-specific, not generic.
+
+#### ❌ `services`
+- Defined as server-side infrastructure: connection acceptance, workers, service execution.
+- `HTTPConnector` is used for *outgoing* connections (upstream), not accepting incoming ones. Also, `HTTPUpstreamSession` suggests client/proxy role, not server.
+
+#### ❌ `httpserver`
+- High-level API for building HTTP servers — this is low-level connection setup, not a server wrapper.
+
+#### ❌ `transport`
+- Specifically for QUIC/HTTP3 transport layer.
+- This uses `folly::AsyncSocket`, not QUIC sockets; no mention of `quic`, `datagram`, `token`, etc.
+
+#### ❌ `dns`, `pools`, `sampling`
+- Clearly unrelated.
+
+---
+
+### 4. **Cross-check with Inclusions**
+Includes:
+- `DefaultHTTPCodecFactory.h`, `HTTPCodec.h` → strongly HTTP protocol layer.
+- `Time.h`, `WheelTimerInstance.h` → time utilities, but used in HTTP context.
+- `TransportInfo.h` from `wangle/acceptor/` — used for metadata, but still in HTTP session context.
+- No DNS headers, no pool config, no sampling logic.
+
+All point to HTTP core infrastructure, not generic utilities.
+
+---
+
+### ✅ Conclusion
+`HTTPConnector` is a foundational component in the HTTP client/upstream connection pipeline, directly supporting HTTP session creation and tightly integrated with HTTP codec/session abstractions. Its location (`proxygen/lib/http/`) and responsibilities align precisely with the definition of the **`http_general`** module.
+
+---
+
+**Assigned Module**: [http_general]

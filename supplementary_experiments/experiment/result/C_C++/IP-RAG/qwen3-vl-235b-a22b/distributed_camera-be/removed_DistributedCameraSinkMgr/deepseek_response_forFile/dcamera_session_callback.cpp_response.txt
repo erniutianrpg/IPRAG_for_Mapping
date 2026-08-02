@@ -1,0 +1,79 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+services\cameraservice\cameraoperator\client\src\callback\dcamera_session_callback.cpp
+```
+- Located under `cameraoperator/client/` → indicates this is part of the **client-side** (i.e., controller/source side) of the camera operator.
+- Specifically in `callback/`, suggesting it handles callback logic for session events.
+
+### 2. **File Content Summary**
+- Includes:
+  - `dcamera_session_callback.h`: header defining the callback interface.
+  - `distributed_camera_constants.h`: constants used across distributed camera modules.
+  - `distributed_hardware_log.h`: logging utility.
+- Namespace: `OHOS::DistributedHardware`
+- Class: `DCameraSessionCallback`
+  - Constructor takes a `std::shared_ptr<StateCallback>` — implying it wraps or forwards to a higher-level state callback.
+  - Implements `OnError(int32_t errorCode)`
+    - Logs error.
+    - If `callback_` is valid, constructs a `DCameraEvent` with:
+      - `eventType_ = DCAMERA_MESSAGE`
+      - `eventResult_ = DCAMERA_EVENT_CAMERA_ERROR`
+    - Then calls `callback_->OnStateChanged(event)`.
+
+So this class is a **session-level error callback adapter**, translating low-level session errors into high-level state change events for the client (controller) side.
+
+### 3. **What does this belong to?**
+Let’s map against candidate modules:
+
+- **DistributedCameraSourceMgr**:  
+  Described as responsible for *lifecycle, state machine, controller, input stream, data processing, IPC service, and **callback management on the source side***.  
+  ✅ This file is on the *source/controller side*, and it's handling *callback management* (specifically session error → state change).  
+  The `StateCallback` it wraps is likely part of the source manager’s state machine.
+
+- **ChannelCommon / ChannelSource / ChannelSink**:  
+  These are about *channel/session establishment and data/command transmission* via SoftBus.  
+  While `DCameraSessionCallback` may be triggered by channel-layer errors (e.g., session disconnect), the file itself is not implementing channel logic—it’s just consuming session events and forwarding them upward. So **not** primarily a channel module.
+
+- **CameraDataProcessCommon / Pre/PostProcess**:  
+  These deal with image/data pipelines—this file does **not** touch image data, encoding, frame rate, etc. ❌
+
+- **CameraServiceCommon**:  
+  Provides shared basics like protocols, camera info, events, metadata, open-camera info, controller interfaces.  
+  The `DCameraEvent` structure and error codes (`DCAMERA_EVENT_CAMERA_ERROR`) likely come from here, but this file is *using* those, not defining the common infrastructure. It’s more of a *client-side adapter*, not shared core.
+
+- **VirtualCameraHdf**:  
+  HDF/HDI layer virtual device implementation—this is C++ client logic, not HDF driver or HDI proxy. ❌
+
+- **utils**:  
+  Described as providing *common utilities*, *constants*, *error codes*, and *callback handling for CameraClient/CameraOperator*, including “preview/photo/video callback handling”.  
+  This file is literally in `cameraoperator/client/src/callback/`, and implements callback handling for session errors.  
+  The description says: *"including local camera query, open, close, stream acquisition, and preview/photo/video callback handling."*  
+  Though this is for *distributed* session callbacks, it fits the pattern of utility-level callback adapters used by `CameraOperator`.
+
+But note: `utils` is described as *general support capabilities related to CameraClient/CameraOperator*, and this file is directly under `cameraoperator/client/src/callback/` — strongly suggesting it belongs to the **utils** layer as a helper callback wrapper.
+
+However, let’s compare with **DistributedCameraSourceMgr**, which explicitly includes "*callback management on the source side*". The key distinction:
+- If `DCameraSessionCallback` is tightly coupled with the source manager’s state machine (e.g., owned/used only by `DistributedCameraSourceMgr`), then it belongs there.
+- If it’s a generic adapter used across multiple components (e.g., by `CameraOperator`, `CameraClient`, etc.), then `utils` is better.
+
+Looking at the constructor:
+```cpp
+DCameraSessionCallback::DCameraSessionCallback(const std::shared_ptr<StateCallback>& callback)
+```
+The `StateCallback` is likely an interface defined in `CameraServiceCommon` or used by `SourceMgr`. But the fact that this class lives in `cameraoperator/client/src/callback/` suggests it’s part of the **CameraOperator client layer**, which is a thin wrapper over the distributed camera service — typical of utility/helper code.
+
+Also, reference examples (though none provided) would likely place such a minimal callback adapter in `utils`, especially since:
+- It doesn’t implement business logic (like lifecycle control).
+- It doesn’t handle IPC/channel directly.
+- It’s purely a *glue* between low-level session errors and high-level state callbacks.
+
+Moreover, `distributed_hardware_log.h` and `distributed_camera_constants.h` are typical of shared/util layers.
+
+### Final Decision:
+This file is a **utility callback adapter** used by the `CameraOperator` client to translate session errors into state events. It does not implement core source management logic, nor channel, nor data processing.
+
+Thus, the best match is:
+
+**Assigned Module**: [utils]

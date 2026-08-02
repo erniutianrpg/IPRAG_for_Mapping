@@ -1,0 +1,71 @@
+Let’s analyze the file content step by step to determine which module it belongs to.
+
+### 1. **File Name & Macro**
+- Header guard: `OHOS_DECODE_DATA_PROCESS_H`
+- Suggests this is a **data processing component focused on decoding**.
+
+### 2. **Included Headers**
+Key includes:
+- `avcodec_video_decoder.h`, `avsharedmemory.h`, `format.h`, `media_errors.h` → media codec/decoder infrastructure.
+- `dcamera_codec_event.h`, `event_bus.h`, `event_sender.h`, `eventbus_handler.h` → event-driven pipeline.
+- `abstract_data_process.h`, `dcamera_pipeline_source.h` → part of a data processing pipeline, likely in a distributed camera context.
+- `data_buffer.h`, `image_common_type.h`, `surface.h`, `SurfaceBuffer` → handling decoded image frames and surfaces.
+- `distributed_camera_errno.h` → specific to distributed camera error codes.
+
+This strongly points to **video decoding as part of a distributed camera data flow**, not generic media playback.
+
+### 3. **Namespace**
+- `OHOS::DistributedHardware` → clearly part of the **Distributed Camera** subsystem.
+
+### 4. **Class Definition**
+- `DecodeDataProcess` inherits from:
+  - `EventSender`
+  - `EventBusHandler<DCameraCodecEvent>`
+  - `AbstractDataProcess`
+  - `std::enable_shared_from_this`
+→ This is a **pipeline node** that processes data (specifically video decode), handles events, and integrates into a data processing pipeline.
+
+### 5. **Key Functions**
+- `InitDecoder()`, `FeedDecoderInputBuffer()`, `OnOutputBufferAvailable()`, `CopyDecodedImage()`, `DecodeDone()` → core video decoding logic.
+- `GetDecoderOutputBuffer()`, `SetDecoderOutputSurface()` → surface-based output (e.g., for rendering or further processing).
+- `ProcessData(std::vector<std::shared_ptr<DataBuffer>>& inputBuffers)` → overrides abstract data process interface — receives raw encoded data, decodes it.
+- `PostOutputDataBuffers()` → pushes decoded frames downstream in pipeline.
+- `IsConvertible`, `IsInDecoderRange`, `GetSourceConfig`, `GetTargetConfig` → config negotiation between source/target video formats.
+
+This is clearly a **decoder stage** in a data pipeline — specifically, it takes encoded video (likely from remote camera), decodes it, and outputs raw frames (e.g., YUV) for consumption by the controller side.
+
+### 6. **Relation to Candidate Modules**
+
+Let’s evaluate each candidate:
+
+- **DistributedCameraSourceMgr**: Manages lifecycle, IPC, callbacks on *source* (controller) side. But this class is *not* a manager; it's a low-level data processor. Also, source side typically *receives* decoded frames — so decoding would happen there, but SourceMgr is higher-level orchestration. Possible, but too high-level.
+
+- **DistributedCameraSinkMgr**: Manages sink (controlled) side — where camera captures and encodes. Decoding does *not* happen here. So unlikely.
+
+- **ChannelSource / ChannelSink**: These are about SoftBus transport layer — no codec or surface handling here. Not matching.
+
+- **CameraDataProcessCommon**: Provides *common* frameworks, interfaces, codecs, color space conversion, etc. This class uses `AbstractDataProcess`, `EventBus`, and implements decoding — fits “common data processing framework” *if* it's reusable. However, it's tightly coupled with `DCameraCodecEvent`, `DCameraPipelineSource`, and distributed camera-specific configs (`VideoConfigParams`). So possibly *not* generic enough for "common".
+
+- **CameraDataPreProcess**: Preprocessing on sink/input side — e.g., before encoding. But this class does *decoding*, which happens on the *source* (controller) side *after* receiving encoded stream. So not pre-process.
+
+- **CameraDataPostProcess**: ✅ Explicitly described as:  
+  > *"responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution, and related properties of received image data so that the controller can use distributed camera data as if using a local Camera."*  
+  This matches **exactly**:
+  - Runs on source side (controller),
+  - Decodes incoming encoded video,
+  - Outputs processed frames (via `PostOutputDataBuffers`, `CopyDecodedImage`),
+  - Handles format/resolution conversion (`IsConvertible`, `GetAlignedHeight`, etc.),
+  - Integrates into pipeline via `AbstractDataProcess`.
+
+- **CameraServiceCommon**: Shared basic services (commands, protocols, metadata). This is more about service APIs, not actual decode logic.
+
+- **VirtualCameraHdf**: HDF/HDI layer virtual device — too low-level; no surface/AVCodec usage at that layer.
+
+- **utils**: Generic utilities — this is a full-fledged pipeline node, not a utility.
+
+### 7. **Conclusion**
+The class `DecodeDataProcess` implements video decoding as part of the **post-processing pipeline on the source side**, converting received encoded streams into usable decoded frames for the controller — precisely what `CameraDataPostProcess` is defined to do.
+
+---
+
+**Assigned Module**: [CameraDataPostProcess]

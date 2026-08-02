@@ -1,0 +1,141 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **File Summary**
+- **Header name**: `OHOS_ICAMERA_OPERATOR_H`
+- **Namespace**: `OHOS::DistributedHardware`
+- **Key types**:
+  - `StateCallback`: abstract base class for state change notifications (e.g., `OnStateChanged`, `OnMetadataResult`)
+  - `ResultCallback`: abstract base class for capture result callbacks (`OnPhotoResult`, `OnVideoResult`)
+  - `ICameraOperator`: abstract interface defining core camera control operations:
+    - Lifecycle: `Init()`, `UnInit()`
+    - Configuration: `UpdateSettings()`
+    - Capture control: `StartCapture()`, `StopCapture()`
+    - Callback registration: `SetStateCallback()`, `SetResultCallback()`
+- **Includes**:
+  - Standard C++: `<cstdint>`, `<memory>`, `<string>`, `<vector>`
+  - Distributed Camera-specific headers:
+    - `data_buffer.h` → data container
+    - `dcamera_capture_info_cmd.h` → capture configuration
+    - `dcamera_event_cmd.h` → event types
+    - `types.h` → shared types (e.g., `DCameraSettings`, `DCameraEvent`, `DataBuffer`)
+
+This is clearly an **interface definition header** — a pure abstract interface (`ICameraOperator`) with callback interfaces, used to decouple camera operation logic from its implementation. It defines *what* a camera operator must do, not *how*.
+
+It does **not** contain:
+- Any IPC/channel logic (no SoftBus, session, or transport APIs)
+- Any data processing (no codecs, color space, frame rate logic)
+- Any HDF/HDI device implementation details
+- Any service management or lifecycle coordination beyond the operator interface
+
+Now let’s evaluate each candidate:
+
+---
+
+### **1. DistributedCameraSinkMgr**
+- Responsible for **lifecycle, access control, controller, data processing, image/video output, event notification, IPC services on the sink side**.
+- This is a *manager* class that would likely *use* `ICameraOperator`, not define it.
+- The file is an interface, not a manager implementation.
+- ❌ Low match.
+
+### **2. ChannelCommon**
+- Provides **channel-layer capabilities**, SoftBus, sessions, channel interfaces/listeners.
+- No channel/session/IPC-related types or functions here.
+- ❌ Not matching.
+
+### **3. ChannelSource**
+- Controller-side channel implementation; sends commands, receives images.
+- Again, this is about communication infrastructure — not operator interface.
+- ❌ No match.
+
+### **4. ChannelSink**
+- Controlled-side channel implementation; receives commands, sends images.
+- Same as above — no channel logic here.
+- ❌ No match.
+
+### **5. CameraDataProcessCommon**
+- Common data processing frameworks, pipelines, codecs, color space, etc.
+- File has no data processing logic — only callbacks and operator interface.
+- ❌ Not matching.
+
+### **6. CameraDataPreProcess**
+- Sink-side preprocessing pipeline.
+- No preprocessing logic here.
+- ❌ No.
+
+### **7. CameraDataPostProcess**
+- Source-side post-processing (decoding, format conversion).
+- Not relevant — this is an interface, not processing code.
+- ❌ No.
+
+### **8. CameraServiceCommon**
+> *"Provides shared basic service capabilities for source and sink sides... including basic commands, protocols, camera information, channel information, events, Metadata settings, open-camera information, and controller interfaces."*
+
+- Key clues:
+  - Shared between source/sink → matches `namespace OHOS::DistributedHardware`
+  - Includes "controller interfaces" — `ICameraOperator` is exactly a controller-facing interface
+  - Includes "events", "Metadata settings", "open-camera information"
+    - We see `DCameraEvent`, `DCameraSettings`, `OnMetadataResult`, `StartCapture`, `UpdateSettings`
+  - This module is expected to provide *common interfaces*, not implementations.
+
+✅ Strong match: This header defines a core interface used by both sides (e.g., sink implements `ICameraOperator`, source uses it via proxy), and it's placed in the common namespace.
+
+### **9. VirtualCameraHdf**
+- Implements distributed virtual Camera at **HDF/HDI layer**, including Stream Operator, Metadata processing, IPC proxies/callbacks.
+- While `ICameraOperator` could be used *by* HDF drivers, this header is too high-level and generic — no HDF-specific types (e.g., `IHdiDevice`, `StreamOperator`, `HDI_*` macros), no IPC proxy declarations.
+- HDF layers usually have more concrete bindings; this is purely abstract.
+- ❌ Unlikely.
+
+### **10. utils**
+> *"Provides common distributed camera utilities, data buffers, indexes, constants, error codes, and general support capabilities related to CameraClient/CameraOperator..."*
+
+- Explicitly mentions **"related to CameraClient/CameraOperator"**
+- Includes "local camera query, open, close, stream acquisition, and preview/photo/video callback handling"
+- The file defines:
+  - `ICameraOperator` (core operator interface)
+  - `StateCallback`, `ResultCallback` (callback handlers for preview/photo/video)
+  - Uses `DataBuffer`, `DCameraEvent`, `DCameraSettings` — all utility-level types
+
+This is highly suggestive. In many architectures, the `utils` module holds **interfaces and helper types** used across modules — especially when they’re lightweight and shared.
+
+But note: `CameraServiceCommon` also claims to provide “controller interfaces”. So which is more precise?
+
+Let’s compare:
+| Feature | `utils` | `CameraServiceCommon` |
+|--------|---------|------------------------|
+| Purpose | General utilities, callbacks, buffers, error codes, *interfaces* like `CameraOperator` | Shared service capabilities: commands, protocols, events, metadata, controller interfaces |
+| Scope | Lower-level, cross-cutting helpers | Higher-level service abstraction |
+| File content | Pure abstract interface + callbacks — fits "utilities for CameraOperator" | Also plausible, but “service” implies more orchestration |
+
+However, the naming `OHOS_ICAMERA_OPERATOR_H` suggests it's part of a **standardized operator interface**, likely intended to be used by both client (source) and service (sink) — exactly what a *utility* interface would be.
+
+Also, in OpenHarmony-style modular design:
+- `utils` often contains `*.h` files with abstract interfaces and shared types.
+- `CameraServiceCommon` tends to include protocol definitions, command enums, service managers — not just the operator interface alone.
+
+Moreover, the includes are minimal and focused on data structures (`data_buffer.h`, `dcamera_*_cmd.h`, `types.h`) — typical of a utility layer.
+
+🔍 Critical clue: The file defines **only interfaces**, no service logic. That leans strongly toward `utils`, which explicitly says:  
+> *"general support capabilities related to CameraClient/CameraOperator"*
+
+Whereas `CameraServiceCommon` sounds more like a service facade (e.g., `CameraService`, `ICameraService`), not just the operator interface.
+
+---
+
+### Final Assessment:
+- **Highest match**: `utils` — because:
+  - Directly mentions `CameraOperator` in description.
+  - Contains only abstract interfaces and callbacks — classic utility header.
+  - No business logic, no IPC, no processing — just contracts.
+- **Second best**: `CameraServiceCommon` — plausible, but overreaching; this file is too narrow to be the full “service common” layer.
+
+Probability estimation:
+- `utils`: **85%**
+- `CameraServiceCommon`: **10%**
+- Others: ≤5% combined
+
+---
+
+**Answer**:
+The probability that this file belongs to module 'utils' is 85%.

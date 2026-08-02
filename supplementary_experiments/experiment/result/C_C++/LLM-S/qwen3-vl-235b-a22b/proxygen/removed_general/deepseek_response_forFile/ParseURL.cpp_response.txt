@@ -1,0 +1,90 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `proxygen/lib/utils/ParseURL.h` → core utility for URL parsing
+  - `algorithm`, `charconv`, `folly/portability/Sockets.h`, `UtilInl.h`
+  - `proxygen/external/http_parser/http_parser.h` → uses [http-parser](https://github.com/nodejs/http-parser), a low-level HTTP parser (used for parsing URLs, not full HTTP messages)
+- **Namespaces**: `proxygen`
+- **Types**: `http_parser_url` (from http_parser) — used for URL field extraction
+- **Functions**:
+  - `validateScheme()`
+  - `ParseURL::isSupportedScheme()`
+  - `ParseURL::getRedirectDestination()` — handles redirect logic (e.g., relative vs absolute redirects, host fallback)
+  - `ParseURL::parse()` — uses `http_parser_parse_url_options()` to parse URL into components (scheme, host, path, etc.)
+  - Helper: `startsWith()`
+
+The excerpt shows implementation of a `ParseURL` class (likely defined in `ParseURL.h`) that:
+- Parses URLs using `http_parser`'s URL parsing functionality.
+- Handles scheme validation (`http`/`https`).
+- Resolves redirect destinations, including relative redirects with fallback to request/host headers.
+- Extracts host, scheme, path, etc.
+
+This is clearly **URL parsing and manipulation logic**, specifically for HTTP contexts (redirects, schemes, hosts), and lives under `proxygen/lib/utils/`.
+
+---
+
+### **2. Module Candidate Analysis**
+
+#### ✅ **http_general**
+- Description: *Common HTTP implementation under `proxygen/lib/http/`... responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management...*
+- Relevance:
+  - While `ParseURL` is in `utils/`, not directly `http/`, URL parsing is a **fundamental prerequisite** for HTTP processing (e.g., request line parsing, redirect handling, host header resolution).
+  - The function `getRedirectDestination` is tightly coupled with HTTP semantics (3xx redirects, `Location` header, `Host` header fallback).
+  - `http_parser` is used — this is the same parser used in Proxygen’s HTTP message parsing stack.
+  - In Proxygen’s architecture, `utils/` often contains shared helpers used by `http/`, and `ParseURL` is used by HTTP transaction code (e.g., `HTTPMessage`, `ProxyHandler`, redirect logic).
+  - This is **not transport-level**, nor DNS, SSL, or service-level — it's core HTTP *message* infrastructure.
+
+> 📌 Strong match: URL parsing + redirect logic = part of HTTP protocol handling.
+
+#### ❌ **dns**
+- DNS resolution? No. No DNS queries, no `getaddrinfo`, no `Resolver`, no `DNSClient`. Only string-based host extraction (no resolution).  
+→ **0%**
+
+#### ❌ **pools**
+- Backend pool configuration? No server lists, no load balancing logic.  
+→ **0%**
+
+#### ❌ **sampling**
+- Sampling logic? None. No probabilistic sampling, no counters or rate-limiting.  
+→ **0%**
+
+#### ❌ **ssl**
+- TLS context, certificates, handshake? No SSL-related APIs (`SSL_CTX`, `folly::ssl`, etc.). Only scheme checking (`http`/`https`) — but that’s just string matching, not crypto.  
+→ **5% at most**, but not meaningful.
+
+#### ❌ **services**
+- Server-side infrastructure: connection acceptance, workers, service execution? No. This is pure utility logic, not service orchestration.  
+→ **0%**
+
+#### ❌ **httpserver**
+- High-level HTTP server API (e.g., `HTTPServer`, `RequestHandler`)? No. This is lower-level utility used *by* such layers, but not part of the high-level wrapper.  
+→ **10%** — indirect usage, but not the module itself.
+
+#### ❌ **transport**
+- QUIC, HTTP/3, sockets, datagrams? Includes `Sockets.h`, but only for portability (e.g., `inet_pton`), not actual socket I/O. No QUIC, no UDP, no transport state.  
+→ **5%** — minimal relevance.
+
+---
+
+### **3. Final Determination**
+
+The file implements `ParseURL`, which:
+- Lives in `proxygen/lib/utils/`
+- Is used by HTTP-layer components (e.g., redirect handling in proxy or client logic)
+- Uses `http_parser` for URL decomposition — a standard component in HTTP stacks
+- Handles HTTP-specific semantics (schemes, redirects, host fallback)
+
+In Proxygen’s architecture, `utils/` is considered part of the broader **HTTP general infrastructure**, especially when the utilities are tightly coupled with HTTP message semantics (as this one is).
+
+While strictly speaking the file is in `utils/`, the *module* it belongs to — based on functional responsibility — is **http_general**, because:
+- Proxygen’s `http_general` module encompasses not just `lib/http/`, but also foundational utilities used by HTTP layers.
+- Other modules (like `services`, `httpserver`) depend on this, but do not own it.
+- The maintainers group URL parsing, header parsing helpers, and HTTP message utilities under the “HTTP general” umbrella.
+
+Thus:
+
+> The probability that this file belongs to module 'http_general' is **95%**.

@@ -1,0 +1,99 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### File Content Summary:
+- **Header guard**: `OHOS_DCAMERA_SINK_OUTPUT_RESULT_CALLBACK_H`
+- **Includes**:
+  - `icamera_operator.h` → likely part of camera operator interface (used on both sides, but often on source side for callbacks)
+  - `dcamera_sink_output.h` → strongly indicates *sink-side output* handling
+- **Namespace**: `OHOS::DistributedHardware`
+- **Class**: `DCameraSinkOutputResultCallback`, inherits from `ResultCallback`
+- **Constructor**: takes `std::shared_ptr<DCameraSinkOutput>& output` → implies it's tied to a sink output object
+- **Methods**:
+  - `OnPhotoResult(std::shared_ptr<DataBuffer>& buffer)`
+  - `OnVideoResult(std::shared_ptr<DataBuffer>& buffer)`
+  → These are *callback handlers* for photo/video results — i.e., when image/video data is ready on the **sink side** and needs to be delivered (likely back to source via channel).
+- **Member**: `std::weak_ptr<DCameraSinkOutput> output_` → holds reference to sink output instance, used to notify or forward results.
+
+### Key Inferences:
+- The class name explicitly includes **SinkOutput** and **ResultCallback**.
+- It is designed to receive photo/video data buffers — which are produced by the *sink-side camera hardware* (i.e., the controlled device), then passed up through the pipeline.
+- Since it's a *callback* tied to `DCameraSinkOutput`, it belongs to the **sink-side output path**, where results (frames) are generated and need to be reported — likely to the channel layer or upstream manager.
+- It does **not** handle:
+  - IPC/session/channel logic directly (so not ChannelSink or ChannelCommon),
+  - Data preprocessing/postprocessing pipelines (no codec, color space, frame rate control),
+  - Lifecycle/state machine of the sink manager (not a manager class),
+  - HDF/HDI virtual device implementation (no HDF interfaces or device ops).
+
+Now compare with candidate modules:
+
+1. **DistributedCameraSourceMgr**  
+   → Source-side controller; handles *receiving* data from sink. This class is *producing* results on sink side. ❌ Low match.
+
+2. **DistributedCameraSinkMgr**  
+   → Sink-side manager; responsible for lifecycle, controller, data processing, **image/video output**, event notification.  
+  This callback is tightly coupled with `DCameraSinkOutput`, which is likely owned/managed by `DistributedCameraSinkMgr`. Callbacks like `OnPhotoResult`/`OnVideoResult` would be registered by the sink manager to receive frames from camera HAL or data pipeline and forward them (e.g., to ChannelSink).  
+  ✅ Strong match — this is exactly the kind of callback class used *within* the sink manager to handle output results.
+
+3. **ChannelCommon**  
+   → Pure channel/session abstraction; no camera-specific result callbacks. ❌
+
+4. **ChannelSink**  
+   → Handles communication with controller via SoftBus; may *consume* these callbacks, but this class is not itself a channel implementation — it’s a *result handler* before channel transmission. Unlikely to be here. ❌
+
+5. **CameraDataProcessCommon**  
+   → Generic data processing framework; this is not a pipeline stage, but a callback wrapper. ❌
+
+6. **CameraDataPreProcess**  
+   → Preprocessing *before* transmission; this class receives already-captured buffers (photo/video), so it’s post-capture but pre-transmission — possibly adjacent, but not the preprocessing pipeline itself. Less likely; no preprocessing logic shown. ❌
+
+7. **CameraDataPostProcess**  
+   → Source-side only (output side for controller); this is sink-side. ❌
+
+8. **CameraServiceCommon**  
+   → Shared basic services (commands, metadata, etc.). This is more specific: a concrete callback tied to sink output. Not generic enough. ❌
+
+9. **VirtualCameraHdf**  
+   → HDF/HDI layer implementation; this header uses C++ STL (`std::shared_ptr`, `std::weak_ptr`) and high-level `DCameraSinkOutput`, not HDF interfaces (e.g., `IHdfDevice`, `HdfSBuf`, etc.). ❌
+
+10. **utils**  
+    → Provides utilities, buffers, error codes, *and* “preview/photo/video callback handling”.  
+    The description says: *“including local camera query, open, close, stream acquisition, and preview/photo/video callback handling.”*  
+    This class is a *callback handler* for photo/video results — fits the “callback handling” part. Also, utility modules often contain such thin wrapper callback classes.  
+    However, the naming (`DCameraSinkOutputResultCallback`) and tight coupling to `DCameraSinkOutput` suggest it's part of the *sink manager’s internal structure*, not a generic utility.
+
+But note: In OHOS distributed camera architecture, `utils` often contains shared callback definitions used across source/sink, while manager modules contain the *implementation* and registration. Here, this is a **header-only declaration** of a callback class — very typical of utility layers that define interfaces/callbacks used by managers.
+
+Let’s weigh:
+- If `DCameraSinkOutput` is defined in `DistributedCameraSinkMgr`, then its callback would logically live there.
+- But in practice, OHOS separates *interfaces/callbacks* into `utils`, and *manager implementations* into `SinkMgr`.
+- The include of `icamera_operator.h` suggests integration with camera operator (which is part of utils or service common), and `dcamera_sink_output.h` is likely also in utils or sink mgr.
+
+Looking at real OHOS code patterns (based on public AOSP/HarmonyOS repos):
+- Callback classes like `*ResultCallback` are usually placed in **utils** when they are lightweight interface wrappers.
+- `DistributedCameraSinkMgr` typically contains `.cpp` files that instantiate and register such callbacks, but the header may reside in `utils`.
+
+Given:
+- No business logic, just a pure callback interface extension,
+- Named generically as `DCameraSinkOutputResultCallback`,
+- Belongs to namespace `OHOS::DistributedHardware` (same as all modules),
+- Included by sink-side components,
+
+The strongest fit is **DistributedCameraSinkMgr**, because:
+- The class is *specifically* for sink output result handling,
+- It holds a weak ptr to `DCameraSinkOutput`, which is almost certainly managed by `SinkMgr`,
+- Manager modules own the callback registration and lifetime — the callback class is part of its internal design.
+
+However, since it's a *header-only declaration* with no implementation, and the module descriptions say `DistributedCameraSinkMgr` is responsible for “event notification” and “image/video output", this callback is the mechanism for that event notification.
+
+Thus:
+
+✅ **DistributedCameraSinkMgr**: High relevance — this is the callback used *by* the sink manager to receive photo/video results from camera/data pipeline and forward them.
+
+❌ All others are less direct.
+
+### Final Probability Assignment:
+- **DistributedCameraSinkMgr**: 95% — core responsibility matches exactly.
+- **utils**: 5% — possible if architecture isolates all callbacks there, but naming and coupling suggest sink mgr ownership.
+- Others: <1%.
+
+> The probability that this file belongs to module 'DistributedCameraSinkMgr' is 95%.

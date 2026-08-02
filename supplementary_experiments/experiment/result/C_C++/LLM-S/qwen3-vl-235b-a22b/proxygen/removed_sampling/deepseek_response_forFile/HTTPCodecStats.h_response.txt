@@ -1,0 +1,60 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `proxygen/lib/http/codec/ErrorCode.h` → HTTP codec-level error codes (HTTP/2-specific, e.g., `ErrorCode` enum for RST_STREAM, GOAWAY).
+  - `proxygen/lib/stats/StatsWrapper.h` → Stats collection infrastructure (likely using fb303-style or similar counters/metrics).
+  - `<string>` → Standard library.
+- **Namespace**: `proxygen`
+- **Types**:
+  - `class HTTPCodecStats`: Abstract interface for recording HTTP codec-level events (ingress/egress frames: SYN_STREAM, DATA, RST, SETTINGS, etc.).
+  - `class TLHTTPCodecStats`: Concrete implementation (thread-local), likely using `StatsWrapper` to emit metrics with a prefix.
+- **Functions**: All are virtual methods for recording *codec-level frame events* (e.g., `recordIngressSynStream`, `recordEgressData`, etc.), plus constructor/destructor for `TLHTTPCodecStats`.
+
+This is clearly a **statistics instrumentation layer for HTTP codec operations**, specifically for tracking protocol-level frame activity — especially aligned with **HTTP/2** (given frame names like `SynStream`, `PushPromise`, `Goaway`, `WindowUpdate`, `Priority`, which are HTTP/2 frame types; note: `SynStream` is legacy SPDY terminology, but Proxygen uses it for HTTP/2 compatibility in stats naming).
+
+### 2. **Module Candidates Evaluation**
+
+#### ✅ **http_general**
+- Definition: *"common HTTP implementation under proxygen/lib/http/, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+- Evidence:
+  - The header is included from `proxygen/lib/http/codec/ErrorCode.h` — this path (`lib/http/codec/`) is part of the core HTTP codec layer.
+  - `HTTPCodecStats` is an abstraction tied directly to *codec frame processing* — i.e., what happens when the codec reads/writes frames.
+  - Stats wrappers used here are typically integrated into the codec to emit metrics per connection/stream.
+  - In Proxygen’s actual codebase, `HTTPCodecStats.{h,cpp}` lives under `proxygen/lib/http/codec/`, which falls under `http_general`.
+- Strong match: This is not transport, not SSL, not DNS, not services — it's *protocol-level instrumentation* inside the HTTP codec.
+
+#### ❌ **dns**
+- No DNS resolution logic, no `Resolver`, `DNSClient`, etc. → 0% match.
+
+#### ❌ **pools**
+- No backend pool, server list, or load-balancing config → 0%.
+
+#### ❌ **ssl**
+- No SSL context, handshake, cert handling, or TLS stats (e.g., no `SSLContext`, `TLSHandshakeStats`). While stats might be *used* alongside SSL, this file is agnostic to encryption layer. → Very low (<5%).
+
+#### ❌ **general**
+- `general` = `lib/utils/` + common utilities (e.g., ` folly`, `ScopedEventBaseThread`, `Timer`, `IOBuf`, etc.).
+- But this file is *not* in `utils/`, and it's tightly coupled to HTTP codec semantics (frame types, `ErrorCode` from `http/codec/`). So while `StatsWrapper` may live in `general`, the *purpose* and *abstraction* here is HTTP-specific.
+- So: partial dependency on general utilities, but primary domain is HTTP codec → not best fit.
+
+#### ❌ **services**
+- `services/` deals with service execution, request routing, filters, connection management — higher-level than codec. This file has no service lifecycle, no `RequestHandler`, no `Service`. → Not a match.
+
+#### ❌ **httpserver**
+- `httpserver/` is high-level wrapper (e.g., `HTTPServer`, `RequestHandler`, `ResponseBuilder`). This is low-level stats for codec — not exposed to app-level server APIs. → No.
+
+#### ❌ **transport**
+- `transport/` is for QUIC, sockets, datagrams, etc. While HTTP/3 uses transport, this file references `ErrorCode.h` from `http/codec/`, not `quic/`, and frame names are HTTP/2/SPDY — not QUIC frames (e.g., no `STREAM`, `ACK`, `CRYPTO`). Also, no mention of `QuicTransport`, `UdpSocket`, etc.
+- So even though HTTP/2 runs over TCP, this is *not* transport-layer; it’s application-protocol (HTTP) layer instrumentation. → Not a match.
+
+### 3. **Conclusion**
+The file defines an abstract stats interface and its thread-local implementation for *HTTP codec frame events*, residing logically under `proxygen/lib/http/codec/`. This falls squarely under **http_general**, which encompasses the core HTTP protocol implementation including codec, parsing, and related abstractions.
+
+> Note: In Facebook’s Proxygen repo, `HTTPCodecStats.h` indeed lives in `proxygen/lib/http/codec/`, confirming this classification.
+
+---
+
+**The probability that this file belongs to module 'http_general' is 98%.**  
+(The remaining 2% accounts for possible edge cases where stats infra might be considered "general", but the semantic coupling to HTTP codec makes `http_general` definitive.)

@@ -1,0 +1,89 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+### File Summary:
+- **Language**: C/C++
+- **Includes**:
+  - `folly/SocketAddress.h`: This is a Folly utility for representing IP addresses (IPv4/IPv6) and ports — core to network address handling.
+  - `<vector>`: Standard container; used for holding multiple socket addresses.
+- **Namespace**: `proxygen`
+- **Function**:
+  - `rfc6724_sort(std::vector<folly::SocketAddress>& addrs, const folly::SocketAddress* srcAddr = nullptr)`
+    - Name suggests sorting addresses per **RFC 6724**, which defines the *Default Address Selection* algorithm for IPv6 (and dual-stack) environments.
+    - Input: list of socket addresses (i.e., resolved IP endpoints), optional source address.
+    - Purpose: reorder addresses according to preference rules (e.g., scope, prefix, privacy extensions, etc.) before attempting connection — typically used *after DNS resolution*, *before connection establishment*.
+
+This function is **not** doing DNS resolution itself (that would be in `dns`), but rather post-processing the results of resolution to select the best address to connect to — a standard step in client-side connection logic (especially for dual-stack or IPv6-capable clients).
+
+Now let’s evaluate each candidate:
+
+---
+
+#### ✅ **dns**  
+- *Responsibility*: DNS resolution (e.g., querying nameservers, parsing responses, returning `SocketAddress`s).
+- This file does **not** perform resolution. It assumes addresses are already resolved (`std::vector<folly::SocketAddress>`).  
+- However, RFC 6724 sorting is often tightly coupled with DNS resolution pipelines (e.g., `DnsResolver` may call this after getting answers). But the sorting logic itself is *distinct* from resolution.
+- **Likelihood**: Moderate (~30%) — related, but not core to DNS module itself.
+
+#### ❌ **pools**  
+- Server pool configuration, load balancing, service discovery.
+- No mention of pools, backends, health checks, or routing policies.
+- RFC 6724 is about *client-side address selection*, not backend pooling.
+- **Likelihood**: Very low (<5%).
+
+#### ❌ **sampling**  
+- Sampling logic (e.g., for metrics, tracing).
+- No sampling-related terms or patterns.
+- **Likelihood**: ~0%.
+
+#### ❌ **ssl**  
+- SSL/TLS context, certs, handshake stats.
+- No SSL APIs, no crypto, no TLS-specific types.
+- **Likelihood**: ~0%.
+
+#### ❌ **http_general**  
+- Core HTTP protocol layer: parsing, encoding, sessions, transactions, HTTP/2/3 framing.
+- While HTTP clients may use RFC 6724 sorting before connecting, this function is *transport-adjacent*, not HTTP protocol logic per se.
+- It operates on raw socket addresses, not HTTP messages or streams.
+- **Likelihood**: Low (~10–15%) — possibly used by HTTP client, but not part of the HTTP protocol core.
+
+#### ❌ **services**  
+- Server-side infrastructure: connection acceptance, workers, service execution.
+- This is client-side address selection logic — not server-side.
+- Server doesn’t need to sort its own listening addresses per RFC 6724 (though binding order matters, that’s OS-level).
+- **Likelihood**: Very low (<5%).
+
+#### ❌ **httpserver**  
+- High-level HTTP server APIs.
+- Again, server-side; RFC 6724 is for *outgoing* connections (client behavior).
+- **Likelihood**: ~0%.
+
+#### ✅ **transport**  
+- Lower-level transport capabilities: QUIC, HTTP/3, sockets, datagrams, token/PSK cache.
+- Includes socket address handling (`folly::SocketAddress`) — central to transport layer.
+- RFC 6724 sorting is a *transport-layer concern*: deciding which IP/port to connect to, before opening a socket or initiating a QUIC connection.
+- In Proxygen, transport modules (e.g., `HTTPSession`, `QuicTransport`, `ClientTransport`) often rely on such utilities when establishing connections.
+- The function is generic (no HTTP semantics), works on raw addresses — fits transport abstraction layer well.
+- Also, `folly::SocketAddress` is heavily used in transport code (e.g., `AsyncSocket`, `QuicSocket`, `ConnectionManager`).
+- **Likelihood**: **High** — this is exactly the kind of utility that lives in transport support.
+
+---
+
+### Final Assessment:
+The function `rfc6724_sort` is a *network-layer utility* used to order resolved addresses prior to connection establishment. It is:
+- Not part of DNS (which produces the addresses),
+- Not part of HTTP (which uses the selected address),
+- But is used by transport layers (e.g., TCP/QUIC client stacks) to choose the optimal endpoint.
+
+In Proxygen’s architecture, such utilities are typically placed under `proxygen/lib/transport/` or adjacent support headers used by transport components.
+
+Thus:
+
+**The probability that this file belongs to module 'transport' is 85%.**  
+The remaining 15% is split between 'dns' (due to proximity in resolution pipeline) and 'http_general' (if used by HTTP client stack), but transport is the most semantically and architecturally appropriate home.
+
+> Note: If Proxygen has a dedicated `net` or `address` sub-module, that might be ideal — but among the given candidates, **transport** is the best fit.
+
+---
+
+**Final Answer**:  
+The probability that this file belongs to module 'transport' is 85%.

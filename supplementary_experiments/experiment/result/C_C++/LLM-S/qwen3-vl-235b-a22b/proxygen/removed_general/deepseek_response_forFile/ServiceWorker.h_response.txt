@@ -1,0 +1,87 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. Key Observations from File Content**
+
+#### **Includes**
+- `folly/io/async/AsyncServerSocket.h`: Low-level async socket handling (Folly).
+- `glog/logging.h`: Logging.
+- `proxygen/lib/utils/AcceptorAddress.h`: Proxygen-specific utility for representing acceptor addresses (e.g., TCP/UDP, port, name).
+- `wangle/acceptor/Acceptor.h`: Wangle’s `Acceptor` — core component for accepting connections (Wangle is Facebook’s async networking library built on Folly).
+- `wangle/acceptor/ConnectionCounter.h`: Tracks active connections per acceptor.
+
+→ This strongly indicates **server-side connection acceptance infrastructure**, not protocol parsing or transport details.
+
+#### **Namespaces**
+- `proxygen`: Confirms this is part of Proxygen codebase.
+
+#### **Types & Functions**
+- Classes:
+  - `Service`: Likely a high-level service abstraction (e.g., handles requests).
+  - `RequestWorkerThread`: Suggests thread-per-worker model for request processing.
+  - `ServiceWorker`: Central class managing acceptors, draining, stats, etc.
+
+- Key methods in `ServiceWorker`:
+  - `addServiceAcceptor`, `drainServiceAcceptor`: Managing live/drainable acceptors.
+  - `getAcceptors()`, `clearAcceptors()`, `flushStats()`: Lifecycle and monitoring of acceptors.
+  - `addAcceptor(...)`: Internal helper to insert into maps (`AcceptorMap`, `NamedAddressMap`).
+  - Uses `AcceptorAddress`, `wangle::Acceptor`, `folly::SocketAddress`.
+
+→ This is clearly about **managing server acceptors**, including graceful draining (e.g., for rolling restarts), connection tracking, and mapping between named endpoints and acceptors.
+
+#### **Contextual Clues**
+- The class `ServiceWorker` holds:
+  - A pointer to `Service` (high-level business logic).
+  - A pointer to `RequestWorkerThread` (thread that processes requests).
+  - Maps of active/drainable `wangle::Acceptor`s.
+- It does **not** handle:
+  - HTTP parsing/encoding → rules out `http_general`.
+  - TLS/SSL contexts → rules out `ssl`.
+  - DNS resolution → rules out `dns`.
+  - Pool configuration or load balancing → rules out `pools`.
+  - Sampling logic → rules out `sampling`.
+  - QUIC/HTTP/3 transport → rules out `transport`.
+  - High-level HTTP server API (like `HTTPServer`, `RequestHandler`) → rules out `httpserver`.
+
+Instead, this looks like **server-side infrastructure** that sits *above* raw transports (like `AsyncServerSocket`) and *below* high-level HTTP servers — i.e., the layer that manages how connections are accepted, assigned to workers, drained, and monitored.
+
+---
+
+### **2. Module Mapping**
+
+Let’s evaluate each candidate:
+
+| Module | Relevance | Reason |
+|--------|-----------|--------|
+| **dns** | ❌ Very low | No DNS-related types/functions; no resolver usage. |
+| **pools** | ❌ Low | No backend pool management, no load-balancing logic. |
+| **sampling** | ❌ None | No sampling counters, probability logic, or instrumentation hooks. |
+| **ssl** | ❌ None | No SSL context, certificates, or TLS handshake handling. |
+| **http_general** | ❌ Low | This is not about HTTP message parsing, headers, streams, or transactions. No `HTTPMessage`, `HTTPSession`, etc. |
+| **services** | ✅ **High** | Matches exactly: `proxygen/lib/services/` is where `Service`, `ServiceWorker`, `RequestWorkerThread`, and acceptor management live. This module provides server-side infrastructure: acceptor lifecycle, worker threads, service binding, draining — all present here. |
+| **httpserver** | ❌ Medium-low | `httpserver/` is higher-level (e.g., `HTTPServer`, `RequestHandler`, `ResponseBuilder`). This file is more internal/infra — not user-facing APIs. |
+| **transport** | ❌ Low | Transport layer deals with QUIC sockets, datagrams, stream IDs, etc. This uses `AsyncServerSocket` but doesn’t implement transport logic. |
+
+In fact, based on Proxygen’s open-source structure (and known internal layout), `ServiceWorker` and related classes reside in `proxygen/lib/services/`. For example:
+- `ServiceWorker.h/cpp`
+- `RequestWorkerThread.h/cpp`
+- `Service.h`
+
+These are core to the **services** module, which enables building scalable, multi-threaded HTTP servers by managing acceptors, workers, and graceful shutdown/draining.
+
+---
+
+### **3. Final Assessment**
+
+The file implements acceptor lifecycle management (add/drain/clear), integrates with `wangle::Acceptor`, tracks named addresses, and coordinates with `Service` and `RequestWorkerThread`. This is textbook **server-side infrastructure** — precisely what the `services` module provides.
+
+> ✅ Strong match with **services** module.
+
+Other modules are either unrelated or operate at different layers.
+
+---
+
+### **Answer**
+
+The probability that this file belongs to module 'services' is 95%.

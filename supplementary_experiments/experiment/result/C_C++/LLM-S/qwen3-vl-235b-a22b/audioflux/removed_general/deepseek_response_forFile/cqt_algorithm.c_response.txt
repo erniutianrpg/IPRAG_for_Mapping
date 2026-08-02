@@ -1,0 +1,117 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **1. File Overview**
+
+- **Language**: C/C++
+- **Includes**:
+  - Standard: `string.h`, `math.h`
+  - Vector utilities: `flux_vector.h`, `flux_complex.h`
+  - Utility: `flux_util.h`
+  - DSP algorithms: `fft_algorithm.h`, `dct_algorithm.h`, `resample_algorithm.h`
+  - Filter banks: `cqt_filterBank.h`, `chroma_filterBank.h`
+  - Algorithm headers: `stft_algorithm.h`, `cqt_algorithm.h`
+
+- **Struct**: `OpaqueCQT` — a large internal state structure for a Constant-Q Transform (CQT) object, containing:
+  - STFT, resample, FFT, DCT objects
+  - Filter bank arrays (`mRealFilterBankArr`, `mImageFilterBankArr`)
+  - Chroma-related data (`mChromaFilterBank`, `chromaNum`)
+  - Time-domain buffers (`tailDataArr`, `validDataArr`)
+  - Parameters for CQT configuration (minFreq, binPerOctave, window type, normalization, etc.)
+
+- **Functions**:
+  - Object lifecycle: `cqtObj_new`, `cqtObj_newWith`, `cqtObj_free`
+  - Internal helpers: `_cqtObj_dealFilterBank`, `_cqtObj_dealStft`, `_cqtObj_dealResample`, `_cqtObj_dealDeconv`, `_cqtObj_dealDCT`, `_cqtObj_dealData`, `_cqtObj_cqt`
+  - Public APIs:
+    - `cqtObj_cqt()` — compute CQT
+    - `cqtObj_chroma()` — compute chroma features
+    - `cqtObj_cqcc()` — compute CQ cepstral coefficients (CQCC)
+    - `cqtObj_cqhc()` — compute CQ harmonic coefficients (CQHC)
+    - `cqtObj_deconv()` — deconvolution (likely spectral envelope extraction)
+    - `cqtObj_calTimeLength()`, `cqtObj_getFFTLength()`, `cqtObj_setScale()`
+
+So this is clearly a **CQT engine**, supporting:
+- Construction of CQT filter banks (log-spaced frequency bins)
+- STFT as auxiliary (for comparison or hybrid use)
+- Resampling (to match analysis resolution)
+- DCT (for cepstral transforms like CQCC)
+- Deconvolution (e.g., for extracting spectral envelope / source-filter model)
+- Chroma mapping (music-specific perceptual feature)
+- Output formats: complex spectrogram, real/imag parts, chroma vectors, cepstral coefficients
+
+---
+
+### **2. Module Comparison**
+
+#### ✅ **dsp**
+- *Definition*: Low-level DSP capabilities — FFT, STFT, resampling, DCT, basic filtering.
+- *Evidence in file*:
+  - Includes `fft_algorithm.h`, `dct_algorithm.h`, `resample_algorithm.h`, `stft_algorithm.h`
+  - Uses `FFTObj`, `DCTObj`, `STFTObj`, `ResampleObj` internally
+  - Implements low-level helpers like `_calRadix2`, `__calTimeAndTailLen`
+  - Handles raw time-domain data → frequency-domain transforms
+- *But*: The file does **not stop at low-level primitives** — it builds a high-level transform (CQT) with application-oriented features (chroma, CQCC, deconv). So while it *uses* DSP primitives, it's not *just* DSP.
+
+→ **Likely part of dsp? Partially, but higher-level than typical dsp core.**
+
+#### ✅ **feature**
+- *Definition*: Extract audio features from spectral/cepstral/time-domain data: Spectral, XXCC, Deconv, Cepstrogram, Temporal, FeatureExtractor.
+- *Evidence in file*:
+  - `cqtObj_cqcc()` → CQ Cepstral Coefficients (a cepstral feature)
+  - `cqtObj_cqhc()` → CQ Harmonic Coefficients (harmonic feature)
+  - `cqtObj_deconv()` → spectral deconvolution (source-filter modeling → used in feature extraction)
+  - `cqtObj_chroma()` → chroma feature (standard MIR feature)
+  - All outputs are structured for downstream feature use (e.g., `float *mRealArr3`, `float *mImageArr3`, `ChromaDataNormalType`, `CepstralRectifyType`)
+  - The struct holds precomputed filter banks and buffers optimized for repeated feature extraction
+- This matches **exactly** the description: “extract audio features from spectral, cepstral, and time-domain data”, especially *Spectral*, *XXCC*, *Deconv*, and *FeatureExtractor*.
+
+→ **Strong match**.
+
+#### ✅ **filter_bank**
+- *Definition*: Constructing and applying spectral filter banks and auditory weights.
+- *Evidence*:
+  - Includes `cqt_filterBank.h`, `chroma_filterBank.h`
+  - `_cqtObj_dealFilterBank()` builds filter bank arrays
+  - Stores `mRealFilterBankArr`, `mImageFilterBankArr`, `freBandArr`, `lenArr`, `mChromaFilterBank`
+- However, the file does **more than just construct filter banks** — it integrates them into a full CQT pipeline with STFT, resampling, DCT, deconvolution, and feature output.
+- So while filter bank logic is present, it’s *embedded* in a larger feature-extraction system.
+
+→ **Partial match**, but not the primary purpose.
+
+#### ✅ **mir**
+- *Definition*: Music information retrieval — pitch estimation, onset detection, HPSS, harmonic analysis, pitch shifting, time stretching.
+- *Evidence*:
+  - `cqtObj_chroma()` is directly used in MIR (chroma = pitch class profile)
+  - CQT itself is a standard tool in MIR for pitch/harmonic analysis
+  - `cqhc` (CQ harmonic coefficients) relates to harmonic analysis
+- But: No explicit onset detection, no HPSS, no pitch estimator, no time-stretch/pitch-shift algorithms. The file is a *tool* used *by* MIR systems, not an end-to-end MIR module.
+
+→ **Indirect relevance**, but not a full MIR module.
+
+---
+
+### **3. Key Differentiator**
+
+The critical clue is the **function naming and semantics**:
+- `cqtObj_cqcc`, `cqtObj_cqhc`, `cqtObj_deconv`, `cqtObj_chroma` — these are *feature extraction* functions.
+- The struct `OpaqueCQT` is designed to be reused for multiple feature extractions on different inputs (buffers, precomputed banks).
+- It follows the pattern of a **feature extractor object**, similar to how MFCC or PLP extractors are structured — not a raw DSP kernel, nor just a filter bank builder.
+
+Also note: The module includes both **CQT** (a transform) and **derived features** (chroma, CQCC, CQHC, deconv), which aligns precisely with the **feature** module definition:  
+> *"used to extract audio features from spectral, cepstral, and time-domain data... Spectral computes various spectral features, XXCC extracts cepstral coefficients, Deconv performs spectral deconvolution..."*
+
+CQCC = cepstral, CQHC = harmonic/spectral feature, Deconv = deconvolution, Chroma = spectral feature — all covered.
+
+---
+
+### **Conclusion**
+
+- **dsp**: ~30% — uses DSP primitives, but not its main role.
+- **filter_bank**: ~40% — implements filter banks, but only as a component.
+- **mir**: ~25% — enables MIR, but doesn’t implement MIR tasks directly.
+- **feature**: **~95%** — the file is a *feature extractor* centered on CQT-derived features (chroma, CQCC, CQHC, deconv), matching the module’s scope exactly.
+
+---
+
+"The probability that this file belongs to module 'feature' is 95%."

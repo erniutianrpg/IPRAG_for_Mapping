@@ -1,0 +1,82 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File metadata & context**
+- **Language**: C/C++
+- **Includes**:
+  - `folly/io/async/AsyncServerSocket.h` → low-level async socket handling (Folly)
+  - `glog/logging.h` → logging
+  - `proxygen/lib/utils/AcceptorAddress.h` → utility type for identifying acceptors
+  - `wangle/acceptor/Acceptor.h`, `wangle/acceptor/ConnectionCounter.h` → Wangle’s acceptor infrastructure (Wangle is Facebook’s networking library, used by Proxygen for connection acceptance and management)
+- **Namespace**: `proxygen`
+- **Types defined**: `Service`, `RequestWorkerThread`, `ServiceWorker`
+- **Key functions** in `ServiceWorker`:
+  - `addServiceAcceptor`, `drainServiceAcceptor`
+  - Management of `acceptors_` and `drainingAcceptors_` maps
+  - Interaction with `wangle::Acceptor`
+  - Lifecycle control: `forceStop()`, `releaseDrainingAcceptor()`
+  - Ties to `Service` and `RequestWorkerThread`
+
+This strongly suggests a **server-side infrastructure component** that manages *acceptors* (i.e., listening sockets + connection handling logic), handles draining (graceful shutdown), and coordinates with worker threads.
+
+---
+
+### **2. Module comparison**
+
+#### ✅ **services**
+> *"mainly corresponds to proxygen/lib/services/ and is used for connection management and server-side related code. On top of the low-level HTTP abstractions, it provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration."*
+
+- The class `ServiceWorker` directly manages:
+  - Acceptors (`wangle::Acceptor`)
+  - Draining (graceful shutdown)
+  - Mapping from addresses to acceptors
+  - Coordination with `Service` and `RequestWorkerThread`
+- This matches *exactly* the description: server-side infrastructure, connection acceptance, worker thread integration, service configuration.
+- `AcceptorAddress.h` is in `proxygen/lib/utils/`, but the usage here is *orchestrating* acceptors — not just utility use.
+- The presence of `Service`, `RequestWorkerThread`, and `ServiceWorker` are classic patterns in `lib/services/`.
+
+#### ❌ **http_general**
+> Core HTTP protocol layer: parsing, encoding, sessions, transactions, HTTP/2/3.
+
+- No HTTP message parsing, no session/transaction objects, no HTTP headers or bodies.
+- Only uses `wangle::Acceptor`, not `HTTPSession`, `HTTPTransaction`, etc.
+- So **not this**.
+
+#### ❌ **httpserver**
+> High-level API for building simple C++ HTTP servers; wraps `lib/`.
+
+- This file is *not* a high-level API wrapper (e.g., no `HTTPServer`, no request handler registration).
+- It's internal infrastructure — likely used *by* `httpserver`, but not part of it directly.
+- So **unlikely**;
+
+#### ❌ **general**
+> `proxygen/lib/utils/` and common auxiliary capabilities.
+
+- While it includes `AcceptorAddress.h` (a utils header), the bulk of the logic is *not* utility code — it’s orchestration of acceptors and lifecycle management.
+- `ServiceWorker` is too domain-specific for “general utils”.
+- So **low probability**.
+
+#### ❌ **dns**, **pools**, **sampling**, **transport**
+- No DNS resolution logic → not `dns`.
+- No pool configuration, backend lists, or load-balancing → not `pools`.
+- No sampling logic (e.g., probabilistic decisions, counters for sampling) → not `sampling`.
+- No QUIC, HTTP/3, datagrams, transport sockets — only TCP via `folly::SocketAddress` and `wangle::Acceptor` → not `transport`.
+
+---
+
+### **3. Confirming with real-world Proxygen structure**
+In the actual [Proxygen GitHub repo](https://github.com/facebook/proxygen):
+- `proxygen/lib/services/` contains:
+  - `ServiceWorker.h`, `Service.h`, `RequestWorkerThread.h`
+  - Acceptor management, draining logic, connection counters
+- `ServiceWorker` is indeed the central class managing acceptors per worker thread.
+- `AcceptorAddress` is a utility, but its use here is within service-layer orchestration.
+
+Thus, this file is almost certainly from `proxygen/lib/services/`.
+
+---
+
+### ✅ Final assessment:
+
+"The probability that this file belongs to module 'services' is 98%."

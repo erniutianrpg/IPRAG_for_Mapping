@@ -1,0 +1,87 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File metadata summary**
+- **Language**: C/C++
+- **Includes**:
+  - `proxygen/httpserver/HTTPServer.h`
+  - `proxygen/httpserver/HTTPServerAcceptor.h`
+  - `proxygen/httpserver/SignalHandler.h`
+  - `proxygen/httpserver/filters/CompressionFilter.h`
+  - `proxygen/httpserver/filters/RejectConnectFilter.h`
+  - `wangle/ssl/SSLContextManager.h`
+  - `folly/io/async/EventBaseManager.h`, `NamedThreadFactory.h`, etc.
+- **Namespace**: `proxygen`
+- **Key types**:
+  - `AcceptorFactory` (inherits from `wangle::AcceptorFactory`)
+  - `HandlerCallbacks` (not fully shown, but likely related to session handling)
+- **Functions**:
+  - `newAcceptor(folly::EventBase*)`
+  - Several `HTTPServer::` methods: `bind()`, `stopListening()`, `stop()`, `getSockets()`, `getListenSocket()`, `updateTLSCredentials()`, `updateTicketSeeds()`
+
+- **Raw excerpt** shows:
+  - Implementation of `AcceptorFactory::newAcceptor()` that creates `HTTPServerAcceptor`.
+  - Constructor for `HTTPServer`, with logic for thread count, inserting filters (`RejectConnectFilter`, `CompressionFilter`).
+  - Uses `HTTPServerOptions`, `HTTPCodecFactory`, `AcceptorConfiguration`, `HTTPSession::InfoCallback`.
+  - References SSL/TLS via `updateTLSCredentials()` and `updateTicketSeeds()` — but these are *methods on HTTPServer*, not core SSL implementation.
+
+---
+
+### **2. Module comparison**
+
+#### ✅ **httpserver**
+- Direct include paths: `proxygen/httpserver/HTTPServer.h`, `HTTPServerAcceptor.h`, `SignalHandler.h`, `filters/...`
+- The class `AcceptorFactory` is defined in the context of `HTTPServer`, and is used to create `HTTPServerAcceptor`.
+- `HTTPServer` constructor and methods (`bind`, `stop`, `getSockets`, etc.) are clearly part of the high-level HTTP server API.
+- Filters like `CompressionFilter`, `RejectConnectFilter` are part of the `httpserver` filter stack (used to augment behavior of the server).
+- This matches exactly the description:  
+  > *"This module mainly corresponds to proxygen/httpserver/. It wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers, serving as Proxygen's high-level HTTP server framework."*
+
+#### ⚠️ **services**
+- `services` is described as being under `proxygen/lib/services/`, providing server-side infrastructure like connection management, worker threads, service execution.
+- While `HTTPServer` does use `IOThreadPoolExecutor`, `EventBaseManager`, and thread configuration, those are *used* by `httpserver`, not implemented there.
+- `AcceptorFactory` is a wangle-based factory, but it’s specifically for `HTTPServerAcceptor`, not generic services.
+- So: `services` is lower-level infrastructure; this file is higher-level usage of that infrastructure — thus less likely.
+
+#### ⚠️ **http_general**
+- This is the *core* HTTP protocol layer (`proxygen/lib/http/`): parsing, encoding, sessions, transactions, HTTP/2/3.
+- The file uses `HTTPCodecFactory`, `HTTPSession`, `HTTPServerOptions`, but does **not implement** codec logic, session state machines, or transaction handling.
+- It consumes `http_general` abstractions but doesn’t belong to it.
+- So: low probability.
+
+#### ⚠️ **ssl**
+- Includes `wangle/ssl/SSLContextManager.h`, and has `updateTLSCredentials()` / `updateTicketSeeds()`.
+- However, these are *interfaces* exposed by `HTTPServer`, not SSL context management implementation.
+- No actual SSL handshake, certificate loading, or TLS engine code here.
+- So: SSL is a dependency, not the primary domain.
+
+#### ❌ **dns**, **pools**, **sampling**, **transport**
+- No DNS resolution logic → not `dns`.
+- No pool configuration or backend list management → not `pools`.
+- No sampling logic (e.g., probabilistic request sampling) → not `sampling`.
+- No QUIC, HTTP/3, datagrams, token cache → not `transport`.
+
+---
+
+### **3. Final assessment**
+
+The file:
+- Lives in the `proxygen/httpserver/` namespace and includes only `httpserver/` headers (plus dependencies).
+- Implements `HTTPServer` constructor and lifecycle methods.
+- Defines `AcceptorFactory` tailored for `HTTPServerAcceptor`.
+- Configures filters and options specific to building an HTTP server.
+→ This is textbook **high-level HTTP server framework code**, i.e., the `httpserver` module.
+
+Probability estimate:
+- **httpserver**: 95%  
+  (Only minor ambiguity due to SSL-related method names, but they’re part of the server API, not SSL module internals.)
+- **services**: 5%  
+  (Because it uses thread executors and acceptor infrastructure, but not implementing generic service logic.)
+- All others: ≤1%
+
+---
+
+### ✅ Final Answer:
+
+The probability that this file belongs to module 'httpserver' is 95%.

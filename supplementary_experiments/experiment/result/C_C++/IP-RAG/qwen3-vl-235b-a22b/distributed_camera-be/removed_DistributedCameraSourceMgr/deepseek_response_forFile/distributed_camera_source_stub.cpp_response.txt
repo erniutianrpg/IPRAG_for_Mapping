@@ -1,0 +1,92 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+services\cameraservice\sourceservice\src\distributedcamera\distributed_camera_source_stub.cpp
+```
+- Located under `sourceservice` → indicates this is on the **source side** (i.e., the *controller* side in distributed camera architecture).
+- The term “stub” in the filename suggests it's an **IPC stub**, i.e., the server-side implementation that receives remote requests (from sink/client) and dispatches them to local methods.
+
+### 2. **Includes**
+```cpp
+#include "distributed_camera_source_stub.h"
+#include "dcamera_source_callback_proxy.h"      // Proxy for callback from source to sink
+#include "distributed_camera_errno.h"
+#include "distributed_hardware_log.h"
+```
+- `dcamera_source_callback_proxy.h`: This implies the source side needs to send callbacks *to* the sink (e.g., notifications, events), which aligns with source being controller.
+- `distributed_camera_errno.h`, `distributed_hardware_log.h`: Common utilities — not module-defining alone.
+
+### 3. **Namespace**
+```cpp
+namespace OHOS {
+namespace DistributedHardware {
+```
+- Confirms this is part of the Distributed Hardware subsystem in OpenHarmony.
+
+### 4. **Class & Functionality**
+The class `DistributedCameraSourceStub`:
+- Inherits from `IPCObjectStub` (standard OpenHarmony IPC stub base class).
+- Implements `OnRemoteRequest()` to dispatch incoming IPC calls based on `code`.
+- Maps request codes (`INIT_SOURCE`, `RELEASE_SOURCE`, `REGISTER_DISTRIBUTED_HARDWARE`, `UNREGISTER_DISTRIBUTED_HARDWARE`, `CAMERA_NOTIFY`) to inner methods.
+- Inner methods:
+  - `InitSourceInner()`: reads parameters + a remote callback object (`DCameraSourceCallbackProxy`), then calls `InitSource(params, callbackProxy)`
+  - `ReleaseSourceInner()`: calls `ReleaseSource()`
+  - `RegisterDistributedHardwareInner()`: registers hardware (likely with DHMS)
+  - `UnregisterDistributedHardwareInner()`
+  - `DCameraNotifyInner()`: handles notifications
+
+Key observations:
+- It **receives remote requests** (i.e., acts as IPC server).
+- The *source* side (controller) typically **initiates connections**, but here it’s receiving calls like `InitSource`, `RegisterDistributedHardware`, etc. — this suggests the *sink side* (controlled device) is calling into the *source side*’s stub to register itself or notify events.
+
+Wait — this seems contradictory at first: why would the *source* have a stub receiving `InitSource`?
+
+But in OpenHarmony’s distributed camera design:
+- The **source service** runs on the *controller device* (e.g., phone), and exposes an IPC interface so that the **sink service** (on remote device, e.g., IoT camera) can register itself and notify events (like camera availability, status changes).
+- The sink uses `DistributedCameraSourceProxy` to call into this stub.
+- So `DistributedCameraSourceStub` is the **server endpoint on the controller (source) side**, handling registration and event callbacks from remote sinks.
+
+Thus, this stub is part of the **source-side service framework**, providing the IPC interface for sink-side interaction.
+
+### 5. **Compare with Candidate Modules**
+
+Let’s evaluate each candidate:
+
+- **DistributedCameraSinkMgr**: ❌  
+  Described as sink-side lifecycle, access control, controller, data output — this is *sink*-side. Our file is *source*-side stub.
+
+- **ChannelCommon**: ❌  
+  About SoftBus session/channel interfaces — no SoftBus code visible here; this is pure IPC (MessageParcel-based), not channel-layer.
+
+- **ChannelSource**: ❌  
+  “controller-side channel implementation… establishes connections with controlled side through SoftBus…” — this is about *channel* (transport layer), while our file is *IPC stub* (service interface layer). Not matching.
+
+- **ChannelSink**: ❌
+  Controlled-side channel — again, transport layer, not this.
+
+- **CameraDataProcessCommon**, **CameraDataPreProcess**, **CameraDataPostProcess**: ❌  
+  All about *data processing pipelines* (encoding, decoding, format conversion). This file does **no data processing** — only IPC dispatch and callback proxy setup.
+
+- **CameraServiceCommon**: ✅ **Strong candidate**  
+  > *"provides shared basic service capabilities for the source and sink sides... including basic commands, protocols, camera information, channel information, events, Metadata settings, open-camera information, and controller interfaces."*  
+  This stub implements core *service interface* logic: handling `InitSource`, `ReleaseSource`, `RegisterDistributedHardware`, `CameraNotify` — exactly the kind of basic command/event interface described. It’s not tied to data flow or transport, but to service-level IPC contracts.
+
+- **VirtualCameraHdf**: ❌  
+  HDF/HDI layer, virtual device implementation — this is higher-level service, not driver/HDF.
+
+- **utils**: ❌  
+  Utilities, buffers, error codes — while it includes error headers, the file is a full stub class, not a utility.
+
+### 6. **Cross-check with Reference Examples (implied)**  
+Though no explicit examples given, standard OpenHarmony pattern:
+- `_stub.cpp` files implementing `OnRemoteRequest` with method maps are typically part of the **service common layer**, especially when they define the interface contract between components (e.g., sink ↔ source service).
+
+In distributed camera, `DistributedCameraSourceStub` is the entry point for sink-side registration and notifications — part of the **core service interface**, not transport or data path.
+
+### ✅ Conclusion:
+The file implements the IPC stub for the distributed camera *source service*, exposing core service commands and event handling — matching **CameraServiceCommon**, which provides shared basic service capabilities including protocols, commands, events, and controller interfaces.
+
+---
+
+**Assigned Module**: [CameraServiceCommon]

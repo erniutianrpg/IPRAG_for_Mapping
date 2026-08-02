@@ -1,0 +1,71 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Location & Inclusion Context**
+- The file includes:
+  ```cpp
+  #include <proxygen/lib/services/WorkerThread.h>
+  ```
+  This strongly indicates the file is part of the `services` module — specifically, the *implementation* of `WorkerThread`, which is declared in `proxygen/lib/services/`.
+
+- Other includes:
+  - `folly/io/async/EventBase.h`, `EventBaseManager.h`, `IoUringBackend.h`: These are low-level async I/O primitives used for event loop management.
+  - `glog/logging.h`, `signal.h`: Standard logging and signal handling.
+  - No HTTP-specific headers (e.g., `HTTPMessage.h`, `RequestHandler.h`, etc.) → rules out `http_general`, `httpserver`.
+  - No DNS-related headers (e.g., `DNSResolver.h`) → rules out `dns`.
+  - No pool-related config or backend list structures → rules out `pools`.
+  - No sampling logic (e.g., rate limiting, probabilistic sampling) → rules out `sampling`.
+  - No QUIC/transport-specific headers (e.g., `QuicTransport.h`, `QuicSocket.h`) → rules out `transport`.
+
+So far, this points heavily toward **`services`**.
+
+---
+
+### **2. Namespace and Types**
+- `namespace proxygen { ... }`
+- Contains `WorkerThread` class with methods:
+  - `start()`, `stopWhenIdle()`, `forceStop()`, `wait()`, `setup()`, `cleanup()`, `resetEventBase()`, `runLoop()`
+  - Uses `thread_ = std::thread(...)`, `eventBase_`, `eventBaseManager_`, `joinLock_`, `state_`
+  - `thread_local WorkerThread* currentWorker_`
+
+This is classic **worker thread infrastructure**: managing a dedicated OS thread per worker, running an `EventBase` loop, handling lifecycle (start/stop), and supporting graceful shutdown.
+
+This matches exactly what the `services` module description says:
+> *"used for connection management and server-side related code... provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration."*
+
+---
+
+### **3. Key Functionalities Observed**
+- Conditional compilation for `io_uring` backend: shows support for modern Linux async I/O — but still within the context of configuring the `EventBase` backend for a worker thread.
+- `getEventBaseBackend()` is a helper to select backend (default vs io_uring), used during `WorkerThread` construction.
+- `eventBase_->runInEventBaseThread(...)`, `eventBase_->terminateLoopSoon()`, `eventBase_->waitUntilRunning()` — all standard `folly::EventBase` usage for thread-safe event loop control.
+- Lifecycle management (`State::IDLE`, `STARTING`, `RUNNING`, `STOP_WHEN_IDLE`) — typical for long-running service threads.
+
+All of these are **infrastructure-level**, not protocol- or application-level.
+
+---
+
+### **4. Comparison with Candidate Modules**
+
+| Module | Match Reasoning |
+|--------|-----------------|
+| **dns** | ❌ No DNS resolution logic; no resolver usage. |
+| **pools** | ❌ No backend pool management, no server list logic. |
+| **sampling** | ❌ No sampling counters, rates, or probabilistic logic. |
+| **general** | ⚠️ Partial: utils like logging, threading exist, but this is *not* generic utility code — it's tightly coupled to `WorkerThread`, which lives under `services/`. Also, `general` is described as `proxygen/lib/utils/`, while this file implements `proxygen/lib/services/WorkerThread`. So unlikely. |
+| **http_general** | ❌ No HTTP message parsing, encoding, sessions, transactions. |
+| **services** | ✅ Direct match: file implements `WorkerThread` from `proxygen/lib/services/`; handles thread + event loop lifecycle for server-side infrastructure. |
+| **httpserver** | ❌ That’s high-level wrapper (e.g., `HTTPServer`, `RequestHandlerFactory`); this is lower-level worker thread implementation used *by* httpserver, but not part of it. |
+| **transport** | ❌ No QUIC, UDP, datagram, or transport-layer concerns. |
+
+---
+
+### **5. Final Assessment**
+The file is the **implementation of `WorkerThread`**, which is a core component of Proxygen’s server-side concurrency model — explicitly located under `proxygen/lib/services/`. Its responsibilities (thread management, event loop setup, graceful shutdown) align precisely with the `services` module definition.
+
+Probability is very high.
+
+---
+
+**The probability that this file belongs to module 'services' is 98%.**

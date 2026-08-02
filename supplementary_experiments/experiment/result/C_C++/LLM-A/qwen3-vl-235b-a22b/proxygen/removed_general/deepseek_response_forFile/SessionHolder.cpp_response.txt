@@ -1,0 +1,61 @@
+Let’s analyze the file step by step:
+
+### 1. **File context and location**
+- The header included is:  
+  `#include <proxygen/lib/http/connpool/SessionHolder.h>`  
+  → This indicates the file is part of `proxygen/lib/http/connpool/`, i.e., the **connection pool** subsystem under HTTP.
+
+- Includes:
+  - `folly/Random.h`: used for jitter (randomization), common in connection pooling for avoiding thundering herd.
+  - `folly/io/async/AsyncSocket.h`: low-level async I/O, but not directly defining transport logic — used here to support session behavior.
+
+- Namespace: `proxygen` — core Proxygen namespace.
+
+- Class: `SessionHolder`
+  - Manages a single `HTTPSessionBase*` within a connection pool.
+  - Tracks state (`IDLE`, `PARTIAL`, `FULL`, `DETACHED`) and links/unlinks from lists managed by a `Callback* parent`.
+  - Implements lifecycle hooks like `onCreate`, `onDestroy`, `onIngressError`, `onTransactionAttached/Detached`, etc. — these are callbacks from the underlying HTTP session to notify the pool about session events.
+  - Has methods like:
+    - `isPoolable()`: determines if a session can be reused in the pool.
+    - `shouldAgeOut()`: decides if session should be evicted based on age + jitter.
+    - `drain()`, `closeWithReset()`: clean up and release session back to pool or close it.
+    - `newTransaction()`: forwards transaction creation to session.
+    - Many `on*` handlers that mirror HTTP session events — used to keep pool state consistent.
+
+This is clearly **connection pooling logic**, specifically for HTTP sessions — managing reuse, lifetime, state transitions, and integration with the session lifecycle.
+
+### 2. **Compare with candidate modules**
+
+- `dns`: ❌ No DNS resolution logic. Not relevant.
+
+- `pools`: ✅ Candidate. Description says:  
+  > *"mainly responsible for configuration and generation related to server lists or backend member pools, serving as backend server-pool configuration support for proxy, load-balancing, or service-discovery scenarios."*  
+  However, note: this is **not** about *backend server pools* (i.e., which servers to connect to), but rather **client-side connection pooling** — reusing HTTP sessions (e.g., for keep-alive connections to the same backend). Still, the term “pools” in Proxygen likely encompasses *connection pooling*, especially since `proxygen/lib/http/connpool/` is a dedicated directory.
+
+  Let’s verify other modules before concluding.
+
+- `sampling`: ❌ No sampling logic (e.g., probabilistic sampling of requests). Only uses `Random::randDouble` for jitter — incidental, not core purpose.
+
+- `ssl`: ❌ No SSL/TLS context, certificates, handshake logic. Uses `AsyncSocket`, but that's generic.
+
+- `http_general`: This covers core HTTP protocol handling — parsing, encoding, transactions, sessions. But `SessionHolder` is **not** doing protocol work; it's a *manager* of sessions for pooling. It depends on `HTTPSessionBase`, but doesn’t implement protocol semantics.
+
+- `services`: Described as server-side infrastructure (service execution, workers, acceptance). This is client-side pooling (used by clients/proxies to reuse connections to backends), so not services.
+
+- `httpserver`: High-level HTTP server APIs — not relevant; this is not a server framework component.
+
+- `transport`: Low-level QUIC/HTTP3 transport — no QUIC, no datagrams, no socket-level transport setup. Uses `AsyncSocket`, but only as a dependency; not implementing transport.
+
+### 3. **Key insight**: Directory path matters
+The header is `proxygen/lib/http/connpool/SessionHolder.h`. In Proxygen’s codebase:
+- `lib/http/connpool/` is the **connection pooling module** for HTTP sessions.
+- This is distinct from backend server pools (which might live in `lib/services/` or elsewhere), but the candidate module `pools` is the *only one* that mentions “pool” and “backend member pools”, and given the naming, it's the best fit — even if the description emphasizes *backend* pools, the actual implementation in Proxygen uses `connpool` for *session* pooling, and it's reasonable to map that to the `pools` module.
+
+Moreover, looking at the functions:
+- `isPoolable`, `shouldAgeOut`, `unlink`, `link`, `drain`, `closeWithReset`, list state management — all classic connection pooling concerns.
+- The `Callback* parent` is likely the pool manager (e.g., `ConnPool` or `SessionPool`), and `SessionHolder` is the per-session wrapper.
+
+Thus, despite the description emphasizing *backend server pools*, the only module that semantically matches **connection/session pooling** is `pools`.
+
+### Final decision:
+✅ **Assigned Module**: [`pools`]

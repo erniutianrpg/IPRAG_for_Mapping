@@ -1,0 +1,55 @@
+Let’s analyze the file content step by step and compare it with the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `dcamera_source_callback.h` → strongly suggests this is related to *source-side* callback handling.
+  - `anonymous_string.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` → utility/logging/error handling, common in distributed camera stack.
+- Namespaces: `OHOS::DistributedHardware` → confirms this is part of OpenHarmony’s Distributed Hardware subsystem.
+- Functions:
+  - `DCameraSourceCallback::OnNotifyRegResult(...)`
+  - `DCameraSourceCallback::OnNotifyUnregResult(...)`
+  - `Push/PopRegCallback`, `Push/PopUnregCallback`
+- Key behavior:
+  - Manages registration/unregistration callbacks using `reqId` as key (`regCallbacks_`, `unregCallbacks_` maps).
+  - When a result (e.g., registration success/failure) is received, it looks up the corresponding callback via `reqId`, invokes the user-provided callback (e.g., `iter->second->OnRegisterResult(...)`), then removes the entry.
+  - Uses logging (`DHLOGI`, `DHLOGE`) and anonymization for privacy-sensitive IDs.
+
+This is clearly a **callback dispatcher** on the **source side**, specifically handling asynchronous responses (e.g., from IPC or remote sink) for registration/unregistration operations.
+
+### 2. **What does this module do?**
+It does **not**:
+- Handle camera data transmission (no encoding/decoding, no frame processing) → rules out `CameraDataPreProcess`, `CameraDataPostProcess`, `ChannelSink`, `ChannelCommon`.
+- Manage camera lifecycle, streams, or device control directly → rules out `DistributedCameraSourceMgr` (though it's source-side, that module is higher-level controller logic).
+- Implement HDF/HDI virtual devices → not `VirtualCameraHdf`.
+- Provide generic utilities like buffers, error codes, etc. → though it uses them, its core purpose is *callback management*, not utility provision → likely not `utils`.
+
+### 3. **Compare with Candidate Modules**
+
+#### ✅ **DistributedCameraSourceMgr**
+> *"responsible for lifecycle, state machine, controller, input stream, data processing, IPC service, and **callback management** on the source side..."*
+
+Key phrase: "**callback management** on the source side".  
+The class `DCameraSourceCallback` is clearly a helper used *by* the source manager to manage pending registration/unregistration callbacks — i.e., it’s part of the callback infrastructure *within* the Source Manager.
+
+In typical architecture:
+- `DistributedCameraSourceMgr` would own or use an instance of `DCameraSourceCallback`.
+- The `.cpp` file implements the callback dispatch logic that supports the manager’s async IPC interactions (e.g., when registering a camera remotely, the source sends a request and waits for response; this class holds the callback until response arrives).
+
+Given the header name `dcamera_source_callback.h` and the namespace `DistributedHardware`, and the fact that this is *source-side* callback handling (not sink, not channel, not data processing), this belongs squarely under **DistributedCameraSourceMgr**.
+
+#### ❌ Other modules:
+- `DistributedCameraSinkMgr`: sink-side — this code is source-side (`DCameraSourceCallback`).
+- `ChannelCommon` / `ChannelSink`: deal with transport/session layer; this code doesn’t handle SoftBus, sessions, or channels directly — it only consumes results (likely delivered *via* channel).
+- `CameraData*`: no image/data processing here.
+- `CameraServiceCommon`: provides shared protocols/events — but this is specific to *registration/unregistration* callbacks, not general services.
+- `utils`: too generic; this is domain-specific callback orchestration, not generic utilities.
+
+### 4. **Reference Example Reasoning**
+Although no explicit reference examples are given in the prompt, the naming convention (`DCameraSourceCallback`) and pattern (managing `reqId` → callback mapping for async results) match standard OpenHarmony distributed service patterns where the *manager* owns the high-level logic and delegates callback tracking to a dedicated helper class — which is still considered part of the manager module.
+
+---
+
+### ✅ Final Decision:
+
+**Assigned Module**: [DistributedCameraSourceMgr]

@@ -1,0 +1,87 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+interfaces\inner_kits\native_cpp\camera_sink\include\distributed_camera_sink_proxy.h
+```
+- The path includes `camera_sink`, indicating this is on the **sink side** (i.e., the *controlled device* side — the device hosting the physical camera).
+- It's under `interfaces/inner_kits/native_cpp/...`, suggesting it's part of the **IPC interface layer**, specifically a proxy for remote communication.
+
+### 2. **Includes**
+```cpp
+#include "idistributed_camera_sink.h"
+#include "iremote_broker.h"
+#include "iremote_proxy.h"
+#include "refbase.h"
+```
+- `IDistributedCameraSink` is the interface defining sink-side capabilities.
+- `IRemoteProxy` and `IRemoteBroker` indicate this is an **IPC proxy class** implementing remote method calls via OHOS’s distributed IPC (RemoteObject-based).
+- This confirms it's a **client-side proxy** used by the *source side* to invoke methods on the *sink side* — but note: the proxy itself resides on the **caller side**, i.e., typically the source side, to talk to the sink service.
+
+However, the naming `DistributedCameraSinkProxy` and location in `camera_sink/include/` suggests this header is **provided by the sink module** for use by others (e.g., source side) to interact with the sink service. In OHOS architecture, proxies are usually defined alongside the interface they implement, even if used remotely.
+
+### 3. **Class Definition**
+```cpp
+class DistributedCameraSinkProxy : public IRemoteProxy<IDistributedCameraSink>
+```
+- This is a standard OHOS remote proxy class that implements the `IDistributedCameraSink` interface over IPC.
+- It declares methods like:
+  - `InitSink`, `ReleaseSink`
+  - `SubscribeLocalHardware`, `UnsubscribeLocalHardware`
+  - `StopCapture`
+  - `ChannelNeg`, `OpenChannel`, `CloseChannel`
+  - `GetCameraInfo`
+
+These are **control-plane operations** related to:
+- Lifecycle management (`InitSink`, `ReleaseSink`)
+- Hardware subscription/unsubscription
+- Channel negotiation and management
+- Camera info query
+
+All these are **high-level sink-side service operations**, not data transmission or preprocessing/postprocessing.
+
+### 4. **Comparison with Candidate Modules**
+
+Let’s evaluate each candidate:
+
+- **DistributedCameraSourceMgr**: Focuses on *source-side* lifecycle, controller, input stream, etc. ❌ Not this — this is sink-side interface.
+
+- **ChannelCommon**: Provides *common channel-layer* capabilities (SoftBus adaptation, session mgmt, interfaces). While `ChannelNeg`, `OpenChannel`, etc. relate to channels, this file is **not implementing channel logic** — it's just exposing sink service APIs via IPC. So not ChannelCommon.
+
+- **ChannelSource**: Source-side channel implementation (controller side). ❌ This is about sink-side proxy.
+
+- **ChannelSink**: Sink-side channel implementation — receives commands, sends image data.  
+  → The methods here (`ChannelNeg`, `OpenChannel`, `CloseChannel`) are *channel control*, and `SubscribeLocalHardware`, `StopCapture`, etc. are sink-side control functions.  
+  But note: `ChannelSink` is expected to be the *implementation* of the sink channel logic (e.g., using SoftBus), whereas this is a **proxy interface**, not the implementation. However, in OHOS, the *proxy* is often grouped with the module it serves — i.e., the sink-side service defines its proxy in its own interface layer.
+
+- **CameraDataProcessCommon / CameraDataPreProcess / CameraDataPostProcess**: These deal with *data processing pipelines* (encoding, decoding, format conversion, frame rate). This file has **no data processing** — only control commands. ❌
+
+- **CameraServiceCommon**: *"Provides shared basic service capabilities for the source and sink sides... including basic commands, protocols, camera information, channel information, events, Metadata settings..."*  
+  → This matches well:  
+  - `GetCameraInfo`, `ChannelNeg`, `OpenChannel`, `SubscribeLocalHardware` are all *basic service commands* and *channel/camera info* queries.  
+  - It’s a shared service interface (via IPC), and the proxy is part of the service contract.
+
+- **VirtualCameraHdf**: HDF/HDI layer implementation — this is higher-level IPC, not HDF driver code. ❌
+
+- **utils**: General utilities — this is a formal interface proxy, not utility code. ❌
+
+### 5. **Key Insight**
+The class `DistributedCameraSinkProxy` implements the *remote interface* for the sink service. The actual sink service implementation would likely be in a `.cpp` file (e.g., `distributed_camera_sink_stub.cpp` or similar), and this header is part of the **service contract**.
+
+Looking at the candidate descriptions again:
+> **CameraServiceCommon**: This module provides shared basic service capabilities for the source and sink sides of the distributed camera, including basic commands, protocols, camera information, channel information, events, Metadata settings, open-camera information, and controller interfaces.
+
+This fits best because:
+- The methods exposed are *basic service commands* (init/release, subscribe, get info, channel ops).
+- It’s not tied to data flow (so not data processing modules).
+- It’s not channel transport implementation (so not ChannelSink/Source), but rather the *service layer* that uses channels.
+- The namespace `DistributedHardware` and inclusion in `camera_sink/include/` suggest it belongs to the sink-side service definition, and `CameraServiceCommon` is explicitly described as serving *both sides* with shared service capabilities — which includes sink-side service interfaces.
+
+Also, note that `IDistributedCameraSink` (included) is likely defined in `CameraServiceCommon`, and the proxy is part of that module’s interface package.
+
+### ✅ Conclusion
+The file defines the IPC proxy for the distributed camera sink service, exposing core service-level operations — aligning precisely with **CameraServiceCommon**, which provides shared basic service capabilities including camera info, channel info, and control commands.
+
+---
+
+**Assigned Module**: [CameraServiceCommon]

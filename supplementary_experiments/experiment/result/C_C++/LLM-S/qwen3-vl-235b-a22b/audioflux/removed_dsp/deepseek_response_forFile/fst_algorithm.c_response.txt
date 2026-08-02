@@ -1,0 +1,85 @@
+Let’s analyze the file content step by step to determine which module it most likely belongs to.
+
+---
+
+### **1. Key Observations from File Content**
+
+#### **Includes**
+- `string.h`, `math.h` → standard C libraries.
+- `vector/flux_vector.h`, `vector/flux_vectorOp.h`, `vector/flux_complex.h` → low-level vector and complex number utilities (likely part of core math infrastructure).
+- `util/flux_util.h` → general utilities.
+- `dsp/flux_window.h`, `dsp/fft_algorithm.h` → DSP primitives: windowing and FFT implementation.
+- `fst_algorithm.h` → **FST** (Frequency-Scale Transform?) — this is the key clue.
+
+#### **Struct Definition**
+- `struct OpaqueFST`: contains:
+  - `FFTObj fftObj`, `FFTObj *fftObjArr`
+  - `fftLength`, `radix2Exp`
+  - `norm`
+  - arrays for real/image parts (`realArr1`, `imageArr1`, etc.)
+  - `mIndexArr`, `lenArr`, `curDataArr`
+  
+This strongly suggests a **time-frequency transform object**, specifically one that uses FFT internally and manages partitioning/reassignment — typical of **reassignment-based transforms** like the **Frequency-Scale Transform (FST)** or possibly a variant of the **Synchrosqueezing Transform (SST)** or **Reassigned Spectrogram**.
+
+Note: The function `fstObj_fst(...)` performs:
+- memcpy with wrap-around (shifting data: `dataArr+fftLength/2` into first half, `dataArr` into second half) → suggests **circular shift / analytic signal preparation**
+- calls `fftObj_fft(...)` → computes FFT
+- then likely applies reassignment (given `_fstObj_initReassign` and use of `mIndexArr`, `__mget_fast`)
+
+The `__mget_fast` function signature suggests extracting values based on index mapping — consistent with **reassignment operations**, where energy is relocated in time-frequency plane based on group delay or instantaneous frequency.
+
+#### **Function Names & Behavior**
+- `fstObj_new`, `fstObj_fst`, `fstObj_free` → object-oriented interface for FST.
+- `_fstObj_initFFT`, `_fstObj_initPartition`, `_fstObj_initReassign` → initialization phases for FFT, partitioning (e.g., overlapping segments), and reassignment (a hallmark of advanced time-frequency analysis).
+- The use of `radix2Exp`, `fftLength = 1 << radix2Exp`, normalization `1/sqrt(fftLength)` → standard FFT setup.
+
+This is **not** a simple spectrogram (which would just call FFT once per frame), but rather a more sophisticated transform involving:
+- FFT,
+- Index mapping (`mIndexArr`),
+- Reassignment (energy relocation),
+- Possibly multi-resolution or scale-aware processing (given “FST” name — Frequency-Scale Transform is used in some literature for wavelet-like or constant-Q inspired reassignment methods).
+
+---
+
+### **2. Comparison with Candidate Modules**
+
+#### ✅ **general**
+> *"centralizing major time-frequency transforms, spectral computation, basic audio I/O, and common utilities. It provides spectrogram generation as well as multiple time-frequency transforms, synchrosqueezing, reassignment algorithms..."*
+
+- The file implements an **FST**, which is a **time-frequency transform**.
+- It uses core DSP building blocks (`fft_algorithm.h`, `flux_window.h`), vector ops, and complex math — all expected in the `general` layer.
+- Reassignment is explicitly mentioned in the `general` description — and this code has `_fstObj_initReassign`.
+- No music-specific logic (e.g., pitch, onset, HPSS) is present.
+- Not feature extraction per se (like MFCC, spectral centroid), but rather the *transform* that may feed into features.
+
+#### ❌ **feature**
+> *"extract audio features from spectral, cepstral, and time-domain data... Spectral, XXCC, Deconv, Cepstrogram, Temporal..."*
+
+- This file does **not compute features** like MFCC, spectral centroid, zero-crossing, etc.
+- It computes a transform (FST), not a feature vector.
+- Feature modules usually operate *on top* of transforms (e.g., take spectrogram → compute MFCC). This is lower-level.
+
+#### ❌ **filter_bank**
+> *"constructing and applying different types of spectral filter banks and auditory weights..."*
+
+- No filter bank design (e.g., Mel, Gammatone, ERB filters).
+- No weight vectors or convolution with filter banks.
+- Uses FFT directly, not filterbank decomposition.
+
+#### ❌ **mir**
+> *"pitch estimation, onset detection, harmonic/percussive separation, pitch shifting, time stretching..."*
+
+- No pitch tracking, no onset detection logic, no HPSS, no time-stretch kernels.
+- While FST *could* be used *by* MIR modules, this file itself is purely a transform engine — not MIR-specific.
+
+---
+
+### **3. Conclusion**
+
+The file implements a **Frequency-Scale Transform (FST)** object using FFT and reassignment — a **core time-frequency transform**, fitting precisely under the **`general`** module’s responsibility: *"multiple time-frequency transforms, synchrosqueezing, reassignment algorithms"*.
+
+It is infrastructure-level, not application-level (like MIR or feature extraction), and not filter-bank specific.
+
+---
+
+**The probability that this file belongs to module 'general' is 95%.**

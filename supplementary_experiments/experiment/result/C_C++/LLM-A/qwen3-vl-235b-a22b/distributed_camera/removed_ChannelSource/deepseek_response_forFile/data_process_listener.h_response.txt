@@ -1,0 +1,83 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### File Content Summary:
+- **Language**: C/C++
+- **Includes**: `data_buffer.h`
+- **Macro**: `OHOS_DATA_PROCESS_LISTENER_H` (header guard)
+- **Namespaces**: `OHOS::DistributedHardware`
+- **Types**:
+  - Enum `DataProcessErrorType`: defines error codes related to pipeline components (encoder, decoder, eventbus, disable process)
+  - Class `DataProcessListener`: abstract interface with pure virtual methods:
+    - `~DataProcessListener()`
+    - `OnProcessedVideoBuffer(const std::shared_ptr<DataBuffer>& videoResult)`
+    - `OnError(DataProcessErrorType errorType)`
+- **Raw excerpt**: Header-only definition of a listener interface for data processing events — specifically video buffer results and errors.
+
+Key observations:
+- This is a **callback/listener interface**, not an implementation.
+- It is used to notify clients about:
+  - Completion of video buffer processing (`OnProcessedVideoBuffer`)
+  - Errors during data processing (`OnError`)
+- The enum values indicate it's tied to a **pipeline** involving encoder/decoder/eventbus — suggesting it's part of a **data processing pipeline**, likely in the context of camera video streaming.
+- It uses `DataBuffer`, which is likely defined in `data_buffer.h` — a utility type for holding media data (e.g., frames).
+- The namespace `OHOS::DistributedHardware` aligns with distributed camera subsystem.
+
+Now, evaluate candidate modules:
+
+1. **DistributedCameraSourceMgr**  
+   → Manages lifecycle, controller, input stream, *data processing*, IPC, callbacks on **source side**.  
+   → Since this listener is for *processed video buffer* and *errors*, and source side typically receives decoded/post-processed data (i.e., output side), this *might* be relevant — but note: `OnProcessedVideoBuffer` suggests the buffer has already been processed (e.g., decoded, resized, etc.), which fits **post-processing** on the source side.
+
+2. **DistributedCameraSinkMgr**  
+   → Handles data processing on **sink side** (controlled device). But sink side typically does *preprocessing* before sending (e.g., encoding), not post-processing. The listener here reports *processed video buffer*, which is more likely what the source side consumes after decoding. So less likely.
+
+3. **ChannelCommon**  
+   → Focuses on communication layer (SoftBus, sessions, channel interfaces/listeners). This is *not* a channel listener — it's about data processing results, not transport-level events.
+
+4. **ChannelSink**  
+   → Sink-side channel implementation; again, transport-level, not data processing callbacks.
+
+5. **CameraDataProcessCommon**  
+   → Provides *common data processing frameworks*, *pipeline interfaces*, codecs, etc.  
+   → A listener interface like `DataProcessListener` fits well here: it’s a generic callback interface used by data processing pipelines (both source and sink may use it).  
+   → The enum includes encoder/decoder errors — exactly the kind of pipeline-level error reporting a common framework would expose.  
+   → Also, it’s header-only, abstract, and used across components — typical for common interfaces.
+
+6. **CameraDataPreProcess**  
+   → Preprocessing on sink/input side. Listener is about *processed* video buffer — implies output of preprocessing or postprocessing, not input. Unlikely.
+
+7. **CameraDataPostProcess**  
+   → Post-processing on source/output side: decodes, converts format, adjusts frame rate/resolution.  
+   → `OnProcessedVideoBuffer` strongly suggests this: after post-processing, the final usable video buffer is delivered via this callback.  
+   → The error types (`ERROR_PIPELINE_DECODER`, etc.) also match post-processing pipeline stages (decoding happens on source side).  
+   → So this is a strong candidate.
+
+8. **CameraServiceCommon**  
+   → Shared basic service capabilities: commands, protocols, metadata, open-camera info. Not focused on data processing callbacks.
+
+9. **VirtualCameraHdf**  
+   → HDF/HDI layer implementation — too low-level; this is a high-level listener interface.
+
+10. **utils**  
+    → Provides common utilities: data buffers, constants, error codes, general support.  
+    → `DataBuffer` is included, and error enum could be considered a utility. However, this is not just a utility — it's a *listener interface* tied to data processing flow, not a standalone helper.
+
+Now, compare **CameraDataPostProcess** vs **CameraDataProcessCommon**:
+
+- `CameraDataProcessCommon` is described as providing *common frameworks* and *pipeline interfaces* — i.e., foundational abstractions used by both pre- and post-processing.
+- `CameraDataPostProcess` is specifically for *post-processing on source side*, and its responsibilities include “decodes, converts formats… so that the controller can use distributed camera data as if using a local Camera”.
+
+The listener method `OnProcessedVideoBuffer` is exactly what a post-processor would emit after finishing its work — e.g. after decoding and format conversion, it notifies the consumer (e.g., preview surface or recorder) via this listener.
+
+Also, the error types include `ERROR_PIPELINE_DECODER`, which occurs during decoding — a core part of post-processing on the source side.
+
+Moreover, the namespace `DistributedHardware` and the fact that this is a *listener* (not a manager or service) suggests it's part of the data processing pipeline abstraction — and since it’s specifically about *video buffer after processing*, and the source side is where decoding/post-processing happens, **CameraDataPostProcess** is the best fit.
+
+✅ Supporting evidence:
+- Source side = controller side = receives encoded stream from sink, decodes, post-processes → then delivers `OnProcessedVideoBuffer`.
+- The listener is implemented by consumers of post-processed data (e.g., preview renderer), and the post-processor invokes it.
+- Module description explicitly says: “It decodes, converts formats, and processes frame rate, resolution… so that the controller can use distributed camera data…” — exactly what triggers this callback.
+
+Thus, the most appropriate module is:
+
+**Assigned Module**: [CameraDataPostProcess]

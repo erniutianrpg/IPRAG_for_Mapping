@@ -1,0 +1,74 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+### File Summary:
+- **File name / guard macro**: `OHOS_DATA_PROCESS_LISTENER_H`
+- **Includes**: `data_buffer.h` → suggests use of `DataBuffer`, a data container type.
+- **Namespaces**: `OHOS::DistributedHardware` → clearly part of OpenHarmony Distributed Hardware subsystem.
+- **Types**:
+  - `enum DataProcessErrorType`: error codes related to pipeline components (encoder, decoder, eventbus, disable).
+  - `class DataProcessListener`: abstract interface with pure virtual methods:
+    - `~DataProcessListener()`
+    - `OnProcessedVideoBuffer(const std::shared_ptr<DataBuffer>& videoResult)` → callback for *processed* video buffer (i.e., after some processing stage).
+    - `OnError(DataProcessErrorType errorType)` → error reporting from data processing pipeline.
+
+This is a **listener interface for data processing results**, specifically for video buffers, likely used by components that perform encoding/decoding/frame processing — i.e., part of a *data processing pipeline*.
+
+Key observations:
+- It does **not** deal with channel/session management (so unlikely ChannelCommon/Source/Sink).
+- It does **not** define camera device/HDF implementation (so not VirtualCameraHdf).
+- It does **not** define service-level commands or metadata (so not CameraServiceCommon).
+- It does **not** handle IPC proxies or local camera operations directly (so not utils).
+- The error types (`ERROR_PIPELINE_ENCODER`, `DECODER`, `EVENTBUS`) strongly indicate it's tied to a *pipeline* abstraction — common in data processing frameworks.
+- The listener receives `OnProcessedVideoBuffer`, implying it’s used *after* some processing step (e.g., encoder output, post-processing output), so it could be used by either **pre-process** or **post-process**, but more likely **post-process** since it’s about *processed* video being delivered (and sink-side pre-processing would feed into encoding, not emit “processed video buffer” as final output).
+
+Now evaluate candidate modules:
+
+1. **DistributedCameraSinkMgr**  
+   - Manages lifecycle, access control, controller, data processing, image/video output, event notification, IPC on sink side.  
+   - While it *uses* data processing, this file is an interface, not a manager. Listener interfaces are usually *used by* managers, not part of the manager itself. Less likely.
+
+2. **ChannelCommon / ChannelSource / ChannelSink**  
+   - These are communication-layer modules (SoftBus, sessions, channel listeners).  
+   - This file has no network/session/channel concepts — only data buffer and error types tied to pipeline stages. ❌ Unlikely.
+
+3. **CameraDataProcessCommon**  
+   - Provides *common data processing frameworks*, *pipeline interfaces*, codecs, color space conversion, etc.  
+   - A listener interface like `DataProcessListener` fits perfectly here: it's a generic callback interface for pipeline consumers — exactly what a "common framework" would provide for pluggable processing stages.  
+   - The enum `DataProcessErrorType` is generic (not source/sink-specific), and the interface is abstract — ideal for shared use across source/sink. ✅ Strong match.
+
+4. **CameraDataPreProcess**  
+   - Sink-side preprocessing before transmission/encoding.  
+   - Preprocessing typically produces *input* to encoder, not “processed video buffer” ready for consumption. Also, errors like `ERROR_PIPELINE_DECODER` don’t fit pre-processing (decoder isn’t involved yet). ❌ Less likely.
+
+5. **CameraDataPostProcess**  
+   - Source-side post-processing: decodes, converts formats, adjusts frame rate/resolution — outputs usable video.  
+   - `OnProcessedVideoBuffer` fits well here: after decoding & conversion, the final processed buffer is delivered to the app/controller.  
+   - However, the error enum includes `ERROR_PIPELINE_DECODER`, which aligns with post-processing (since decoding happens there), and `ERROR_PIPELINE_ENCODER` might be included for symmetry or cross-pipeline diagnostics.  
+   - But: Would a *post-process* module define a generic listener used elsewhere? Possibly — but note the namespace is `DistributedHardware`, and the interface is minimal/abstract. Still plausible.
+
+6. **CameraServiceCommon**  
+   - Shared basic service capabilities: commands, protocols, events, metadata, open-camera info.  
+   - This is too high-level; no direct link to data buffer processing pipelines. ❌ Unlikely.
+
+7. **VirtualCameraHdf**  
+   - HDF/HDI layer device implementation. No relation to C++ listener interfaces at this level. ❌
+
+8. **utils**  
+   - Provides utilities: data buffers, constants, error codes, general support.  
+   - `data_buffer.h` is included, and error codes exist — but this is not just a utility; it's a *callback interface* for data processing flow. Utilities usually don’t define abstract listener classes with virtual methods.  
+   - However, sometimes utils include small interfaces. But given the specificity to *data processing pipeline*, it's more aligned with a processing module than generic utils.
+
+### Critical Differentiator:
+- The enum `DataProcessErrorType` includes **both encoder and decoder errors**, suggesting it’s intended to be used across *multiple pipeline stages*, not limited to one side.
+- The class `DataProcessListener` is a pure abstract interface — typical of a *framework-level contract*, not an implementation.
+- `CameraDataProcessCommon` is explicitly described as providing “common data processing frameworks” and “pipeline interfaces” — this listener is exactly such an interface.
+
+Thus, the strongest match is **CameraDataProcessCommon**.
+
+Probability assessment:
+- **CameraDataProcessCommon**: 90% — matches description, abstraction level, namespace, and purpose.
+- **CameraDataPostProcess**: 60% — plausible, but too specific; post-process is implementation, while this is a generic interface likely consumed by multiple modules.
+- Others: ≤20%.
+
+### Final Answer:
+The probability that this file belongs to module 'CameraDataProcessCommon' is 90%.

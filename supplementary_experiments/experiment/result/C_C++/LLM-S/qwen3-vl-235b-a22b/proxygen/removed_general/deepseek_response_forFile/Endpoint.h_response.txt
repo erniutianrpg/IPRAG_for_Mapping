@@ -1,0 +1,79 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+### File Summary:
+- **Language**: C/C++
+- **Includes**: `folly/SocketAddress.h` → indicates use of Folly’s socket address abstraction (IP/port/host representation).
+- **Namespace**: `proxygen`
+- **Types**:
+  - `class Endpoint`: Represents a network endpoint with hostname, port, and security flag (`isSecure`). Supports construction from string or `folly::SocketAddress`.
+  - `struct EndpointHash`, `struct EndpointEqual`: Hash and equality functors for use in hash containers (e.g., `std::unordered_set/map`).
+- **Function**: `describe(std::ostream&)` — human-readable formatting.
+- **Key semantics**: 
+  - Encapsulates *where* to connect (hostname + port + secure flag).
+  - Designed for use as a key in hash-based collections (e.g., connection pools, backend tracking).
+  - No DNS resolution logic (no resolver calls, no `getaddrinfo`, etc.).
+  - No SSL/TLS context setup (just a boolean `isSecure` flag).
+  - Not HTTP protocol-specific (no headers, methods, status codes, streams, etc.).
+  - Not transport-layer (no QUIC sockets, no datagram handling, no I/O loops).
+  - Not server infrastructure (no acceptors, workers, services).
+
+### Module-by-module evaluation:
+
+#### 1. **dns**
+- ❌ Unlikely.  
+  - No DNS resolution logic (e.g., no `Resolver`, `DnsCache`, `Query`, etc.).
+  - `Endpoint` is *after* resolution — it assumes hostname is already known (or uses resolved `SocketAddress`).
+  - `folly::SocketAddress` may be used *by* DNS resolvers, but this class doesn’t resolve; it just stores results.
+
+#### 2. **pools**
+- ✅ **Highly likely**.  
+  - `Endpoint` is a canonical representation of a backend server (host:port + secure flag), ideal for use as a key in backend pools.
+  - `EndpointHash` and `EndpointEqual` are explicitly designed for hashing/equality in containers like `unordered_map<Endpoint, ...>` — common in load-balancer or pool management.
+  - In proxy/load-balancing contexts, you often need to uniquely identify backends (e.g., for health checks, connection reuse, circuit breaking).
+  - Proxygen’s `pools` module (e.g., `ServerPool`, `BackendPool`) would naturally use such an `Endpoint` type.
+  - The `isSecure` flag is critical for distinguishing HTTP vs HTTPS backends — essential for pooling.
+
+#### 3. **sampling**
+- ❌ Unlikely.  
+  - No sampling logic (e.g., no rate limiting, probabilistic decisions, counters, or sampler interfaces).
+  - Pure data structure, not algorithmic.
+
+#### 4. **ssl**
+- ❌ Low likelihood.  
+  - Only a boolean `isSecure`; no SSL context, certificates, handshake logic, or TLS version handling.
+  - Not part of SSL/TLS stack — just a metadata flag.
+
+#### 5. **http_general**
+- ❌ Unlikely.  
+  - No HTTP-specific constructs: no `HTTPMessage`, `Headers`, `Method`, `StatusCode`, `StreamID`, etc.
+  - Not involved in parsing, encoding, or transaction lifecycle.
+  - Too low-level for core HTTP protocol layer.
+
+#### 6. **services**
+- ⚠️ Possible, but less likely than **pools**.  
+  - `services` deals with server-side infrastructure: accepting connections, dispatching to handlers, worker threads.
+  - While `Endpoint` could be used in service configuration (e.g., binding address), the class here is *client-side* (hostname+port for *connecting to* a backend), not *server-side* (listening on an address).
+  - Server endpoints would typically use `folly::SocketAddress` directly or a `ListenSocket` abstraction — not a `hostname:port:secure` triple with hash/equality functors.
+  - Also, `services` tends to be higher-level; this is a utility struct/class.
+
+#### 7. **httpserver**
+- ❌ Unlikely.  
+  - This is a high-level HTTP server API wrapper (e.g., `HTTPServer`, `RequestHandler`).
+  - `Endpoint` is not exposed in public APIs of `httpserver`; it’s internal infrastructure.
+  - Again, this is about *connecting to* backends, not *serving* HTTP.
+
+#### 8. **transport**
+- ❌ Unlikely.  
+  - Transport layer deals with raw sockets, QUIC connections, flow control, datagrams, etc.
+  - `Endpoint` is abstracted above transport — it’s a logical identifier, not a transport handle.
+  - No mention of `QuicTransport`, `Socket`, `IOBuf`, `AsyncSocket`, etc.
+
+---
+
+### Conclusion:
+The `Endpoint` class is clearly designed to represent a *backend server identity* for use in pooling, load balancing, or service discovery — with hash/equality support for efficient lookup. This aligns precisely with the **pools** module’s responsibility: backend server list configuration and management.
+
+Other modules either operate at different layers (transport, http_general, services) or handle unrelated concerns (dns, ssl, sampling).
+
+> The probability that this file belongs to module 'pools' is **95%**.  
+> (Remaining 5% accounts for possible overlap in `services` if backend pooling is tightly coupled there — but based on standard Proxygen architecture, `pools` is the canonical home.)

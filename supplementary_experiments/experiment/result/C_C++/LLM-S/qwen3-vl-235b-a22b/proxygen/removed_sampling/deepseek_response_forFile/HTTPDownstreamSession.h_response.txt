@@ -1,0 +1,49 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Location & Includes**
+- The file includes:
+  - `proxygen/lib/http/session/HTTPSession.h` → clearly part of the HTTP session layer.
+  - `proxygen/lib/utils/WheelTimerInstance.h` → utility timer (from `utils/`, but used in HTTP session context).
+- The class defined is `HTTPDownstreamSession`, which inherits from `HTTPSession`.
+- Namespace: `proxygen`.
+
+This strongly suggests this file is part of the **HTTP session management infrastructure**, specifically for *downstream* (i.e., server-side) sessions.
+
+### 2. **Class & Functionality**
+- `HTTPDownstreamSession` is a concrete implementation of `HTTPSession`, handling:
+  - Transaction lifecycle (`newTransaction`, `setupOnHeadersComplete`, `onHeadersSent`, `getTransactionTimeoutHandler`)
+  - Session state (`isReusable`, `isClosing`, `allTransactionsStarted`)
+  - Thread-local attachment/detachment (though marked `FATAL` for downstream — implying this interface is upstream-only, reinforcing that this is *downstream*)
+  - Timeout handling via `WheelTimerInstance`
+  - Constructor takes `HTTPCodec`, `AsyncTransport`, `SocketAddress`, etc. — core session setup.
+
+This is **not**:
+- DNS resolution → no DNS types/functions.
+- Pool management → no pool config, backend selection, or service discovery logic.
+- SSL-specific → though SSL context is passed to `attachThreadLocals`, SSL handling itself is not implemented here; it's just consumed.
+- Transport-layer (QUIC/HTTP3) → no QUIC, datagram, or transport-specific abstractions; uses generic `AsyncTransport`.
+- High-level HTTP server framework (`httpserver`) → this is lower-level, not an API wrapper like `HTTPServer`, `RequestHandler`, etc.
+- General utilities (`general`) → while it uses `WheelTimerInstance` (a utility), the bulk of the code is HTTP-session specific, not generic helpers.
+
+### 3. **Module Mapping**
+Let’s evaluate each candidate:
+
+- **dns**: ❌ No DNS-related code.  
+- **pools**: ❌ No pool or backend list logic.  
+- **ssl**: ❌ SSL context is passed but not processed; no TLS handshake, cert handling, etc.  
+- **general**: ⚠️ Partial — uses `WheelTimerInstance` (from utils), but the *primary purpose* is HTTP session logic, not general utilities. This module is for *auxiliary* code (e.g., `TimeUtil`, `ScopedEventBaseThread`, ` folly::Optional` helpers), not core HTTP session classes.  
+- **http_general**: ✅ Strong match. This module covers “HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, **session management**, transaction management”. `HTTPDownstreamSession` is exactly a session manager for downstream (server) HTTP connections — central to HTTP session abstraction. The header path `proxygen/lib/http/session/` aligns with `http_general`.  
+- **services**: ⚠️ Close, but `services` is higher-level: connection acceptance, worker threads, service execution (e.g., `ServiceHandler`, `Acceptor`, `Worker`). This file is *below* that layer — it’s the session *inside* a connection, not managing the connection or service lifecycle.  
+- **httpserver**: ❌ That’s the top-level API (e.g., `HTTPServer`, `RequestHandler`, `ResponseBuilder`). This is internal implementation detail, not user-facing.  
+- **transport**: ❌ No QUIC, no socket-level transport specifics; uses abstract `AsyncTransport`.
+
+### 4. **Key Evidence**
+- File path implied by includes: `proxygen/lib/http/session/` → falls under `http_general` per definition.
+- `HTTPDownstreamSession` is a canonical part of Proxygen’s HTTP session hierarchy (alongside `HTTPUpstreamSession`), documented as core HTTP layer.
+- Overrides virtual methods from `HTTPSession`, which is the base for all HTTP sessions — fundamental to HTTP protocol handling.
+
+### Conclusion
+The file is a core component of the HTTP session management subsystem, squarely within the **http_general** module.
+
+> The probability that this file belongs to module 'http_general' is 95%.  
+> (Remaining 5% uncertainty due to use of `WheelTimerInstance` from `general`, but that’s a dependency, not the primary responsibility.)

@@ -1,0 +1,87 @@
+Let’s analyze the file content step by step to determine which module it most likely belongs to.
+
+---
+
+### **1. Key Observations from File Content**
+
+#### **Includes**
+The header includes a large number of files from:
+- `proxygen/lib/http/codec/` — HTTP codec implementations (HTTP1x, HTTP2Framer, HQControlCodec, HQUnidirectionalCodec, H3EarlyDataHandler, etc.)
+- `proxygen/lib/http/session/` — session-related abstractions: `HQSession`, `HQStreamBase`, `HTTPSessionBase`, `HTTPSessionController`, `ServerPushLifecycle`, `WebTransportFilter`, `QuicProtocolInfo`, `SessionLoopCallback`
+- `quic/` — QUIC-specific APIs: `QuicSocket`, `FollyQuicEventBase`, `BufUtil`, `HTTPPriorityQueue`, `PriorityQueue`
+- `folly/io/async/`, `folly/container/`, `folly/lang/` — foundational Folly utilities (common across many modules)
+
+This strongly indicates **HTTP over QUIC**, specifically **HTTP/3 (H3)** and **HQ (HTTP over QUIC, Facebook's early variant)**.
+
+#### **Namespaces**
+- `proxygen`: core namespace for Proxygen.
+- `hq`: specific to HQ protocol (HTTP over QUIC), used in types like `hq::PushId`, `hq::UnidirectionalStreamType`, etc.
+
+#### **Types**
+Key classes:
+- `HQSession` — central class; inherits from `HTTPSessionBase`, `QuicSocket::*Callback`, `HQUniStreamDispatcher::Callback`, etc.
+- `HQStreamTransportBase`, `HQStreamTransport`, `HQStreamBase`, `HQControlStream`, `HQStreamCodec` — stream-level abstractions for HQ/H3.
+- `H3WtSession` — likely WebTransport-over-H3 session.
+- `HTTPSessionController` — session control logic (used by both HTTP/2 and HTTP/3 sessions).
+- `WebTransportFilter`, `ServerPushLifecycle`, `HQByteEventTracker`, `HQStreamDispatcher` — session-layer features.
+
+#### **Functions**
+Many functions are session lifecycle methods:
+- `newTransaction()`, `newPushedTransaction()`
+- `onSettings()`, `onPriority()`, `onPushPriority()`, `onGoaway()`, `onKnob()` — protocol event handlers
+- `sendSettings()`, `sendPing()`, `sendPriority()`, `sendPushPriority()` — sending control frames
+- `findStream()`, `eraseStream()`, `dispatchRequestStream()`, `dispatchControlStream()` — stream dispatching logic
+- `getQuicSocket()`, `getTransport()`, `getCurrentTransportInfo()` — integration with QUIC transport
+- `setEarlyDataHandler()`, `enableDoubleGoawayDrain()`, `setForceUpstream1_1()` — H3/HQ-specific knobs
+
+All of these are **session-layer responsibilities** for handling HTTP semantics *on top of QUIC*, not raw transport or generic utilities.
+
+#### **Raw Excerpt**
+The excerpt shows:
+- `HQSession` as a multi-inheritance class combining:
+  - QUIC socket callbacks (`QuicSocket::ConnectionSetupCallback`, `ReadCallback`, etc.)
+  - HTTP session base (`HTTPSessionBase`)
+  - Session loop callback (`SessionLoopCallback`)
+  - HQ-specific dispatchers (`HQUniStreamDispatcher::Callback`)
+- Constants for H3/HQ versions, draft strings, default priorities — protocol versioning details.
+- No low-level socket I/O, no SSL context setup, no pool configuration, no sampling logic.
+
+---
+
+### **2. Candidate Module Comparison**
+
+| Module | Relevance |
+|--------|-----------|
+| **pools** | ❌ No backend pool logic, no server list config. Not relevant. |
+| **sampling** | ❌ No sampling code (e.g., `SampledStat`, `SamplingRate`). Not present. |
+| **ssl** | ❌ No SSL/TLS context, certificates, or handshake logic. Includes no OpenSSL/BoringSSL headers. |
+| **general** | ⚠️ Some utility includes (`ConditionalGate`, `EvictingCacheMap`, `IOBufQueue`) — but those are *used*, not the focus; the file is not a utility header itself. Too generic. |
+| **http_general** | ✅ Strong match: covers `proxygen/lib/http/codec/` and `session/` — exactly where this file lives. Handles HTTP protocol parsing, session management, transactions, and supports HTTP/2 & HTTP/3. This file implements `HQSession`, which is the HTTP/3 session abstraction — core to HTTP protocol layer. |
+| **services** | ❌ `services/` is about server-side infrastructure (e.g., `ServiceHandler`, `Acceptor`, `Worker`). This file is *not* about connection acceptance or service execution — it's about per-connection session logic. |
+| **httpserver** | ❌ `httpserver/` is high-level wrappers (e.g., `HTTPServer`, `RequestHandler`). This is low-level session implementation — not a user-facing API. |
+| **transport** | ⚠️ Partial match: uses QUIC transport (`QuicSocket`, `FollyQuicEventBase`), but the file does **not** implement transport primitives (e.g., packetization, congestion control, loss recovery). Instead, it *consumes* transport via callbacks and builds HTTP semantics on top. So it’s **above** transport — i.e., session layer, not transport layer. |
+
+> 🔑 Critical distinction:  
+> - **transport** = QUIC stack internals (e.g., `QuicSocket`, `QuicPacketBuilder`, `CongestionController`)  
+> - **http_general** = HTTP semantics *over* transport (e.g., `HTTPSessionBase`, `HQSession`, `HTTPCodec`, `HTTPTransaction`)  
+
+This file is clearly implementing the **HTTP session for HQ/H3**, sitting directly on top of QUIC — i.e., part of the HTTP protocol core layer.
+
+Also note: In Proxygen’s structure:
+- `proxygen/lib/http/session/` → belongs to `http_general`
+- `proxygen/lib/http/codec/` → also `http_general`
+- `proxygen/lib/transport/` → `transport` module (but this file doesn’t include anything from there)
+
+The presence of `HQSession` as a subclass of `HTTPSessionBase` confirms it’s part of the unified HTTP session abstraction hierarchy — which is the heart of `http_general`.
+
+---
+
+### **3. Conclusion**
+
+The file defines `HQSession`, a concrete implementation of an HTTP session for HTTP/3 (H3) and HQ, integrating QUIC transport callbacks with HTTP semantics (transactions, streams, settings, priority, push, etc.). It resides in the HTTP protocol core layer — precisely what `http_general` covers.
+
+Other modules are either too high-level (`httpserver`, `services`), too low-level (`transport`), or unrelated (`pools`, `sampling`, `ssl`, `general`).
+
+---
+
+**The probability that this file belongs to module 'http_general' is 95%.**

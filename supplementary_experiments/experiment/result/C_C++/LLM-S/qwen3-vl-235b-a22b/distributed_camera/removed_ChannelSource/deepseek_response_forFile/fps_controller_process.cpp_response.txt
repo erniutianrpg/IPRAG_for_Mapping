@@ -1,0 +1,77 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `fps_controller_process.h` → clearly indicates this is a *frame-rate controller* implementation.
+  - `dcamera_utils_tools.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` → generic distributed camera utilities, error codes, logging — common across many modules.
+- **Namespaces**: `OHOS::DistributedHardware` → standard namespace for distributed hardware components in OpenHarmony.
+- **Class/Functions**:
+  - `FpsControllerProcess` class with methods focused on:
+    - Initialization / release (`InitNode`, `ReleaseProcessNode`)
+    - Data processing (`ProcessData`)
+    - FPS estimation & control logic:
+      - `UpdateFPSControllerInfo`
+      - `CalculateFrameRate`
+      - `IsDropFrame`
+      - `ReduceFrameRateByUniformStrategy`
+      - `FpsControllerDone`
+    - Uses mutex (`lck(mtx)`) → thread-safe data processing.
+    - Operates on `inputBuffers` (vector of `DataBuffer`), extracts timestamp, decides whether to drop or forward frames based on target frame rate.
+
+This is **not** a channel layer, IPC, service manager, or HDF driver. It's purely a **data processing node** that controls frame rate — specifically, it *drops frames* or *adjusts output rate* to match a target FPS.
+
+---
+
+### **2. Candidate Module Matching**
+
+#### ✅ **CameraDataProcessCommon**
+> *"This module provides common data processing frameworks, data processing pipeline interfaces, codecs, color space conversion, **frame-rate control**, image types, and other common capabilities, supplying foundational components for data processing flows on both the source and sink sides."*
+
+- The file implements **frame-rate control** as a reusable processing node (`FpsControllerProcess`).
+- It follows a pipeline pattern: `ProcessData` → inspect timestamp → decide to drop/forward → call `FpsControllerDone`.
+- It uses `DataBuffer`, shared pointers, and integrates into a chain (`nextDataProcess_`), implying it's part of a modular data pipeline.
+- The name `FpsControllerProcess` suggests it’s a *process node*, not a manager or service.
+- The logic is generic: works on any input stream with timestamps; no sink/source-specific assumptions (e.g., no camera HAL calls, no IPC).
+- It’s likely used on **both sides** — e.g. sink side to limit capture rate, or source side to limit rendering/display rate.
+
+✅ Strong match.
+
+#### ❌ DistributedCameraSourceMgr / SinkMgr
+- These are **managers** handling lifecycle, state machines, IPC services, callbacks — high-level orchestration.
+- This file has no IPC, no state machine, no service registration — just a single processing node.
+- Not a manager.
+
+#### ❌ ChannelCommon / ChannelSink
+- These deal with **transport**, SoftBus sessions, message passing.
+- No network/session code here — only local buffer processing.
+
+#### ❌ CameraDataPreProcess / PostProcess
+- These are *pipeline stages*, but typically more specific:
+  - **PreProcess**: demosaicing, noise reduction, scaling, format conversion *before encoding/transmission* (sink side).
+  - **PostProcess**: decoding, color conversion, resolution scaling *after reception* (source side).
+- Frame rate control *could* be part of either, but:
+  - The module description says **CameraDataProcessCommon** explicitly includes *"frame-rate control"* as a *common capability*.
+  - `FpsControllerProcess` is abstract and generic — doesn’t assume pre/post context; it could be inserted anywhere in the pipeline.
+  - In OpenHarmony architecture, frame-rate control is usually factored out as a *shared utility node*, not tightly coupled to pre/post.
+
+Thus, **CameraDataProcessCommon** is the canonical home for such reusable processing nodes.
+
+#### ❌ CameraServiceCommon / utils / VirtualCameraHdf
+- `utils`: contains error codes, log macros, tools — but this file is *using* those, not defining them.
+- `CameraServiceCommon`: deals with protocols, metadata, open/close — not frame-rate logic.
+- `VirtualCameraHdf`: HDF/HDI layer — this is pure C++ application-layer logic, no device driver or proxy stubs.
+
+---
+
+### **3. Final Assessment**
+- The file implements a **reusable frame-rate control node** within a data processing pipeline.
+- It belongs to the **common data processing infrastructure**, not tied to source/sink roles.
+- The candidate module **CameraDataProcessCommon** explicitly lists *"frame-rate control"* as part of its responsibilities.
+- All evidence points strongly to this module.
+
+---
+
+**The probability that this file belongs to module 'CameraDataProcessCommon' is 95%.**

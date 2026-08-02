@@ -1,0 +1,66 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+interfaces\inner_kits\native_cpp\camera_source\src\callback\dcamera_source_callback.cpp
+```
+- Located under `camera_source` → indicates **source-side** (i.e., controller side).
+- Subdirectory `callback` → strongly suggests this is a **callback handler**, not core logic or channel implementation.
+
+### 2. **File Content Summary**
+- Implements `DCameraSourceCallback`, a class that:
+  - Manages registration/unregistration callbacks via `regCallbacks_` and `unregCallbacks_` (std::map of request ID → callback pointer).
+  - Provides `OnNotifyRegResult` / `OnNotifyUnregResult` — these are **incoming notifications** from remote (likely sink side) about registration/unregistration outcomes.
+  - The callbacks (`RegisterCallback`, `UnregisterCallback`) are invoked upon receiving such results, then erased (one-time use).
+- Uses logging (`DHLOGI`, `DHLOGE`) and anonymization for privacy.
+- Includes headers:  
+  - `dcamera_source_callback.h` → interface definition  
+  - `distributed_camera_errno.h` → error codes  
+  - `distributed_hardware_log.h` → logging  
+  - `anonymous_string.h` → privacy handling  
+
+This class is clearly a **callback dispatcher** on the source side that handles asynchronous responses to registration/unregistration requests sent earlier (e.g., via IPC/SoftBus).
+
+### 3. **Candidate Module Comparison**
+
+Let’s evaluate each candidate against the responsibilities and scope:
+
+#### ✅ **DistributedCameraSourceMgr**
+> *"responsible for lifecycle, state machine, controller, input stream, data processing, IPC service, and **callback management** on the source side..."*
+
+- Key phrase: **"callback management on the source side"**
+- This file *is* managing callbacks (push/pop, dispatching results), specifically for registration/unregistration — which are part of the source-side control flow.
+- It is not doing IPC directly, nor data processing, but it's tightly coupled with the source manager’s control logic (e.g., when `SourceMgr` initiates a register request, it likely stores a callback here to be invoked later).
+- Given the path `camera_source/src/callback/`, and the role as a helper for source-side callback dispatch, this fits best under **DistributedCameraSourceMgr**, which owns the overall source-side control plane including callback coordination.
+
+#### ❌ ChannelCommon / ChannelSource / ChannelSink
+- These deal with **channel/session establishment**, **SoftBus adaptation**, and **raw data/command transmission**.
+- This file does *not* handle network sessions, SoftBus APIs, or raw packet sending/receiving. It only processes *results* of prior operations (i.e., higher-level notifications).
+- Callbacks like `OnNotifyRegResult` suggest it's reacting to IPC messages, but the *IPC layer itself* is elsewhere; this is just the callback dispatch layer.
+
+#### ❌ CameraDataProcessCommon / PreProcess / PostProcess
+- These are about **image/data pipelines**: encoding, decoding, format conversion, frame rate, etc.
+- This file handles *control-plane* callbacks (reg/unreg), not media data.
+
+#### ❌ CameraServiceCommon
+> *"shared basic service capabilities... including basic commands, protocols, camera information, channel information, events, Metadata settings..."*
+- While `DCameraSourceCallback` deals with events (reg/unreg results), it is *not* a shared service — it's specific to the **source side** and tightly integrated with source-side logic.
+- Also, `CameraServiceCommon` would likely contain protocol definitions, structs, shared enums — not callback dispatch maps.
+
+#### ❌ VirtualCameraHdf
+- HDF/HDI layer, virtual device implementation — unrelated. This is native C++ callback glue, not driver/HDF.
+
+#### ❌ utils
+> *"common utilities, data buffers, indexes, constants, error codes, and general support capabilities... including local camera query, open, close, stream acquisition, and preview/photo/video callback handling."*
+- Note: `utils` includes “preview/photo/video callback handling” — but those are *media stream* callbacks (e.g., `OnFrameAvailable`), not *control-plane registration* callbacks.
+- This file is specifically about **distributed camera registration/unregistration callbacks**, which are part of the distributed control protocol — more specialized than generic utilities.
+- Also, it’s placed under `camera_source/src/callback/`, suggesting it’s part of the source module, not a standalone utility.
+
+### 4. **Conclusion**
+The file implements a callback dispatcher for registration/unregistration results on the **source side**, which is explicitly listed as part of the responsibilities of **DistributedCameraSourceMgr** ("callback management on the source side").
+
+It is not generic enough for `utils`, nor is it channel/data processing. Its location and function align precisely with the `DistributedCameraSourceMgr` module.
+
+---
+
+**Assigned Module**: [DistributedCameraSourceMgr]

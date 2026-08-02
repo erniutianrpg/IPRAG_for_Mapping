@@ -1,0 +1,59 @@
+Let’s analyze the file step by step:
+
+### 1. **File content summary**
+- **Header includes**:
+  - `dcamera_service_state_listener.h` → indicates this is an implementation of a *service state listener*.
+  - `distributed_camera_source_service.h` → suggests interaction with source-side service logic.
+  - `dcamera_index.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` → utility headers (indexing, error codes, logging).
+  - `anonymous_string.h` → utility for anonymizing sensitive strings (e.g., device IDs) in logs.
+  - `<thread>` → uses threading for asynchronous cleanup.
+
+- **Namespace**: `OHOS::DistributedHardware` — standard namespace for distributed hardware modules.
+
+- **Class & Functions**:
+  - `DCameraServiceStateListener`: A class that implements callback handling for **registration/unregistration notifications** from the distributed camera service.
+  - Constructor/destructor: Initializes and cleans up a `callbackProxy_` (a `sptr<IDCameraSourceCallback>`).
+  - `OnRegisterNotify()` and `OnUnregisterNotify()`: These are **notification handlers** invoked when registration/unregistration results are received from the remote side (likely via IPC).
+    - They forward the result to `callbackProxy_->OnNotifyRegResult()` / `OnNotifyUnregResult()`.
+    - On failure or success (depending on status), they spawn a detached thread to clean up entries in `DistributedCameraSourceService::camerasMap_` using `DCameraIndex`.
+
+- **Key behavior**:
+  - This class acts as a *listener* for service state changes (register/unregister).
+  - It's tightly coupled with `DistributedCameraSourceService`, especially its `camerasMap_`, suggesting it belongs to the **source side** (controller side).
+  - The cleanup logic (erasing from `camerasMap_`) implies managing active camera sessions on the source side.
+  - It does **not** handle:
+    - Channel establishment (no SoftBus/session code),
+    - Data transmission (no frame processing, encoding/decoding),
+    - HDF/HDI virtual camera devices,
+    - Sink-side logic (no sink-specific callbacks or data flow).
+
+### 2. **Compare with candidate modules**
+
+| Module | Relevance |
+|--------|-----------|
+| **DistributedCameraSinkMgr** | ❌ Sink-side lifecycle/controller; this is source-side listener. Not matching. |
+| **ChannelCommon** | ❌ Provides channel interfaces/listeners, but this is not a channel listener—it’s a *service state* listener (higher-level). No session/channel logic here. |
+| **ChannelSource** | ❌ Handles channel connection, command sending, image receiving—but this file doesn’t manage channels or transport. It reacts to service registration events, likely *after* channel setup. |
+| **ChannelSink** | ❌ Sink-side channel logic—this is clearly source-side (uses `IDCameraSourceCallback`, interacts with `DistributedCameraSourceService`). |
+| **CameraDataProcessCommon** | ❌ No data processing pipeline, codecs, color space, etc. |
+| **CameraDataPreProcess** | ❌ Preprocessing on sink/input side—this is not about image frames. |
+| **CameraDataPostProcess** | ❌ Post-processing on source/output side—again, no frame decoding/format conversion. |
+| **CameraServiceCommon** | ✅ Strong candidate: provides shared basic service capabilities, including *events*, *protocols*, *controller interfaces*, and *service state handling* (like registration/unregistration). The class handles service state notifications and coordinates with source service—fits "basic service capabilities" for source/sink. |
+| **VirtualCameraHdf** | ❌ HDF/HDI layer virtual device implementation—no HDF interfaces here. |
+| **utils** | ⚠️ Partial match: uses utilities like `anonymous_string`, `dcamera_index`, `distributed_camera_errno`. But the core responsibility is *not* just utility—it’s a concrete service listener tied to source service lifecycle. So not purely utils. |
+
+### 3. **Critical clue**:  
+The class name `DCameraServiceStateListener` and its use of `IDCameraSourceCallback` strongly indicate it’s part of the **source-side service infrastructure**, specifically handling *service registration state notifications*—a core part of the **service coordination layer**, which aligns best with **CameraServiceCommon**, per its description:
+
+> *"This module provides shared basic service capabilities for the source and sink sides of the distributed camera, including basic commands, protocols, camera information, channel information, events, Metadata settings, open-camera information, and controller interfaces."*
+
+The `OnRegisterNotify`/`OnUnregisterNotify` are *events* related to service registration—exactly the kind of capability described under `CameraServiceCommon`.
+
+Also, note that `DistributedCameraSourceService::camerasMap_` is being accessed—this implies the listener is part of the same logical service domain (source service), and `CameraServiceCommon` is meant to support such shared service logic.
+
+### ✅ Conclusion:
+The file implements a service-state listener that handles registration/unregistration events and coordinates with the source service’s internal map—this is a **core service coordination component**, best categorized under **CameraServiceCommon**.
+
+---
+
+**Assigned Module**: [CameraServiceCommon]

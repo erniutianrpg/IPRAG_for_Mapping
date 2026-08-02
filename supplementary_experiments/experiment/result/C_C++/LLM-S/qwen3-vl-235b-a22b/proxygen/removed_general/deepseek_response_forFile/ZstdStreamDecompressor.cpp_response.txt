@@ -1,0 +1,45 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `proxygen/lib/utils/ZstdStreamDecompressor.h` → indicates this is a utility class for Zstandard (zstd) decompression.
+  - `folly/io/Cursor.h`, `folly/io/IOBuf.h` → Folly I/O buffer utilities, commonly used across Proxygen for efficient zero-copy data handling.
+- **Namespace**: `proxygen`
+- **Functions**:
+  - `ZstdStreamDecompressor::freeDCtx(...)`: cleanup of zstd decompression context.
+  - `ZstdStreamDecompressor::decompress(...)`: stream-based decompression using `ZSTD_decompressStream`, reading from an `IOBuf`, writing to an `Appender`, with input/output byte tracking and optional max decompression ratio limit.
+- **Key behavior**:
+  - Implements *streaming* decompression (not one-shot).
+  - Uses `IOBuf` chain iteration (`for (const folly::ByteRange& range : *in)`), typical in HTTP body processing.
+  - Includes safety checks: error handling, decompression ratio limiting (anti-bombing defense).
+  - Reuses output buffers optionally — optimization common in high-throughput HTTP servers.
+
+### 2. **What is ZstdStreamDecompressor?**
+- It's a **utility for decompressing HTTP bodies** compressed with `zstd`, especially for streaming requests/responses.
+- In HTTP, compression (gzip, deflate, zstd) is applied at the *message body* level, and decompression happens in the HTTP layer before handing off to application logic.
+- This is **not transport-level** (QUIC/TLS), nor DNS, SSL, pools, sampling, or services directly — but rather a *support utility used by the HTTP layer*.
+
+### 3. **Module Mapping Analysis**
+
+| Module | Relevance Reasoning |
+|--------|---------------------|
+| **dns** | ❌ No DNS resolution logic; no use of DNS-related types/functions. |
+| **pools** | ❌ No server list, backend pool, or load-balancing logic. |
+| **sampling** | ❌ No sampling logic (e.g., probabilistic request sampling). |
+| **ssl** | ❌ No TLS context, certificates, handshake, or encryption logic; uses only IOBufs, not SSL BIOs. |
+| **http_general** | ✅ **Strong match**: This is a utility used *within* HTTP message body processing (e.g., decompressing `Content-Encoding: zstd`). The `ZstdStreamDecompressor` is likely used by `HTTPMessage` or `HTTPCodec` layers during body decoding. It lives under `proxygen/lib/utils/`, which is part of the core HTTP infrastructure. Streaming decompression with `IOBuf` is standard in `http_general`. Also, `maxDecompressionRatio` is a security feature against decompression bombs — common in HTTP body parsers. |
+| **services** | ⚠️ Partial: `services` builds on top of `http_general`, but this is a low-level utility, not service/connection management code (no `Acceptor`, `Worker`, `ServiceHandler`, etc.). Unlikely to be here. |
+| **httpserver** | ⚠️ Low: `httpserver` is high-level API (e.g., `HTTPServer`, `RequestHandler`). This is implementation detail, not exposed API. Not part of `httpserver/`. |
+| **transport** | ❌ No QUIC, UDP, socket, datagram, or transport-layer constructs. Zstd is application-layer compression, not transport. |
+
+### 4. **Supporting Evidence**
+- Path: `proxygen/lib/utils/ZstdStreamDecompressor.h` → `utils/` is typically shared by `http_general` (e.g., `proxygen/lib/http/` uses `utils/` helpers like `URL`, `HeaderUtils`, `CompressionUtils`).
+- Similar classes exist in Proxygen: `GzipStreamDecompressor`, `DeflateStreamDecompressor` — all used in HTTP body decoding pipelines.
+- The use of `IOBuf`, `Cursor`, `Appender`, and streaming loop over `ByteRange` matches exactly how HTTP body decompressors are implemented in `http_general`.
+
+### 5. **Conclusion**
+This file implements a **streaming zstd decompressor**, a utility used during HTTP message body decoding — squarely within the scope of `http_general`, which handles HTTP protocol parsing, encoding/decoding (including compression), and related infrastructure.
+
+> The probability that this file belongs to module 'http_general' is **95%**.  
+> All other modules have negligible relevance (<5%).

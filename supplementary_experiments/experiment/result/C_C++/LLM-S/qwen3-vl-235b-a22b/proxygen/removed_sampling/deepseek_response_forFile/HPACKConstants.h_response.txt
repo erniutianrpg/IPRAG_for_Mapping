@@ -1,0 +1,60 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File metadata**
+- Language: C/C++
+- Includes: `<array>`, `<iosfwd>`, `<stdint.h>` — standard C++/C headers, no network or SSL-specific includes.
+- Namespace: `proxygen::HPACK` — this is critical. HPACK is the header compression algorithm defined in **HTTP/2** (RFC 7541). It is *not* used in HTTP/1.1, DNS, SSL, or transport layers directly—it is a core part of HTTP/2 framing and header encoding/decoding.
+- Types:
+  - `struct Instruction`: Represents HPACK instruction opcodes (e.g., INDEX_REF, LITERAL_INC_INDEX, etc.).
+  - `enum LiteralEncoding`: Huffman vs plain encoding for literals — HPACK-specific.
+  - `enum class DecodeError`: Errors specific to HPACK decoding (e.g., INVALID_HUFFMAN_CODE, INVALID_INDEX, etc.).
+- Constants: Many HPACK-specific constants (`kTableSize = 4096`, `NBIT_MASKS`, `Q_*` instructions — note: `Q_` prefix likely stands for **QPACK**, the header compression format for **HTTP/3**, defined in RFC 9204).
+  - Indeed, the presence of both traditional HPACK instructions (`INDEX_REF`, `LITERAL_INC_INDEX`) *and* QPACK-specific ones (`Q_INSERT_NAME_REF`, `Q_DELTA_BASE`, `Q_HEADER_ACK`, `Q_CANCEL_STREAM`, `Q_INDEXED_POST`, etc.) strongly indicates this file covers **both HPACK (HTTP/2) and QPACK (HTTP/3) instruction definitions**.
+  - Also note: `Q_DELTA_BASE_NEG`, `Q_DELTA_BASE_POS`, `Q_INDEXED_STATIC`, etc., are all from QPACK spec.
+- Function: Only `operator<<` for `DecodeError` — utility for logging/debugging.
+- No functions implementing encoding/decoding logic — just declarations and constants. This is a *header-only* definition file.
+
+### 2. **Module relevance analysis**
+
+Let’s evaluate each candidate:
+
+- **dns**: ❌ No DNS-related types (e.g., `DNSQuestion`, `Resolver`, `RecordType`). HPACK/QPACK have nothing to do with DNS resolution.
+
+- **pools**: ❌ No server pool, backend list, or load-balancing constructs. Pure protocol constants.
+
+- **ssl**: ❌ No SSL/TLS context, certificates, cipher suites, or OpenSSL/BoringSSL usage. Not related.
+
+- **general**: ⚠️ Partially plausible — it's a utility-like header with constants and enums. But `proxygen::HPACK` namespace strongly ties it to HTTP protocol layer, not generic utilities (e.g., `folly::StringPiece`, `ScopedGuard`, `TimeUtil` would be in `general`). This is *protocol-specific*, not general-purpose.
+
+- **http_general**: ✅ **Strong match**.  
+  - The `proxygen::HPACK` namespace is conventionally under `proxygen/lib/http/` in Proxygen’s codebase.
+  - HPACK is a core part of HTTP/2 header handling; QPACK extends it for HTTP/3.
+  - Files like `HPACKConstants.h`, `QPACKConstants.h`, or combined headers defining instructions and errors live in `http_general`.
+  - This file defines the *shared constants and types* used across HPACK/QPACK encoders/decoders — exactly the kind of foundational protocol definition that belongs in the HTTP core layer (`http_general`), not in transport (which handles frames/packets) or services (which uses those abstractions).
+
+- **services**: ❌ Services layer deals with connection acceptance, request routing, service execution — not low-level header compression instructions.
+
+- **httpserver**: ❌ High-level server API (e.g., `HTTPServer`, `RequestHandler`). This is too low-level.
+
+- **transport**: ⚠️ Might seem plausible because QPACK is used in HTTP/3, and HTTP/3 sits on QUIC transport. However:
+  - Transport layer in Proxygen (`lib/transport/`) deals with QUIC frames, streams, datagrams, congestion control — *not* header compression semantics.
+  - QPACK encoding/decoding is implemented in the **HTTP layer**, *above* transport. The transport delivers raw bytes; the HTTP layer parses QPACK blocks using definitions like these.
+  - In Facebook’s Proxygen, QPACK encoder/decoder lives in `proxygen/lib/http/`, not `transport/`.
+
+### 3. **Confirming with real-world Proxygen structure**
+From open-source Proxygen (e.g., GitHub mirror or internal FB layout):
+- `proxygen/lib/http/HPACK.h`, `QPACK.h`, `HPACKConstants.h` exist under `http/`.
+- The namespace `proxygen::HPACK` is used consistently there.
+- `DecodeError` and instruction structs/constants match known HPACK/QPACK header files.
+
+Thus, this file is a **protocol definition header for HPACK and QPACK**, squarely belonging to the **HTTP protocol core implementation**.
+
+---
+
+### Final Assessment:
+
+- **http_general**: ✅ Highest fit — this is exactly what `http_general` is for: common HTTP protocol infrastructure, including HTTP/2 and HTTP/3 header compression specs.
+- All other modules are mismatched in scope or abstraction level.
+
+> The probability that this file belongs to module 'http_general' is **98%**.  
+> (Remaining 2% uncertainty due to possibility of a dedicated `qpack` sub-module, but among given candidates, `http_general` is definitive.)

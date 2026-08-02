@@ -1,0 +1,88 @@
+Let’s analyze the file content step by step to determine which module it belongs to.
+
+### 1. **File Purpose (from docstring)**:
+> `"Task results/state and results for groups of tasks."`
+
+This clearly indicates the file deals with:
+- Representing task execution outcomes (`AsyncResult`, `EagerResult`)
+- Aggregating results from multiple tasks (`ResultSet`, `GroupResult`)
+- Managing state, metadata, and retrieval of results (e.g., `get()`, `ready()`, `successful()`, `failed()`, `state`, `result`, `traceback`)
+- Supporting chaining/continuation via `then()` (via `Thenable.register`)
+- Handling join semantics, graph building, dependency tracking (`build_graph`, `iterdeps`, `children`, `graph`)
+
+So this is about **result handling**, not execution, configuration, backends per se, or worker internals.
+
+### 2. **Imports Analysis**:
+Key imports include:
+- `kombu.utils.objects.cached_property`
+- `vine.Thenable`, `vine.barrier`, `vine.promise` → used for async/promise-style chaining
+- `current_app`, `app.app_or_default` → references app context
+- `states`, `_state._set_task_join_will_block`, `_state.task_join_will_block` → state management helpers
+- `exceptions.*` → error types related to result fetching (e.g., `TimeoutError`, `IncompleteStream`)
+- `utils.graph.DependencyGraph`, `utils.graph.GraphFormatter` → graph utilities for task dependencies
+
+Note: No direct backend-specific imports (e.g., `redis`, `sqlalchemy`, `amqp`, `cache`) — so *not* the `backends` module.
+Also, no worker-specific logic like `consumer`, `task_handler`, `bootsteps`, `heartbeat`, etc. — *not* `worker`.
+No config loading, framework fixups, security, events, or concurrency pools — rules out `loaders`, `fixups`, `security`, `events`, `concurrency`.
+
+### 3. **Classes Overview**:
+- `ResultBase`: Base class for all result types.
+- `AsyncResult`: Represents a single task’s result; supports `get()`, `wait()`, `revoke()`, `state`, `result`, `traceback`, `children`, etc.
+- `ResultSet`: Collection of `AsyncResult`s; supports `join()`, `get()`, `successful()`, etc.
+- `GroupResult`: Subclass of `ResultSet`, for group tasks; includes `save()`, `restore()`, `as_tuple()`.
+- `EagerResult`: For eager (synchronous/local) execution — mimics `AsyncResult` but with immediate values.
+
+These are **abstraction layers over result retrieval and composition**, designed to be backend-agnostic (they delegate to `.backend`), and integrate with the app and vine promises.
+
+### 4. **Comparison with Candidate Modules**:
+
+| Module | Relevance |
+|--------|-----------|
+| `app` | Partial: uses `current_app`, `app_or_default`, but core app logic (registration, config, control) is not here. This is *client-side* result API, not app core. |
+| `backends` | ❌ Not this — no backend implementation logic; only references `self.backend`. The actual storage/retrieval is delegated. |
+| `concurrency` | ❌ No pool or execution strategy code. |
+| `contrib` | ❌ No Django integration, abortable tasks, pytest, etc. |
+| `events` | ❌ No event sending/receiving. |
+| `fixups` | ❌ No framework startup/config fixups. |
+| `loaders` | ❌ No config/task module loading. |
+| `security` | ❌ No signing, serialization security. |
+| `utils` | ✅ Strong candidate: contains `utils.graph.*`, and the file provides *generic utilities for representing and manipulating task results*, including graph traversal, state checking, promise chaining — all internal utilities used across modules. |
+| `worker` | ❌ Worker runtime logic (consumption, requests, heartbeats) is absent. |
+
+But wait — in Celery’s actual source tree, the file containing `AsyncResult`, `ResultSet`, `GroupResult`, `EagerResult` is typically located in:
+```
+celery/result.py
+```
+And in Celery’s architecture, `celery/result.py` is considered part of the **core public API for results**, and is often grouped under **`app`** in high-level categorization — because result objects are tightly coupled with the app instance and are part of the user-facing API (e.g., `task.delay().get()`).
+
+However, per the provided module definitions:
+> `app`: This module covers application-level core logic such as the Celery application object, task registration, configuration, control, events, logging, routing, and **task execution tracing**.
+
+While “task execution tracing” is vague, result objects are *not* execution tracing — they are *outcome* objects. Also, note that `utils` explicitly includes:
+> "graph structures", and the file uses `utils.graph.DependencyGraph`, `GraphFormatter`.
+
+But more importantly: In Celery’s real codebase, `celery/result.py` is **not** under `utils/`, it's top-level alongside `app.py`, `tasks.py`, etc., and is considered part of the **core application interface**, i.e., the `app` module in architectural terms — because:
+- It depends on `current_app`, `app_or_default`
+- It is imported and used directly by users via `app.AsyncResult(...)`
+- It is essential for the app’s task invocation and result retrieval workflow
+
+Let’s double-check the module definitions:  
+The `app` module description says:  
+> *"application-level core logic such as the Celery application object, task registration, configuration, control, events, logging, routing, and task execution tracing."*
+
+Though “task execution tracing” is ambiguous, result objects are how users *observe* task execution — they are the primary interface for querying task state. Moreover, in Celery’s documentation, `AsyncResult` is presented as part of the **Application API**.
+
+Also, note that `utils` is described as:
+> *"common internal utilities [...] including [...] graph structures"*
+
+While this file *uses* graph utilities, it is not itself a utility module — it defines core domain objects (`AsyncResult`, etc.) that are central to the application’s behavior.
+
+🔍 Cross-reference with known Celery structure:
+- `celery/app/__init__.py` → main app
+- `celery/app/task.py` → Task class
+- `celery/result.py` → AsyncResult, ResultSet — this file
+- In many architecture diagrams, `result.py` is grouped under **Application Core**, not utils.
+
+Given the candidate list and the emphasis on *application-level core logic*, and since the file defines the primary result abstractions consumed by users and integrated with `app`, the best fit is:
+
+### ✅ **Assigned Module**: [`app`]

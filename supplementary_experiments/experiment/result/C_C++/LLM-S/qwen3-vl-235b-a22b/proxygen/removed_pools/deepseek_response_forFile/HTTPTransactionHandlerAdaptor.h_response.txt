@@ -1,0 +1,58 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `proxygen/httpserver/RequestHandler.h`
+  - `proxygen/httpserver/ResponseHandler.h`
+  - `proxygen/lib/http/session/HTTPTransaction.h`
+- **Namespace**: `proxygen`
+- **Class**: `HTTPTransactionHandlerAdaptor`, which inherits from `RequestHandler`
+- **Key behavior**: Adapts a lower-level `HTTPTransactionHandler` (likely from `lib/http`) to the high-level `RequestHandler` interface used by the HTTP server framework.
+- **Responsibility**: Bridges the *server-side request handling API* (`RequestHandler`) with the *transaction-level handler* (`HTTPTransactionHandler`), translating callbacks (e.g., `onRequest`, `onBody`, `onEOM`, etc.) between the two layers.
+
+### 2. **Module Candidates — Key Clues**
+
+#### ✅ `httpserver`
+- Path: `proxygen/httpserver/`
+- Purpose: High-level HTTP server framework; provides APIs like `RequestHandler`, `ResponseHandler`, `HTTPServer`, etc.
+- This file includes `RequestHandler.h` and `ResponseHandler.h` directly — both are core headers of the `httpserver` module.
+- The class `HTTPTransactionHandlerAdaptor` is an *adaptor* that implements `RequestHandler`, i.e., it's part of the server-facing interface layer.
+- Its job is to allow users to plug in a transaction-level handler (e.g., from `lib/http`) into the `httpserver`’s request dispatching model — classic *integration/adaptation code* for the `httpserver` module.
+
+#### ⚠️ `http_general`
+- Path: `proxygen/lib/http/`
+- Includes `HTTPTransaction.h` — yes, this file includes it.
+- But `HTTPTransactionHandler` (used here) is *not* defined in the excerpt; however, it's likely from `lib/http/session/` or `lib/http/handler/`.
+- Still, the *adaptor* itself is not implementing protocol logic (parsing, encoding, session state), but rather wiring up callbacks between layers — this is more about *server integration* than core HTTP protocol handling.
+
+#### ❌ `services`
+- Path: `proxygen/lib/services/`
+- Focus: connection management, worker threads, service execution.
+- This file does not involve connection lifecycle, thread pools, or service registration — just request/response callback translation.
+
+#### ❌ `general`, `sampling`, `dns`, `ssl`, `transport`
+- None of these are referenced directly.
+- No DNS, SSL, sampling, transport (QUIC), or generic utils (like ` folly::StringPiece`, `ScopedGuard`, etc.) appear.
+- The only utility-like thing is `ex(HTTPException::Direction::...)`, but `HTTPException` is part of HTTP protocol error handling, not general utilities.
+
+### 3. **Critical Observation**
+The class `HTTPTransactionHandlerAdaptor` is a **bridge** between:
+- The *high-level server API* (`RequestHandler` from `httpserver/`)
+- The *low-level transaction handler* (`HTTPTransactionHandler`, presumably from `lib/http/`)
+
+Such adaptors are typically placed in the **module that owns the high-level interface** — i.e., `httpserver`. In fact, in Proxygen’s actual source tree (publicly available), files like `HTTPTransactionHandlerAdaptor.h` live under `proxygen/httpserver/`, confirming this placement.
+
+Also note:
+- It uses `downstream_->getTransaction()` — `downstream_` is a member of `RequestHandler`, indicating it's operating within the `httpserver`'s request context.
+- It deletes `this` in `requestComplete()` and `onError()` — a pattern common in `httpserver`’s request handler lifetime management (short-lived per-request objects).
+
+### 4. **Conclusion**
+This file is clearly part of the **`httpserver`** module: it implements a concrete `RequestHandler`, uses only `httpserver`-level abstractions as base classes, and serves to integrate lower-level handlers into the server framework.
+
+Other modules are either too low-level (`http_general`, `transport`) or unrelated.
+
+---
+
+**The probability that this file belongs to module 'httpserver' is 95%.**  
+(The remaining 5% accounts for possible ambiguity if the adaptor were placed in `lib/http` in some forks — but based on standard Proxygen structure and the includes, `httpserver` is definitive.)

@@ -1,0 +1,80 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+### File Summary:
+- **Language**: Python  
+- **Module docstring**: `"Backend selection."` → strongly suggests this is about *selecting* a backend, not implementing one.
+- **Imports**:
+  - `sys`, `types`: generic utilities.
+  - `celery._state.current_app`: internal app state (used across many modules).
+  - `celery.exceptions.ImproperlyConfigured`, `reraise`: error handling — common in configuration/initialization logic.
+  - `celery.utils.imports.load_extension_class_names`, `symbol_by_name`: utility functions for dynamic import/symbol resolution — used in loader/config systems.
+- **Constants**:
+  - `UNKNOWN_BACKEND`, `BACKEND_ALIASES`: clearly related to backend naming/resolution/aliasing.
+- **Functions**:
+  - `by_name(backend, loader, extension_namespace)`: selects a backend by name (e.g., `'redis'`, `'database'`) — likely resolves via alias or extension system.
+  - `by_url(backend, loader)`: selects backend from a URL (e.g., `'redis://...'`) — typical for result backends that support URL-based config.
+
+This file is **not implementing any backend** (e.g., no RedisBackend, DBBackend classes), but rather providing **selection logic** — i.e., how to resolve a backend string or URL into an actual backend class. It uses `loader` and `extension_namespace`, which hints at integration with the loader system (e.g., `celery.loaders.base.BaseLoader` or similar).
+
+Now let’s evaluate candidate modules:
+
+- **app**: Focuses on app object, task registration, config, control, routing, execution tracing. While backend selection *can* happen during app setup, this file has no app-level logic (no `Celery` class, no task registry, no control). Low match.
+
+- **backends**: This module implements concrete backends (e.g., `redis.py`, `database.py`). This file does *not* implement any backend — only selects them. So **not** `backends`.
+
+- **bin**: CLI tools — no relevance here. ❌
+
+- **contrib**: Extensions like Django integration, abortable tasks, pytest — none of those are present. ❌
+
+- **events**: Event sending/receiving — unrelated. ❌
+
+- **fixups**: Framework-specific startup fixes (Django, etc.) — no framework-specific code here. ❌
+
+- **loaders**: Handles configuration and task loading, including importing modules and lifecycle loading logic. Crucially:
+  - Uses `loader` parameter in both functions.
+  - Relies on `utils.imports.symbol_by_name` and `load_extension_class_names` — exactly the kind of utilities used by loaders to resolve config values (e.g., `result_backend = 'redis'` → resolve to class).
+  - Backend selection is often done during app initialization *via the loader*, especially when reading config (e.g., `app.conf.result_backend`).
+  - In Celery source tree, backend selection logic (e.g., `celery.backends.base.get_backend_by_url`) is often co-located with or invoked by loader logic. But more precisely, in Celery 5+, backend selection is handled in `celery.backends` *submodules*, yet the *selection dispatcher* (`by_name`, `by_url`) lives in `celery.backends.base` or sometimes `celery.app.backends`. However, note: the imports include `celery.utils.imports`, and the function signatures accept a `loader`, suggesting tight coupling with loader infrastructure.
+
+Wait — let’s double-check real Celery structure (based on knowledge):
+- In Celery, `celery.backends.base` defines `get_backend_by_url`, `get_backend_by_name`, and uses `symbol_by_name`.
+- The module `celery.app.backends` (part of `app` module) may wrap backend selection using the app’s loader.
+- However, the presence of `loader` as argument strongly points to interaction with the loader system — and the loader module is responsible for interpreting config and resolving symbols.
+
+But here's the key: the **docstring says "Backend selection"**, and the functions are pure dispatchers — no backend implementation. In Celery’s architecture, such selection logic is typically placed in the **`backends`** module *as a helper*, even if it doesn’t contain concrete backends. For example, in Celery source:
+```
+celery/backends/__init__.py
+celery/backends/base.py   # contains get_backend_by_url, get_backend_by_name
+```
+Indeed, `celery.backends.base` contains:
+```python
+def get_backend_by_url(backend, loader=None):
+    ...
+def get_backend_by_name(backend, loader=None, extension_namespace='celery.backends'):
+    ...
+```
+And it imports:
+- `celery.utils.imports.symbol_by_name`
+- `celery.utils.imports.load_extension_class_names`
+- `celery.exceptions.ImproperlyConfigured`
+- uses `current_app` indirectly via loader
+
+So despite the module being named `backends`, this file is part of the **backends** module — specifically the *selection/dispatch layer* of backends, not the implementations.
+
+The `loaders` module deals with loading tasks and config, but backend selection is *triggered by* config parsing (e.g., in `app.conf`), and the resolver lives in `backends`, not `loaders`. The `loader` is passed *to* the backend selector so it can use the app’s loader to resolve symbols — but the responsibility resides in `backends`.
+
+Also, constants like `BACKEND_ALIASES` (e.g., `{'redis': 'celery.backends.redis:RedisBackend', ...}`) are defined in backend-related modules.
+
+Thus, although it uses loader, the **primary purpose** is backend selection — which is the domain of the **backends** module.
+
+### Final assessment:
+- Strong match with **backends** (selection logic, aliases, URL/name resolution, imports matching Celery’s backend base module)
+- Weak match with `loaders` (uses loader, but loader is a dependency, not the owner)
+- All others clearly mismatch.
+
+**Probability**:
+- `backends`: 95%  
+- `loaders`: 5%  
+- Others: <1%
+
+> The probability that this file belongs to module 'backends' is 95%.

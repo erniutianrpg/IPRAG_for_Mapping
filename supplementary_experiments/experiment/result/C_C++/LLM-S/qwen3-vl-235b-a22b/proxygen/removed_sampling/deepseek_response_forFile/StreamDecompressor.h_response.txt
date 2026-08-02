@@ -1,0 +1,87 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+### File Content Summary:
+- **Language**: C/C++
+- **Includes**: `<cstdint>`, `<memory>` — standard headers; no domain-specific includes (e.g., no OpenSSL, no DNS resolver libs).
+- **Namespaces**: `folly` and `proxygen` — confirms this is part of Facebook’s Proxygen stack.
+- **Types**:
+  - `class IOBuf`: A core Folly utility for zero-copy buffer management (used widely across Proxygen).
+  - `enum class CompressionType`: defines compression types: NONE, DEFLATE, GZIP, ZSTD — clearly related to **HTTP compression**.
+  - `class StreamDecompressor`: abstract interface with pure virtual methods:
+    - `decompress(const folly::IOBuf*)` → takes an input buffer, returns decompressed output (as `unique_ptr<IOBuf>`)
+    - `hasError()`, `finished()` → state tracking for streaming decompression.
+- **Raw excerpt**: Header-only (`#pragma once`), no implementation — typical of interfaces/abstractions.
+- **Key insight**: This is a *streaming decompression abstraction*, used to decode compressed HTTP bodies (e.g., in HTTP/1.1 or HTTP/2 responses/requests). It operates on `folly::IOBuf`, which is the standard buffer type in Proxygen/Folly for network I/O.
+
+Now evaluate each module:
+
+---
+
+#### **dns**
+- Focus: DNS resolution (e.g., `DnsResolver`, `DnsLookup`, etc.).
+- No relation to compression, `IOBuf`, or streaming decompressors.
+- ❌ Unlikely.
+
+#### **pools**
+- Focus: Backend server pools, load balancing, service discovery.
+- Involves `ServerPool`, `HostPort`, `LoadBalancer`, etc.
+- No compression logic or `StreamDecompressor`.
+- ❌ Unlikely.
+
+#### **ssl**
+- Focus: TLS context, handshake, encryption/decryption, certificates.
+- Uses OpenSSL/BoringSSL APIs; deals with `SSL*`, `SSL_CTX`, etc.
+- Compression is *application-layer*, not transport-layer encryption.
+- While HTTP compression may occur over SSL, this interface is independent of SSL.
+- ❌ Not matching.
+
+#### **general**
+- Described as: `proxygen/lib/utils/`, common utilities, foundational support for HTTP abstractions, network processing, etc.
+- Includes things like `URL`, `Timing`, `ScopedEventBaseThread`, `IOBufUtil`, etc.
+- **But**: Streaming decompression is *protocol-specific* (HTTP), not generic utility — though `IOBuf` is used everywhere.
+- Possible, but let’s compare with more specific modules.
+
+#### **http_general**
+- Described as: common HTTP implementation under `proxygen/lib/http/`, responsible for:
+  - HTTP protocol parsing/encoding/decoding
+  - Session/transaction management
+  - HTTP/2, HTTP/3 protocol-related capabilities
+- **Crucially**, HTTP compression (gzip, deflate, zstd) is a core part of HTTP semantics — especially for request/response bodies.
+- `StreamDecompressor` is exactly the kind of abstraction used during HTTP body decoding (e.g., in `HTTPMessage`, `HTTPCodec`, or `HTTPSession` when handling `Content-Encoding`).
+- The enum `CompressionType` matches HTTP `Content-Encoding` values.
+- Abstract interface design fits well with Proxygen’s modular codec/decoder architecture (e.g., pluggable decompressors for different encodings).
+- ✅ Strong match.
+
+#### **services**
+- Focus: server-side infrastructure — connection acceptance, worker threads, service execution.
+- Higher-level than protocol decoding; sits *above* HTTP layer.
+- Decompression is done *before* handing data to services (i.e., at HTTP layer).
+- ❌ Too high-level.
+
+#### **httpserver**
+- Focus: high-level API for building HTTP servers (e.g., `HTTPServer`, `RequestHandler`).
+- Wraps lower layers; unlikely to define low-level decompression interfaces.
+- This is an internal abstraction, not part of the public server API.
+- ❌ Unlikely.
+
+#### **transport**
+- Focus: QUIC / HTTP/3 transport layer — sockets, datagrams, streams, congestion control.
+- Compression is *application-layer*, not transport-layer.
+- HTTP/3 still uses same HTTP semantics (including `Content-Encoding`), but decompression happens in HTTP layer, not transport.
+- ❌ Mismatched layer.
+
+---
+
+### Final Assessment:
+- The `StreamDecompressor` interface is tightly coupled with HTTP message body processing.
+- It lives in the `proxygen` namespace, uses `folly::IOBuf`, and handles standard HTTP compression types.
+- This belongs squarely in the **HTTP protocol core layer**, i.e., `http_general`.
+
+Other modules either operate at higher (services, httpserver) or lower (transport, ssl, dns) layers, or are unrelated (pools).
+
+> Note: In Proxygen’s actual codebase, `StreamDecompressor` and related classes (e.g., `GzipDecompressor`, `ZstdDecompressor`) reside under `proxygen/lib/http/codec/` or `proxygen/lib/http/common/`, which falls under `http_general`.
+
+---
+
+**The probability that this file belongs to module 'http_general' is 95%.**  
+(The remaining 5% accounts for possible edge cases where such an interface could be placed in `general` if deemed reusable beyond HTTP—but given the explicit `CompressionType` enum and HTTP-centric semantics, `http_general` is overwhelmingly most appropriate.)

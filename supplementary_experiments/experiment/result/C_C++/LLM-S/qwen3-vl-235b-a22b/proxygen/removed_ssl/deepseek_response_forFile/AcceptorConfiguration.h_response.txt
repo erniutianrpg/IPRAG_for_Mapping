@@ -1,0 +1,68 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- **Header-only** (`#pragma once`)
+- **Includes**: 
+  - Standard C++: `<chrono>`, `<list>`, `<string>`
+  - System headers: `<fcntl.h>`, `<sys/stat.h>`, `<sys/types.h>`
+  - Folly: `<folly/String.h>`, `<folly/io/async/AsyncSocket.h>`
+  - Proxygen: `<proxygen/lib/http/codec/HTTPSettings.h>`
+  - Wangle: `<wangle/acceptor/ServerSocketConfig.h>`
+  - Compression: `<zlib.h>`
+- **Namespace**: `proxygen`
+- **Types defined**:
+  - Forward-declared class: `HeaderIndexingStrategy`
+  - Struct: `AcceptorConfiguration`, inheriting from `wangle::ServerSocketConfig`
+- **Fields in `AcceptorConfiguration`**:
+  - HTTP/2-related settings: `HTTP2PrioritiesEnabled`, `maxConcurrentIncomingStreams`, `initialReceiveWindow`, `receiveStreamWindowSize`, `receiveSessionWindowSize`, `HTTP2PingEnabled`
+  - Transaction/session timeouts: `transactionIdleTimeout`
+  - Protocol behavior: `forceHTTP1_0_to_1_1`, `plaintextProtocol`, `serverEarlyResponseEnabled`
+  - Buffering: `readBufNewAllocSize`, `writeBufferLimit`
+  - Settings list: `egressSettings` (type `SettingsList`, likely from `HTTPSettings.h`)
+  - Pointer to `HeaderIndexingStrategy`
+
+### 2. **Key Observations**
+- The struct `AcceptorConfiguration` is a **server-side configuration** object, extending `wangle::ServerSocketConfig`, which is used by Wangle’s acceptor layer to configure how connections are accepted and handled.
+- It contains **HTTP-specific configuration**, especially for HTTP/2 (e.g., stream windows, priorities, ping), transaction timeouts, and header indexing — all of which are part of *server-side HTTP protocol handling*.
+- It lives in the `proxygen` namespace, but no implementation — only declaration — suggesting it's part of a public or internal config API.
+- The inclusion of `<proxygen/lib/http/codec/HTTPSettings.h>` confirms tight coupling with HTTP codec/protocol layer.
+- Inheritance from `wangle::ServerSocketConfig` ties it to **server acceptance infrastructure**, not raw transport or DNS.
+
+### 3. **Module Mapping**
+
+Let’s evaluate each candidate:
+
+#### ✅ **services**
+- Definition: *"corresponds to proxygen/lib/services/ and is used for connection management and server-side related code... provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration."*
+- `AcceptorConfiguration` is clearly a **service-level configuration** for how the server accepts and configures incoming connections — exactly what `services/` handles.
+- Wangle’s `ServerSocketConfig` is used in Proxygen’s `services` layer (e.g., `Acceptor`, `ServiceHandler`, `ServerTransport`) to configure socket behavior per service.
+- HTTP/2 and transaction-level settings here are *applied at the service layer*, not at the raw HTTP codec level (which would be more about parsing frames).
+- The presence of `headerIndexingStrategy`, `serverEarlyResponseEnabled`, etc., aligns with service-level optimizations (e.g., for HPACK, early responses), not core codec logic.
+
+#### ⚠️ **http_general**
+- Definition: *"common HTTP implementation under proxygen/lib/http/ — HTTP protocol parsing, encoding/decoding, session management, transaction management..."*
+- While `HTTPSettings.h` is included, this file does **not** implement any codec logic, parsing, or transaction state machines.
+- It defines a *configuration container*, not protocol logic.
+- `http_general` typically contains things like `HTTPMessage`, `Codec`, `Session`, `Transaction`, not acceptor configs.
+
+#### ❌ **httpserver**
+- This is the *high-level wrapper* (e.g., `HTTPServer`, `RequestHandler`), usually in `proxygen/httpserver/`. This file is lower-level and not part of that API surface.
+
+#### ❌ **transport**
+- Involves QUIC/HTTP3, low-level sockets/datagrams. No QUIC, no `quic/`, no `DatagramTransport`. Includes `zlib.h` and `HTTPSettings.h`, not transport-layer abstractions.
+
+#### ❌ **dns**, **pools**, **sampling**, **general**
+- No DNS resolution logic → not `dns`.
+- No pool/server-list configuration → not `pools`.
+- No sampling counters or logic → not `sampling`.
+- While `general` covers utils, this is too domain-specific (HTTP server config) and tied to `wangle::ServerSocketConfig`, which is *not* generic utility — it's service infrastructure.
+
+### 4. **Conclusion**
+The file defines a server-side configuration struct (`AcceptorConfiguration`) that inherits from Wangle’s socket config and holds HTTP/2, timeout, buffering, and header-indexing options — precisely the kind of config used in `proxygen/lib/services/` to initialize an HTTP server acceptor stack.
+
+Thus, the strongest match is **services**.
+
+---
+
+**The probability that this file belongs to module 'services' is 95%.**  
+(The remaining 5% accounts for possible ambiguity if this config were moved into `http_general` in some forks, but standard Proxygen layout places such acceptor configs in `services`.)

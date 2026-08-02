@@ -1,0 +1,89 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File metadata & context**
+- **Language**: C/C++
+- **Include**: `#include <proxygen/lib/http/session/HQStreamDispatcher.h>`
+  - Path: `proxygen/lib/http/session/` → strongly suggests this is part of the **HTTP layer**, specifically **session-level logic** for HTTP/3 (HQ = HTTP/3 over QUIC).
+- **Namespace**: `proxygen`
+- **Functions**:
+  - `cursor(dataBuf)` — helper (not a top-level function, likely local)
+  - `HQUniStreamDispatcher::handleStream(...)`
+  - `HQBidiStreamDispatcher::handleStream(...)`
+- **Raw excerpt** shows:
+  - Implementation of `HQStreamDispatcherBase`, which handles stream dispatching in HTTP/3.
+  - Uses `quic::StreamId`, `folly::io::Cursor`, `quic::follyutils::decodeQuicInteger`, `HTTP3::ErrorCode`, `hq::UnidirectionalStreamType`.
+  - Interacts with `CallbackBase`, which seems to be an abstract interface for higher-level handling (e.g., dispatching control streams, rejecting streams).
+  - Logic includes:
+    - Preface parsing (QUIC integer decoding),
+    - Stream type identification (CONTROL, QPACK_ENCODER, QPACK_DECODER),
+    - Error handling (QUIC application/local/transport errors),
+    - Stream ownership release,
+    - Peeking data before full dispatch (i.e., early stream classification).
+
+This is clearly **HTTP/3 session-layer dispatch logic**, sitting *above* raw QUIC transport but *below* high-level server or service logic.
+
+---
+
+### **2. Module comparison**
+
+#### ✅ **http_general**
+- Definition: *"common HTTP implementation under proxygen/lib/http/... responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+- Evidence:
+  - File path: `proxygen/lib/http/session/HQStreamDispatcher.h` → matches `lib/http/` hierarchy.
+  - Implements stream dispatching for HTTP/3 (HQ), including preface parsing, stream-type routing — core session-level HTTP/3 logic.
+  - Uses `HTTP3::ErrorCode`, `hq::UnidirectionalStreamType`, and integrates with callback interfaces typical of HTTP session layers.
+  - Not transport-specific (doesn’t manage sockets, QUIC connections, or congestion control), but *uses* QUIC abstractions.
+  - Not server-side infrastructure (no connection acceptance, worker threads, etc.) — so not `services` or `httpserver`.
+
+→ **Strong match**.
+
+#### ❌ **transport**
+- Definition: *"lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3... working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, token/PSK cache."*
+- Evidence:
+  - This file does **not** implement QUIC transport primitives (e.g., packet sending/receiving, congestion control, connection state machine).
+  - It consumes QUIC stream IDs and cursors, but doesn’t own or manage the QUIC connection itself.
+  - It's built *on top* of transport abstractions (e.g., `quic::StreamId`, `folly::io::Cursor`), not implementing them.
+  
+→ **Not transport**; too high-level.
+
+#### ❌ **services**
+- Definition: *"proxygen/lib/services/... server-side infrastructure such as service execution, connection acceptance, worker threads..."*
+- Evidence:
+  - No connection acceptance, no service registration, no thread pools.
+  - The `CallbackBase` is abstract and likely implemented by higher layers (e.g., `services` or `httpserver`), but this file is *not* that layer.
+
+→ **Not services**.
+
+#### ❌ **httpserver**
+- Definition: *"proxygen/httpserver/... high-level APIs for building simple C++ HTTP servers"*
+- Evidence:
+  - This is not a header/API wrapper like `HTTPServer.h`; it's a low-level session dispatcher.
+  - No use of `HTTPServer`, `RequestHandler`, etc.
+
+→ **Not httpserver**.
+
+#### ❌ **dns**, **pools**, **sampling**, **ssl**
+- These are orthogonal:
+  - No DNS resolution (`dns`)
+  - No pool configuration (`pools`)
+  - No sampling logic (`sampling`)
+  - No SSL/TLS context or handshake (`ssl`) — only uses QUIC error codes, but no TLS APIs.
+
+→ **All ruled out**.
+
+---
+
+### **3. Final assessment**
+The file implements **HTTP/3 stream dispatching logic at the session layer**, directly under `proxygen/lib/http/session/`, which is explicitly part of the **http_general** module per the definition.
+
+It is not transport (too high-level), not server infrastructure, and not any of the auxiliary modules.
+
+Probability estimate:
+- **http_general**: Very high confidence — path, functionality, and abstraction level all align.
+- All others: near-zero.
+
+---
+
+**The probability that this file belongs to module 'http_general' is 98%.**

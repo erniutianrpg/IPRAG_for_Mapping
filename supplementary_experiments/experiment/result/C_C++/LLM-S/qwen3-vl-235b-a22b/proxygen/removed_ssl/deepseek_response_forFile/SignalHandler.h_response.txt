@@ -1,0 +1,92 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+### File Summary:
+- **Language**: C/C++
+- **Includes**:
+  - `folly/io/async/AsyncSignalHandler.h` → Folly-based async signal handling (used for reacting to OS signals like SIGINT, SIGTERM in event-driven servers).
+  - `<vector>` → Standard library.
+- **Namespace**: `proxygen`
+- **Types**:
+  - Forward-declared `HTTPServer`
+  - `class SignalHandler` inherits **privately** from `folly::AsyncSignalHandler`
+- **Functions**:
+  - Constructor: `SignalHandler(HTTPServer* server)`
+  - `install(const std::vector<int>& signals)`
+  - Private override: `signalReceived(int signum) noexcept override`
+- **Key semantics**:
+  - This class is a *signal handler* tied to an `HTTPServer` instance.
+  - It uses Folly’s async event loop infrastructure (`AsyncSignalHandler`) to handle OS signals asynchronously (e.g., graceful shutdown on SIGTERM).
+  - It does **not** implement HTTP parsing, transport, DNS, pooling, sampling, or service execution logic directly — it’s infrastructure glue for server lifecycle management.
+
+Now map to modules:
+
+---
+
+#### **dns**
+- Focus: DNS resolution before connection setup.
+- This file has no DNS-related code (no `Resolver`, `DnsClient`, etc.).
+- ❌ Unlikely.
+
+#### **pools**
+- Focus: Backend server pools, load balancing, service discovery.
+- No pool-related types/functions (`Pool`, `Member`, `Selector`, etc.).
+- ❌ Unlikely.
+
+#### **sampling**
+- Focus: Sampling logic (e.g., request sampling for metrics/tracing).
+- No sampling logic, no `Sampler`, `RateLimiter`, etc.
+- ❌ Unlikely.
+
+#### **general**
+- Definition: Common utilities under `proxygen/lib/utils/`, foundational support for core abstractions, network processing, auxiliary capabilities.
+- Signal handling is a *common infrastructure concern*, especially for server lifecycle.
+- `AsyncSignalHandler` is a Folly utility; wrapping it for use with `HTTPServer` fits “utility/support”.
+- However, note: this class is tightly coupled to `HTTPServer`, not generic — so may be more specific than pure `general`.
+
+#### **http_general**
+- Definition: Core HTTP protocol layer — parsing, encoding, sessions, transactions, HTTP/2/3.
+- This file does **not** deal with HTTP messages, headers, streams, frames, etc.
+- ❌ Not this.
+
+#### **services**
+- Definition: `proxygen/lib/services/` — connection management, server-side infrastructure: service execution, connection acceptance, worker threads, service configuration.
+- Signal handling for graceful shutdown is a classic part of **server-side infrastructure**, especially in event-driven servers.
+- `HTTPServer` is likely defined in `services` or higher-level server code.
+- `SignalHandler` is used to manage server lifecycle (e.g., shut down connections on SIGTERM), which aligns with *server-side infrastructure*.
+- ✅ Strong candidate.
+
+#### **httpserver**
+- Definition: `proxygen/httpserver/` — high-level APIs for building simple C++ HTTP servers; wraps lower layers.
+- This file defines a helper class (`SignalHandler`) that is *used by* an `HTTPServer`, but is not itself the high-level API (e.g., no `start()`, `addRoute()`, etc.).
+- Typically, `httpserver/` contains user-facing classes like `HTTPServer`, `RequestHandler`, etc.
+- While `SignalHandler` might live in `httpserver/`, its role is infrastructural, not API-facing.
+- Possible, but less likely than `services`, because:
+  - The class is *not* part of the public API surface.
+  - It's a private implementation detail tied to server lifecycle — more aligned with internal server infrastructure (`services`) than the high-level wrapper (`httpserver`).
+
+#### **transport**
+- Focus: QUIC/HTTP/3 transport layer, sockets, datagrams, token caching.
+- No transport-level constructs here (no `QuicSocket`, `Transport`, `Datagram`, etc.).
+- ❌ Unlikely.
+
+---
+
+### Key Decision Points:
+- The class inherits from `folly::AsyncSignalHandler` → asynchronous signal handling in event loops.
+- It’s owned by `HTTPServer`, used to install signal handlers (e.g., for graceful shutdown).
+- In Proxygen’s architecture:
+  - `proxygen/lib/services/` contains server infrastructure like `HTTPServer`, `Acceptor`, `Worker`, and supporting utilities like signal handling.
+  - Indeed, in real Proxygen codebase, `SignalHandler` (or similar) often lives in `lib/services/` as part of server lifecycle management.
+  - `httpserver/` is more about the *public facade* (e.g., `proxygen::httpserver::HTTPServer`), while internals like signal handling are in `services`.
+
+Thus:
+- **services** is the best fit: server-side infrastructure, lifecycle management, tightly coupled with `HTTPServer`, using Folly async primitives.
+
+Probability estimate:
+- **services**: 85%
+- **general**: 10% (if considered a utility, but too server-specific)
+- **httpserver**: 5% (possible location, but less semantically aligned)
+
+Final answer:
+
+"The probability that this file belongs to module 'services' is 85%."

@@ -1,0 +1,63 @@
+Let’s analyze the file content step by step and compare it with the candidate modules.
+
+### File Overview:
+- **File name / header guard**: `OHOS_DCAMERA_SOURCE_DATRA_PROCESS_H` (note typo: "DATRA" likely meant "DATA")
+- **Language**: C/C++
+- **Includes**:
+  - Standard: `<set>`, `<string>`
+  - Local headers:
+    - `"dcamera_stream_data_process.h"` → suggests per-stream data processing logic
+    - `"icamera_source_data_process.h"` → interface for source-side data processing
+    - `"types.h"` → common types (e.g., `DCStreamType`, `DCStreamInfo`, `DCCaptureInfo`, `DataBuffer`)
+- **Namespace**: `OHOS::DistributedHardware`
+- **Class**: `DCameraSourceDataProcess`, inherits from `ICameraSourceDataProcess`
+- **Key methods**:
+  - Constructor with `devId`, `dhId`, `streamType`
+  - `FeedStream()`: receives buffers (likely from sink side or local camera)
+  - `ConfigStreams()`, `ReleaseStreams()`, `StartCapture()`, `StopCapture()`, `GetAllStreamIds()`
+- **Private members**:
+  - `std::vector<std::shared_ptr<DCameraStreamDataProcess>> streamProcess_` → manages per-stream processing objects
+  - `std::set<int32_t> streamIds_`
+  - Device identifiers and stream type
+
+This class is clearly a **source-side data processing coordinator**, aggregating multiple stream-level processors (`DCameraStreamDataProcess`) and implementing the `ICameraSourceDataProcess` interface — i.e., it handles data ingestion (via `FeedStream`) and orchestration of streams on the **controller side**, where the app/user interacts with the distributed camera as if it were local.
+
+Now compare with candidate modules:
+
+1. **DistributedCameraSourceMgr**  
+   > *"responsible for lifecycle, state machine, controller, input stream, data processing, IPC service, and callback management on the source side... enabling the controller to invoke distributed camera capabilities..."*  
+   This sounds very close — but note: `SourceMgr` implies higher-level manager (e.g., managing sessions, IPC, state machine), whereas this class is specifically about *data processing* (feeding buffers, configuring streams, starting/stopping capture). It's more granular than a full manager.
+
+2. **CameraDataProcessCommon**  
+   > *"provides common data processing frameworks, data processing pipeline interfaces, codecs, color space conversion, frame-rate control..."*  
+   This is about *common infrastructure*, not source-specific orchestration. Our class is concrete and source-side specific; it doesn’t implement codecs or color conversion — it delegates to `DCameraStreamDataProcess`.
+
+3. **CameraDataPostProcess**  
+   > *"responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution..."*  
+   This matches the **source side** and **post-processing** role. Since the source side receives compressed/encoded data from the sink and must decode/convert it for local use, `DCameraSourceDataProcess` could be part of this pipeline. However, note that `FeedStream()` takes `std::vector<std::shared_ptr<DataBuffer>>& buffers` — this suggests it’s receiving raw or encoded buffers (likely from network/sink), and then presumably dispatches them to per-stream processors. The class itself doesn’t do decoding; it coordinates. Still, this fits better than others.
+
+4. **DistributedCameraSinkMgr** — no, this is sink-side; our class is source-side (`SourceDataProcess`).
+
+5. **ChannelSink**, **ChannelCommon** - these are communication/channel layers; this class does not handle SoftBus, sessions, or transport.
+
+6. **VirtualCameraHdf**, **utils**, **CameraServiceCommon** — too low-level (HDF) or too generic (utils, service common); not matching.
+
+Let’s double-check naming and responsibilities:
+- `ICameraSourceDataProcess` is an interface for source-side data handling.
+- `DCameraSourceDataProcess` implements it, managing multiple `DCameraStreamDataProcess` instances.
+- In distributed camera architecture, the **source side** receives frames from the sink, and may need to:
+  - Accept incoming buffers (`FeedStream`)
+  - Configure streams (`ConfigStreams`)
+  - Start/stop capture (`StartCapture`, `StopCapture`)
+  - Manage stream IDs
+
+This aligns precisely with **CameraDataPostProcess**, which is defined as:
+> *"responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution, and related properties of received image data so that the controller can use distributed camera data as if using a local Camera."*
+
+Even though `DCameraSourceDataProcess` may not perform decoding itself, it is the *orchestrator* of the post-processing pipeline on the source side — exactly what `CameraDataPostProcess` module would contain.
+
+Also, note that `DCameraStreamDataProcess` (included) is likely the per-stream decoder/formatter — so `DCameraSourceDataProcess` is the top-level coordinator in that post-processing stack.
+
+✅ Therefore, the most appropriate module is:
+
+**Assigned Module**: [CameraDataPostProcess]

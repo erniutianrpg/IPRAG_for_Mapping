@@ -1,0 +1,139 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **File Summary**
+- **Language**: C/C++
+- **Includes**:
+  - Standard: `<set>`, `<string>`
+  - Custom: `"dcamera_stream_data_process.h"`, `"icamera_source_data_process.h"`, `"types.h"`
+- **Macro**: `OHOS_DCAMERA_SOURCE_DATRA_PROCESS_H` (note typo: *DATRA* likely meant *DATA*)
+- **Namespaces**: `OHOS::DistributedHardware`
+- **Class**: `DCameraSourceDataProcess`, inherits from `ICameraSourceDataProcess`
+- **Functions** (all virtual/override methods):
+  - Constructor with `devId`, `dhId`, `streamType`
+  - `FeedStream()` — takes vector of `DataBuffer` shared pointers
+  - `ConfigStreams()`, `ReleaseStreams()`, `StartCapture()`, `StopCapture()`, `GetAllStreamIds()`
+- **Private members**:
+  - `streamProcess_`: vector of `DCameraStreamDataProcess` → implies composition/delegation to per-stream processors
+  - `streamIds_`: set of stream IDs
+  - `devId_`, `dhId_`, `streamType_`
+
+This is clearly a **source-side data processing class**, responsible for:
+- Managing streams (config, release, start/stop capture)
+- Feeding raw buffers (likely from local camera hardware or HAL) into the pipeline
+- Being part of the *source side* (i.e., the device that captures and sends data — the *controlled side*, but in this context, “source” means data originates here)
+
+Note: The class name `DCameraSourceDataProcess` and inheritance from `ICameraSourceDataProcess` strongly indicate it's on the **source side** (i.e., the device with the physical camera), handling data *before* transmission.
+
+Also, it depends on `DCameraStreamDataProcess`, suggesting a hierarchical pipeline: this class orchestrates multiple stream-level processors.
+
+---
+
+### **Module-by-Module Evaluation**
+
+#### 1. **DistributedCameraSinkMgr**
+- Focus: *sink side* lifecycle, access control, controller, output, IPC.
+- This file is source-side (`SourceDataProcess`), not sink-side.
+- ❌ **Low match** — ~5%
+
+#### 2. **ChannelCommon**
+- Focus: SoftBus, session, channel interfaces — pure communication layer.
+- This file deals with *data processing*, not channel/session management; no SoftBus or IPC primitives visible.
+- ❌ **Low match** — ~5%
+
+#### 3. **ChannelSource**
+- Focus: controller-side channel implementation — sending commands, receiving image data.
+- But this class is `SourceDataProcess`, i.e., on the *device with camera*, not the controller.
+- Also, no channel/session logic; only data buffer feeding and stream control.
+- ❌ **Low match** — ~10%
+
+#### 4. **ChannelSink**
+- Focus: controlled-side channel — receives commands, sends image data.
+- While the *device with camera* is the "controlled side", this class is not about channel transport; it’s about *data processing* before sending.
+- No SoftBus, no session, no IPC — just stream orchestration and buffer feeding.
+- ❌ **Medium-low** — ~20% (only because it’s on the controlled/source device, but not channel-layer)
+
+#### 5. **CameraDataProcessCommon**
+- Focus: common data processing frameworks, pipelines, codecs, color space, frame-rate control — *foundational components for both sides*.
+- This class is specific to *source-side* (`SourceDataProcess`), and uses `DCameraStreamDataProcess`, implying it’s part of a concrete pipeline, not abstract framework.
+- However, it defines an interface (`ICameraSourceDataProcess`) and implements stream management — could be considered part of the *common processing infrastructure*.
+- But note: it’s tightly coupled to distributed camera concepts (`devId`, `dhId`, `DCStreamType`, etc.), not generic.
+- ⚠️ **Possible**, but likely more specialized than “common”.
+- ~30%
+
+#### 6. **CameraDataPreProcess**
+- Focus: *sink side or input side* preprocessing — e.g., after receiving data, before encoding/transmission.
+- But this is `SourceDataProcess`, and `FeedStream` suggests feeding *raw buffers from local camera* → this is *pre-transmission* preprocessing on the **source side**, not sink.
+- However, terminology is ambiguous: “preprocess” could mean *before transmission* (i.e., on source), but the module description says “on the sink side or input side” — which contradicts.
+- Given the description explicitly says *sink side*, this is unlikely.
+- ❌ ~15%
+
+#### 7. **CameraDataPostProcess**
+- Focus: *source side or output side* — decodes, converts formats, adjusts frame rate/resolution of *received* image data so controller can use it like local camera.
+- Wait — this says “source side or output side”, but clarifies it processes *received* image data. That implies it’s on the *controller side* (i.e., sink side), post-receiving.
+- Our file is feeding buffers (likely raw from camera), not decoding received data.
+- So mismatch: this class does *not* decode or convert received data; it manages capture and feeds raw buffers.
+- ❌ ~10%
+
+#### 8. **CameraServiceCommon**
+- Focus: shared basic service capabilities — commands, protocols, camera info, events, metadata, open-camera info, controller interfaces.
+- This file is not about protocols/events/metadata; it’s about *data stream orchestration*.
+- No evidence of service APIs or controller interfaces — only data buffer handling.
+- ❌ ~10%
+
+#### 9. **VirtualCameraHdf**
+- Focus: HDF/HDI layer — virtual camera devices, Host/Provider/Device, Stream Operator, IPC proxies.
+- This file is C++ header, no HDF macros, no `HDI`, no `IRemoteObject`, no `IStreamOperator`, etc.
+- It’s higher-level — application/service layer, not driver/HDI.
+- ❌ ~5%
+
+#### 10. **utils**
+- Focus: common utilities — buffers, indexes, constants, error codes, CameraClient/CameraOperator helpers, local camera query/open/close, preview/photo/video callbacks.
+- This class manages streams and feeds buffers — could be seen as utility? But it’s a full-fledged orchestrator class with state (`streamProcess_`, `streamIds_`), not a helper/utility.
+- Also, it’s named `DCameraSourceDataProcess`, suggesting it’s a core component, not a util.
+- ❌ ~15%
+
+---
+
+### Key Insight:
+The class:
+- Inherits `ICameraSourceDataProcess`
+- Manages streams via `DCameraStreamDataProcess`
+- Is named `DCameraSourceDataProcess`
+- Lives in `OHOS::DistributedHardware`
+- Handles `FeedStream`, `StartCapture`, etc.
+
+This strongly aligns with a **source-side data processing orchestrator**, specifically for the *distributed camera source* — i.e., the device that captures and prepares data for transmission.
+
+Now revisit modules: none explicitly say “source-side data processing orchestrator**, but:
+
+- **CameraDataProcessCommon** is the *only* module described as providing “data processing pipeline interfaces” and “foundational components for data processing flows on both sides”.
+
+Given that:
+- This class implements a concrete pipeline orchestrator for source-side streams,
+- It uses a common interface (`ICameraSourceDataProcess`),
+- And it’s likely part of the shared processing infrastructure (since `DCameraStreamDataProcess` is probably also in same module),
+
+→ The best fit is **CameraDataProcessCommon**, despite the name suggesting “common”. In OHOS architecture, “common” often includes shared *implementation* components used on one side but designed to be reusable.
+
+Alternative: Could this be part of a *dedicated SourceDataProcess module*? But that’s not listed — among given candidates, **CameraDataProcessCommon** is the most appropriate.
+
+Also note: the typo `DATRA` in macro suggests early development — consistent with core data processing modules being defined.
+
+---
+
+### Final Assessment:
+- Highest alignment: **CameraDataProcessCommon**
+- Reason: It provides the data processing pipeline interface and implementation for source-side stream management, which matches the class’s role exactly.
+- Other modules are either channel-layer, sink-side, or HDF/util — none match the *source-side data processing orchestration* role as closely.
+
+**Probability**:  
+The probability that this file belongs to module **CameraDataProcessCommon** is **75%**.
+
+Other modules are significantly less likely (<25% each).
+
+---
+
+✅ **Answer**:
+"The probability that this file belongs to module 'CameraDataProcessCommon' is 75%."

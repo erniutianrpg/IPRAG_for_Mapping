@@ -1,0 +1,66 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `proxygen/lib/http/HTTPConnectorWithFizz.h`
+  - `proxygen/lib/http/session/HTTPUpstreamSession.h`
+- **Namespaces**: `fizz`, `proxygen`
+- **Key function**: `HTTPConnectorWithFizz::connectFizz(...)`
+- **Functionality**:
+  - Implements a connector that uses **Fizz** (Facebook’s TLS 1.3 implementation) to establish secure HTTP connections.
+  - Creates an `AsyncFizzClient`, initiates TLS handshake, handles certificate verification, SNI, PSK, timeouts, socket options, bind address.
+  - On success, extracts TLS metadata (cipher, version, resume type, app protocol), builds an `HTTPUpstreamSession`.
+  - Uses `HTTPCodecFactory`, `TransportDirection::UPSTREAM`, and `HTTPUpstreamSession` — all core HTTP session infrastructure.
+  - Interacts with `wangle::TransportInfo`, `folly::SocketAddress`, etc.
+
+This is clearly part of the **HTTP client-side connection establishment logic**, specifically for **secure (TLS) upstream HTTP connections**, using Fizz as the TLS layer.
+
+---
+
+### **2. Module Candidates Evaluation**
+
+#### ✅ **http_general**
+- Corresponds to `proxygen/lib/http/` — common HTTP implementation: parsing, encoding/decoding, session management, transaction management.
+- `HTTPConnectorWithFizz.h` lives in `proxygen/lib/http/`, and `HTTPUpstreamSession.h` is also under `proxygen/lib/http/session/`.
+- The class `HTTPConnectorWithFizz` is a concrete connector for HTTP over TLS — part of the HTTP layer’s *connection setup* infrastructure.
+- It does not implement TLS itself (that’s Fizz), but *orchestrates* TLS + HTTP session creation.
+- This fits squarely under the **HTTP protocol core layer**, not transport or SSL standalone.
+
+#### ❌ **ssl**
+- While it uses Fizz and deals with TLS parameters (cipher, version, PSK), it does **not** define or manage SSL contexts, certificates, or low-level TLS state machines.
+- The `ssl` module would likely contain wrappers around Fizz or OpenSSL for generic TLS context creation — not HTTP-specific connectors.
+- Here, SSL/TLS is used *as a dependency*, not implemented or abstracted by this file.
+
+#### ❌ **transport**
+- Transport module is for QUIC / HTTP/3 low-level transport (e.g., `QuicTransport`, `QuicSocket`, datagrams).
+- This file uses TCP sockets via `AsyncFizzClient`, not QUIC.
+- No mention of QUIC, datagrams, tokens, or HTTP/3-specific constructs.
+
+#### ❌ **dns**
+- No DNS resolution logic here (no `DNSResolver`, `HostResolver`, etc.).
+- Connection address is already provided as `SocketAddress`.
+
+#### ❌ **sampling**, **general**, **services**, **httpserver**
+- **sampling**: no sampling logic.
+- **general**: too generic; this is HTTP-specific, not utils/helper code.
+- **services**: server-side infrastructure (e.g., `ServiceHandler`, `AcceptLoop`). This is client-side (`HTTPUpstreamSession`, `UPSTREAM` direction).
+- **httpserver**: high-level server APIs (e.g., `ResponseHandler`, `RequestHandler`). This is internal connector logic, not server-facing.
+
+---
+
+### **3. Key Evidence Supporting `http_general`**
+- Path: `proxygen/lib/http/HTTPConnectorWithFizz.h` → directly under `http/`, which maps to `http_general`.
+- Role: connects TLS (via Fizz) to HTTP session creation — a bridge between transport security and HTTP semantics.
+- Uses `HTTPUpstreamSession`, which is part of HTTP session management — core to `http_general`.
+- Not abstracting TLS (so not `ssl`), not handling QUIC (so not `transport`), not server-side (so not `services`/`httpserver`).
+
+---
+
+### **Conclusion**
+The file is a **client-side HTTP connector that integrates Fizz for TLS**, residing in `proxygen/lib/http/`, and is tightly coupled with HTTP session and codec infrastructure. This is exactly what the `http_general` module covers: the HTTP protocol core layer, including connection setup for HTTP(S).
+
+> The probability that this file belongs to module 'http_general' is **95%**.  
+> (Remaining 5% uncertainty due to borderline overlap with `ssl`, but the architectural placement and responsibilities strongly favor `http_general`.)

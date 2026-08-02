@@ -1,0 +1,109 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **File Summary**
+- **Language**: C/C++
+- **Includes**:
+  - `encode_video_callback.h` → suggests this is a callback handler for video encoding.
+  - `distributed_hardware_log.h` → logging specific to distributed hardware (DH).
+- **Namespaces**: `OHOS::DistributedHardware` → clearly part of OpenHarmony Distributed Hardware subsystem.
+- **Class/Functions**: Implements `EncodeVideoCallback`, with methods:
+  - `OnError`
+  - `OnInputBufferAvailable`
+  - `OnOutputFormatChanged`
+  - `OnOutputBufferAvailable`
+
+These are standard AVCodec callback interfaces (similar to Android’s `MediaCodec.Callback`), used when a video encoder (e.g., via Media Framework) signals events like buffer availability or format change.
+
+- **Key logic**:
+  - Each callback logs and forwards the event to a `std::shared_ptr<EncodeDataProcess> targetEncoderNode`.
+  - `encodeVideoNode_` is a weak pointer (`std::weak_ptr`) to an encoder node — implying this callback is *delegated* to a data processing component.
+  - The callbacks are not doing encoding themselves, but acting as a bridge between the media codec layer and the higher-level encoder/data processing logic.
+
+So this file is:
+- A **callback adapter** for video encoding events.
+- Part of the **encoding pipeline**, likely on the **source side** (since it's handling *encode* callbacks — i.e., encoding local camera frames before sending over channel).
+- Tightly coupled with `EncodeDataProcess`, which likely belongs to a data processing module.
+
+Now let’s evaluate each candidate:
+
+---
+
+### 1. **DistributedCameraSourceMgr**
+- Focus: Lifecycle, state machine, controller, input stream, data processing, IPC service, callback management **on the source side**.
+- Includes callback management — yes.
+- But this module is more high-level (orchestrator), not low-level codec callback implementation.
+- While it may *use* this callback, the file itself is too granular (just callback forwarding) to be the manager itself.
+- ❌ Unlikely primary home.
+
+### 2. **ChannelCommon**
+- Focus: SoftBus, session, channel interfaces — pure communication layer.
+- This file does **not** involve channel establishment, session, or SoftBus APIs.
+- ❌ No match.
+
+### 3. **ChannelSource**
+- Focus: Controller-side channel — sends commands, receives image data.
+- Again, no channel/session logic here; this is about *encoding*, not transport.
+- ❌ Not matching.
+
+### 4. **ChannelSink**
+- Controlled-side channel — receives commands, sends images.
+- Encoding typically happens on **source side** (controller encodes camera feed from sink), unless sink does encoding (less common in distributed camera). But even then, this callback is generic encoder callback, not tied to channel receive/send.
+- ❌ Low relevance.
+
+### 5. **CameraDataProcessCommon**
+- Provides: common data processing frameworks, pipelines, codecs, color space conversion, frame-rate control, etc.
+- Key phrase: **codecs** and **data processing pipeline interfaces**.
+- This file implements a callback that forwards encoder events to `EncodeDataProcess`, which strongly suggests it’s part of the *data processing pipeline*.
+- Since it’s specifically for **video encoding**, and uses `Media::AVCodec*` types, it fits under “codecs” in this module.
+- Also, being in `OHOS::DistributedHardware` namespace aligns with shared infrastructure.
+- ✅ Strong candidate.
+
+### 6. **CameraDataPreProcess**
+- Preprocessing on **sink side** (input side), before transmission/encoding.
+- This file is about *encoding* callbacks — i.e., after preprocessing, during encoding.
+- Preprocess would handle things like crop, rotate, format conversion *before* feeding into encoder.
+- So this is *post*-preprocess, but still *pre-transmission*.
+- However, the name `PreProcess` suggests it doesn’t include encoder callbacks.
+- ⚠️ Possible, but less likely than Common.
+
+### 7. **CameraDataPostProcess**
+- Post-processing on **source side** (output side), e.g., decoding received streams.
+- This file is about **encoding**, not decoding — opposite direction.
+- ❌ Mismatch.
+
+### 8. **CameraServiceCommon**
+- Shared basic services: commands, protocols, camera info, metadata, open-camera info, controller interfaces.
+- This is not about service APIs or metadata — it’s about media codec callbacks.
+- ❌ Not a fit.
+
+### 9. **VirtualCameraHdf**
+- HDF/HDI layer: virtual camera devices, stream operator, metadata, IPC proxies/callbacks.
+- This file does **not** use HDF APIs, nor does it implement device/provider/stream operator.
+- It uses `Media::AVCodec*`, which is higher-level (multimedia framework), not HDF.
+- ❌ Not at HDF layer.
+
+### 10. **utils**
+- General utilities: buffers, constants, error codes, local camera callbacks (preview/photo/video).
+- This file is *specifically* about **video encoding callbacks**, and delegates to `EncodeDataProcess`, suggesting it's part of a structured pipeline, not a generic utility.
+- While logging (`DHLOGD/E`) is utility-like, the core logic is pipeline-integrated.
+- ⚠️ Could be argued, but `utils` usually contains header-only helpers or standalone functions — not class method implementations tied to a processing node.
+
+---
+
+### Best Fit: **CameraDataProcessCommon**
+
+Why:
+- It explicitly covers **codecs** and **data processing pipeline interfaces**.
+- `EncodeVideoCallback` is a pipeline component that bridges media codec to data processing logic (`EncodeDataProcess`).
+- The namespace `OHOS::DistributedHardware` matches where shared pipeline components live.
+- Other modules are either too high-level (manager), too low-level (HDF), or focused on transport (channel), not encoding.
+
+Probability estimate:
+- Very strong alignment: ~85–90%.
+- Remaining uncertainty: Could `EncodeDataProcess` belong to `CameraDataPreProcess`? But `PreProcess` implies *before* encoding; encoding is its own stage — and `CameraDataProcessCommon` is explicitly for *common* pipeline stages including codecs.
+
+Thus:
+
+**The probability that this file belongs to module 'CameraDataProcessCommon' is 90%.**

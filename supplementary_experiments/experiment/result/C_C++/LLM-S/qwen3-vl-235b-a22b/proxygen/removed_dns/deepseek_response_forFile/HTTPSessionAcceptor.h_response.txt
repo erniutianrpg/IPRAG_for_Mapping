@@ -1,0 +1,84 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `<memory>` — standard
+  - `<folly/io/async/AsyncSSLSocket.h>` — Folly async I/O, used for TLS-capable sockets (but not *core* SSL logic)
+  - `<proxygen/lib/http/codec/HTTPCodecFactory.h>` — HTTP codec factory (parsing/encoding)
+  - `<proxygen/lib/http/session/HTTPDownstreamSession.h>` — downstream HTTP session abstraction
+  - `<proxygen/lib/http/session/HTTPErrorPage.h>` — error page generation
+  - `<proxygen/lib/http/session/SimpleController.h>` — simple controller for session lifecycle
+  - `<proxygen/lib/services/HTTPAcceptor.h>` — base acceptor class from `services/`
+
+- **Namespace**: `proxygen`
+- **Types**:
+  - `HTTPSessionStats` (forward-declared)
+  - `HTTPSessionAcceptor` — main class, inherits from `HTTPAcceptor`, implements `HTTPSessionBase::InfoCallback`
+
+- **Key Functions & Behavior**:
+  - Constructor taking `AcceptorConfiguration`
+  - Manages `HTTPCodecFactory`, `HTTPErrorPage`, `SimpleController`
+  - Overrides `onNewConnection()` — called when a new transport connection arrives
+  - Implements `startSession()`, `dropIdleConnections()`, `onSessionCreationError()`
+  - Virtual method `newHandler()` — used to create transaction handlers (i.e., per-request logic)
+  - Uses `HTTPSessionBase`, `HTTPTransaction`, `HTTPMessage`, `ProxygenError`
+  - Not QUIC/HTTP3-specific; no mention of `quic`, `datagram`, `transport::Quic`, etc.
+  - No pool-related logic (no backend servers, no load balancing).
+  - No sampling logic (no `Sampler`, `RateLimiter`, `SampledRequest`, etc.).
+  - No direct SSL/TLS context management (e.g., no `SSLContext`, `TLSHandshake`, certificate loading); only uses `AsyncSSLSocket` as transport input — which is typical for server-side acceptors that handle both HTTP and HTTPS.
+
+---
+
+### 2. **Module Mapping**
+
+#### ✅ **services**
+- The file includes `<proxygen/lib/services/HTTPAcceptor.h>` and inherits from `HTTPAcceptor`.
+- `HTTPSessionAcceptor` is a concrete implementation of an acceptor that handles incoming connections and spawns sessions — exactly what `services/` is for: *server-side infrastructure*, including connection acceptance, worker coordination, service configuration.
+- The class manages:
+  - Accepting new connections (`onNewConnection`)
+  - Starting sessions (`startSession`)
+  - Idle connection dropping
+  - Error handling on session creation
+  - Codec factory, error pages, controllers — all configured at the service layer
+- This matches the description:  
+  > *"used for connection management and server-side related code... provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration."*
+
+#### ❌ **http_general**
+- While it uses many `http/session/` and `http/codec/` headers, those are *dependencies*, not the module’s primary responsibility.
+- `http_general` is about core protocol abstractions (e.g., `HTTPCodec`, `HTTPMessage`, `HTTPSessionBase`, `HTTPTransaction`) — but this file is *using* those abstractions to build a higher-level service component.
+- It does not implement parsing, encoding, or session state machines directly — it delegates to `HTTPDownstreamSession`, `HTTPCodecFactory`, etc.
+- So it's *dependent on* `http_general`, but not *part of* it.
+
+#### ❌ **httpserver**
+- `proxygen/httpserver/` is a *high-level wrapper* (e.g., `HTTPServer`, `RequestHandler`, `ResponseBuilder`) for building simple servers — typically used by end users.
+- This file is lower-level, internal to Proxygen’s server stack, and not part of the public `httpserver/` API.
+- No use of `HTTPServer`, `RequestHandler`, `ResponseBuilder`, etc.
+
+#### ❌ **transport**
+- No QUIC, no `QuicTransport`, no `DatagramTransport`, no `UDPSocket`, no `HPACK`/`QPACK` internals.
+- Only uses `AsyncSSLSocket` — which is part of Folly’s transport layer, but not unique to QUIC/HTTP3.
+- `transport` module is specifically for HTTP/3/QUIC support — not applicable here.
+
+#### ❌ **ssl**
+- Includes `AsyncSSLSocket`, but does *not* manage SSL contexts, certificates, handshake logic, or TLS stats.
+- No use of `SSLContext`, `TLSCredProcessor`, `SSLUtil`, etc.
+- SSL is just a transport detail here — not the focus.
+
+#### ❌ **pools**, **sampling**, **general**
+- No pool structures, no sampling logic, no utility functions (e.g., ` folly::StringPiece`, `ScopedEventBaseThread`, `TimeUtil`, etc.).
+- Not in `utils/` — clearly in the server infrastructure layer.
+
+---
+
+### 3. **Conclusion**
+The file defines `HTTPSessionAcceptor`, a concrete acceptor that sits in the server infrastructure layer, inheriting from `HTTPAcceptor` (in `services/`), orchestrating session creation, codec selection, error pages, and controller setup — all characteristic of the **services** module.
+
+It is *not* a protocol implementation (`http_general`), nor a high-level server wrapper (`httpserver`), nor transport/SSL/pool/sampling.
+
+### Final Probability Assignment:
+- **services**: 95% — strong match: inheritance, responsibilities, location of dependencies, and role in server stack.
+- **http_general**: 5% — only because it uses many http/session/ headers, but it’s a consumer, not a provider.
+- All others: ≤1%.
+
+> The probability that this file belongs to module 'services' is 95%.

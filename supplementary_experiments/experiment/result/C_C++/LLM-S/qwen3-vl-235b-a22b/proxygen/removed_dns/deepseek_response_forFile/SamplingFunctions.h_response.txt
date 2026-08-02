@@ -1,0 +1,49 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `folly/hash/Hash.h` → hashing utilities (Folly)
+  - `quic/codec/QuicConnectionId.h` → QUIC-specific type (`quic::ConnectionId`)
+  - `cstdint`, `limits` → standard integer types and limits
+- **Namespace**: `proxygen`
+- **Function**: `shouldLogQuicConnection(const quic::ConnectionId&, int64_t salt, uint32_t weight)`
+  - Purpose: Determines whether a QUIC connection should be logged, using a *weighted sampling* scheme based on hashing of connection ID + salt.
+  - Uses Folly hash functions (`fnv32_buf_BROKEN`, `twang_32from64`) to compute a deterministic pseudo-random value for sampling.
+  - Logic is probabilistic: if `hash <= max / weight`, return `true` — classic reservoir-style sampling.
+
+### 2. **Key Observations**
+- The function is **not protocol parsing**, **not transport I/O**, **not SSL**, **not HTTP session management**, **not server infrastructure**, and **not pool configuration**.
+- It is **sampling logic**, specifically for **QUIC connections**, but the *mechanism* is generic: weighted probabilistic sampling using hash-based randomness.
+- It operates on `quic::ConnectionId`, indicating awareness of QUIC, but the core logic is *independent* of transport details — it's a utility that could be reused elsewhere.
+- The use of `folly::hash` suggests it's part of Proxygen’s internal utilities, not a standalone service or transport layer component.
+- No HTTP-specific types (e.g., `HTTPMessage`, `RequestHandler`, `ResponseBuilder`) → rules out `http_general`, `httpserver`, `services`.
+- Not about SSL/TLS → rules out `ssl`.
+- Not about backend pools or service discovery → rules out `pools`.
+- While it involves QUIC, it does **not** implement transport behavior (e.g., packet sending/receiving, congestion control, handshake), nor does it manage QUIC connections directly — it only *samples* connections for logging. So `transport` is too low-level and broad; this is higher-level policy logic.
+
+### 3. **Candidate Module Matching**
+- **`sampling`**: ✅ Strong match.
+  - Explicitly described as “lightweight common sampling support module”.
+  - This function is exactly a sampling predicate: given a connection ID and weight, decide whether to log (i.e., sample).
+  - Weighted sampling via hash is a standard technique in telemetry/logging (e.g., for rate-limiting logs or tracing).
+  - The fact that it’s parameterized by `salt` and `weight` makes it reusable across contexts — aligns with “common sampling support”.
+
+- **`general`**: ⚠️ Possible, but less precise.
+  - `general` covers “common utility and support code”, including utils under `proxygen/lib/utils/`.
+  - However, `sampling` is *explicitly listed* as its own module, suggesting it’s a dedicated subcategory of utilities.
+  - Since there’s a dedicated `sampling` module, and this function is *pure sampling logic*, it’s more appropriate there than in generic utils.
+
+- **`transport`**: ❌ Weak match.
+  - Although it uses `quic::ConnectionId`, the function doesn’t handle transport state, packets, or QUIC internals.
+  - Sampling for logging is a cross-cutting concern, not transport-layer responsibility.
+  - Transport modules would contain code like `QuicTransport`, `QuicPacketBuilder`, etc., not sampling predicates.
+
+- Others (`pools`, `ssl`, `http_general`, `services`, `httpserver`): ❌ Clearly mismatched — no relevant types or responsibilities.
+
+### 4. **Conclusion**
+The function implements a **weighted hash-based sampling decision** for QUIC connections, which fits precisely the definition of the `sampling` module: lightweight, reusable sampling logic used across Proxygen (e.g., for logging, tracing, metrics).
+
+Thus:
+
+"The probability that this file belongs to module 'sampling' is 95%."

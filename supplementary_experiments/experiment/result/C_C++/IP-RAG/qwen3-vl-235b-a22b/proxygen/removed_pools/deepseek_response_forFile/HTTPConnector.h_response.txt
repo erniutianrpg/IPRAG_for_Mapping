@@ -1,0 +1,63 @@
+Let’s analyze the file `proxygen/lib/http/HTTPConnector.h` step by step, comparing its content and responsibilities with the candidate modules.
+
+---
+
+### 1. **File Location**
+- Path: `proxygen/lib/http/HTTPConnector.h`
+- This places it under `proxygen/lib/http/`, which strongly suggests it belongs to the **HTTP protocol layer**, not transport, DNS, or services directly.
+
+---
+
+### 2. **Key Responsibilities (from code)**
+The `HTTPConnector` class:
+- Manages **TCP (and optionally SSL/TLS) connection setup** to an upstream HTTP server.
+- Uses `folly::AsyncSocket` for low-level socket operations.
+- Handles timeouts via `HHWheelTimer` / `WheelTimerInstance`.
+- Supports both plaintext (`connect`) and SSL (`connectSSL`) connections.
+- Integrates with HTTP codec factory (`DefaultHTTPCodecFactory`) — i.e., it prepares for HTTP message exchange *after* connection is established.
+- Provides callbacks (`Callback` interface) for success/error/pre-connect events — typical of session/connection initiation logic.
+- Stores `HTTPUpstreamSession*` on success — implying it's used to bootstrap an upstream HTTP session (e.g., for proxying or client-side requests).
+
+Crucially:
+- It does **not** perform DNS resolution (so not `dns`).
+- It does **not** implement SSL/TLS handshake logic itself — it uses `folly::SSLContext` and `SSLSession`, but doesn’t manage certs, contexts, or TLS stats — so not primarily `ssl`.
+- It is **not** a utility helper in `utils/` — it's tightly coupled to HTTP session lifecycle and codec configuration → not `general`.
+- It is **not** part of `services/` (which handles server-side infrastructure like acceptors, workers, service registration).
+- It is **not** in `httpserver/` (that’s high-level server APIs; this is lower-level client/upstream connection logic).
+- It is **not** QUIC/HTTP3-related — no QUIC types, no `quic/`, no datagram/socket abstractions → not `transport`.
+
+---
+
+### 3. **Relation to Candidate Modules**
+Let’s map to each:
+
+- **`dns`**: No DNS resolution logic here. `SocketAddress` is assumed resolved. ❌  
+- **`sampling`**: No sampling logic. ❌  
+- **`ssl`**: Uses SSL types but doesn’t own SSL context management or statistics. It’s a consumer, not provider. ❌  
+- **`general`**: While it uses utilities (`Time`, `WheelTimerInstance`), its core purpose is HTTP-specific connection orchestration — not generic utilities. The `general` module is for *shared utilities*, not HTTP session setup. ❌
+- **`http_general`**: ✅ This module is defined as:
+  > *"mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities..."*
+
+  `HTTPConnector` fits well here:
+  - Lives in `proxygen/lib/http/`.
+  - Is responsible for initiating an HTTP session (upstream), including codec setup.
+  - Works closely with `HTTPCodec`, `DefaultHTTPCodecFactory`, and `HTTPUpstreamSession` — all core HTTP abstractions.
+  - It’s part of the *client-side connection establishment* for HTTP, which is a foundational piece of the HTTP protocol stack (especially for proxies or clients built on Proxygen).
+
+- **`services`**: Focuses on server-side infrastructure (acceptors, workers). This is client/upstream-facing. ❌  
+- **`httpserver`**: High-level server API wrapper (e.g., `HTTPServer`, `RequestHandler`). This is lower-level and not in that directory. ❌  
+- **`transport`**: For QUIC/HTTP3; no such dependencies here. ❌
+
+---
+
+### 4. **Cross-check with Reference Patterns**
+Although no explicit reference examples are given, the naming and structure align with known Proxygen architecture:
+- `HTTPConnector` is used by `HTTPUpstreamSession` to establish connections before sending requests — a standard pattern in HTTP client/proxy stacks.
+- In Proxygen, `lib/http/` contains core HTTP abstractions like codecs, sessions, connectors — all grouped under `http_general`.
+
+---
+
+### ✅ Conclusion
+The file implements HTTP-level connection setup (TCP/SSL) with integration into HTTP session and codec lifecycle — squarely within the **HTTP protocol core layer**, i.e., `http_general`.
+
+**Assigned Module**: [`http_general`]

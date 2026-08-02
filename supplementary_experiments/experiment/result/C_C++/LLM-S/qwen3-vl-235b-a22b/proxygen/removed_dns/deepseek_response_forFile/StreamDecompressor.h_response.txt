@@ -1,0 +1,48 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+### File Content Summary:
+- **Language**: C/C++
+- **Includes**: `<cstdint>`, `<memory>` — standard headers; no heavy dependencies.
+- **Namespaces**: `folly`, `proxygen` — confirms this is part of the Proxygen ecosystem, using Folly utilities.
+- **Types**:
+  - `class IOBuf`: Forward-declared from `folly`; a core buffer abstraction used widely in Folly/Proxygen for zero-copy I/O.
+  - `enum class CompressionType`: Defines compression types (NONE, DEFLATE, GZIP, ZSTD) — clearly related to *compression/decompression*.
+  - `class StreamDecompressor`: Abstract base class with pure virtual methods:
+    - `~StreamDecompressor()`
+    - `decompress(const folly::IOBuf* in)` → takes an `IOBuf`, returns `unique_ptr<IOBuf>`
+    - `hasError()`, `finished()` → state/query methods
+- **Raw excerpt**: Header-only (`#pragma once`), minimal, interface-only — no implementation. It defines a *streaming decompression abstraction*.
+
+### Key Observations:
+- This is an **abstraction for stream decompression**, likely used in HTTP message body processing (e.g., decompressing chunked or compressed request/response bodies).
+- Compression is a **protocol-level concern** in HTTP (e.g., `Content-Encoding: gzip`), so decompression logic lives close to HTTP parsing/encoding layers.
+- The use of `folly::IOBuf` suggests integration with Proxygen’s I/O model — common in both `http_general` and `transport`, but decompression is not transport-specific (QUIC/HTTP/3 doesn’t inherently require this interface; it’s higher-level).
+- No SSL/TLS references → rules out `ssl`.
+- Not about pools, sampling, services, or high-level server APIs → rules out `pools`, `sampling`, `services`, `httpserver`.
+- Not QUIC/transport-specific (no mention of QUIC, datagrams, sockets, etc.) → unlikely `transport`.
+- The abstraction is generic (not tied to HTTP/2 or HTTP/3 specifically), but it's used *within* HTTP message processing — e.g., when decoding a compressed response body before handing it to application logic.
+
+### Module Comparison:
+
+- **`pools`**: ❌ No relation to backend pools or configuration.
+- **`sampling`**: ❌ No sampling logic; unrelated.
+- **`ssl`**: ❌ No SSL context, certificates, or TLS-related types/functions.
+- **`general`**: ⚠️ Possible — `general` includes utility code. But decompression is *not* a generic utility like time, logging, or string helpers; it’s protocol-adjacent. `general` usually holds *non-HTTP-specific* helpers (e.g., `URL`, `AsyncTimeout`, `ScopedEventBaseThread`). Compression interfaces are more tightly coupled to HTTP semantics.
+- **`http_general`**: ✅ Strong match. This module contains core HTTP abstractions including:
+  - `HTTPMessage`, `HTTPHeaders`,
+  - Body handling (e.g., `HTTPChunkCodec`, `HTTPCompression`),
+  - Utilities for encoding/decoding, including decompressors (e.g., `GzipDecompressor`, `ZstdDecompressor` often derive from such an interface).
+  In fact, in real Proxygen codebase, `StreamDecompressor` (or similar) lives under `proxygen/lib/http/codec/` or `proxygen/lib/http/common/`, which falls under `http_general`.
+- **`services`**: ❌ Server-side infrastructure (e.g., `ServiceHandler`, `ServerTransport`, connection pools) — this is not about connection management.
+- **`httpserver`**: ❌ High-level server API (e.g., `HTTPServer`, `RequestHandler`) — this is a low-level interface, not a server wrapper.
+- **`transport`**: ❌ Transport layer (QUIC, socket I/O, flow control) — compression is above transport.
+
+### Additional Evidence:
+- The enum `CompressionType` maps directly to HTTP `Content-Encoding` values.
+- `StreamDecompressor` is designed to be used during HTTP body streaming (e.g., in `HTTPTransaction` or `HTTPCodec`), which is squarely in `http_general`.
+
+### Conclusion:
+The file defines a core HTTP-level decompression abstraction, used during HTTP message body processing. It belongs to the **HTTP protocol core layer**, i.e., `http_general`.
+
+**The probability that this file belongs to module 'http_general' is 95%.**  
+Other modules are implausible (<5% each), with `general` being the only remote alternative (~5%), but context strongly favors `http_general`.

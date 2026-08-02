@@ -1,0 +1,86 @@
+Let’s analyze the file content step by step and compare it with the candidate modules.
+
+### File Content Summary:
+- **File name (inferred from macro)**: `OHOS_DCAMERA_STREAM_DATA_PROCESS_PIPELINE_LISTENER_H`
+- **Includes**:
+  - `<memory>` (standard)
+  - `"data_buffer.h"` → suggests data buffer handling
+  - `"data_process_listener.h"` → indicates this is a *listener* for data processing events
+- **Namespaces**: `OHOS::DistributedHardware`
+- **Types**:
+  - `class DCameraStreamDataProcess`
+  - `class DCameraStreamDataProcessPipelineListener` — inherits from `DataProcessListener`
+- **Functions**:
+  - Constructor taking `std::shared_ptr<DCameraStreamDataProcess>&`
+  - `OnProcessedVideoBuffer(const std::shared_ptr<DataBuffer>& videoResult)` — callback when video buffer is processed
+  - `OnError(DataProcessErrorType errorType)` — error callback
+- **Key design pattern**: This is a *listener* that receives callbacks from a data processing pipeline (specifically for stream data), likely used to notify upstream components (e.g., controller/source side) about processed video frames or errors.
+
+The class is tightly coupled with:
+- `DCameraStreamDataProcess` (suggesting it's part of a stream data processing subsystem),
+- `DataBuffer` (common data container),
+- `DataProcessListener` (a generic listener interface for data processing events).
+
+This strongly implies it belongs to a **data processing pipeline**, specifically as a *callback/listener* component in that pipeline.
+
+Now, evaluate candidate modules:
+
+1. **DistributedCameraSourceMgr**  
+   → Handles lifecycle, controller, input stream, *data processing*, IPC, callbacks on **source side**.  
+   While it includes "data processing", this file is not a manager/controller—it's a low-level listener tied to a specific data process instance. Not the best fit.
+
+2. **DistributedCameraSinkMgr**  
+   → Handles data processing on **sink side** (controlled device). But this listener seems to be *notifying* about processed video buffers—on sink side, processing would produce output; but the listener is likely consumed by the source side (to receive processed frames). Also, `DCameraStreamDataProcess` sounds like a process *on the source side* that consumes transmitted data (e.g., after decode/post-process).
+
+3. **ChannelCommon**  
+   → About communication channels, SoftBus, sessions—not about data processing callbacks.
+
+4. **ChannelSource**  
+   → Controller-side channel implementation (connection, command sending, receiving image info). This listener could be used *by* ChannelSource, but it’s not itself channel logic.
+
+5. **CameraDataProcessCommon**  
+   → *"Provides common data processing frameworks, data processing pipeline interfaces, codecs, color space conversion..."*  
+   ✅ Key phrase: **"data processing pipeline interfaces"**.  
+  The class `DCameraStreamDataProcessPipelineListener` is clearly an interface (via inheritance from `DataProcessListener`) used in a data processing pipeline. It’s a *pipeline listener*, part of the framework that enables modular data processing with callbacks.
+
+6. **CameraDataPreProcess**  
+   → Preprocessing on sink side *before transmission*. This listener handles *processed video buffer* — i.e., after processing, likely post-decode or post-transform on source side. So unlikely to be pre-process.
+
+7. **CameraDataPostProcess**  
+   → Post-processing on **source side**, decoding, format conversion, frame-rate control, etc.  
+   The function `OnProcessedVideoBuffer` suggests the buffer has already been processed (e.g., decoded, resized, converted), and this listener is notified — exactly what post-processing pipelines would do.  
+   Also, the class name `DCameraStreamDataProcessPipelineListener` fits a post-processing pipeline listener: the pipeline processes stream data, and this listener receives results.
+
+   Compare:
+   - `CameraDataPostProcess`: “decodes, converts formats, and processes frame rate, resolution... so that the controller can use distributed camera data as if using a local Camera.”
+   - This listener is likely attached to a post-processing stage to deliver final frames to the controller (e.g., to preview surface or app).
+
+   The fact that it holds a `weak_ptr<DCameraStreamDataProcess>` suggests it’s owned/used by a data process object — consistent with post-processing pipeline components.
+
+8. **CameraServiceCommon**, **VirtualCameraHdf**, **utils**  
+   - `CameraServiceCommon`: more about protocols, metadata, basic commands — not pipeline listeners.
+   - `VirtualCameraHdf`: HDF/HDI layer — too low-level; this is C++ header, not driver/HDI.
+   - `utils`: provides buffers, constants, error codes — but this is a *functional listener class*, not a utility helper.
+
+### Critical distinction:
+- `CameraDataProcessCommon` provides *interfaces and frameworks* — e.g., base classes like `DataProcessListener`.
+- `CameraDataPostProcess` implements concrete post-processing pipelines that *use* those interfaces.
+
+But note: the file defines `DCameraStreamDataProcessPipelineListener`, which **inherits from `DataProcessListener`** — implying `DataProcessListener` is defined elsewhere (likely in `CameraDataProcessCommon`). So this file is a *concrete listener implementation*, not the base interface.
+
+Given:
+- The listener is specifically for `DCameraStreamDataProcess` (stream data processing),
+- It’s used to receive *processed video buffers* — i.e., output of a post-processing stage,
+- And it resides in `OHOS::DistributedHardware`, same namespace as other distributed camera modules,
+
+The most precise match is:
+
+> **CameraDataPostProcess** — because:
+> - It operates on the **source side** (controller side),
+> - It deals with *processed* video data (after transmission/decode),
+> - Pipeline listeners like this are typical components of post-processing flows to feed results to upper layers (e.g., preview UI).
+
+Also, reference examples (implied by problem statement) suggest that pipeline listeners tied to stream data processing belong to post-processing when they handle *output* of the pipeline (as opposed to preprocessing which would handle raw input).
+
+### Final Decision:
+**Assigned Module**: [CameraDataPostProcess]

@@ -1,0 +1,67 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File context & key indicators**
+- **Language**: C/C++
+- **Includes**:
+  - `proxygen/lib/http/session/HTTPUpstreamSession.h` → clearly part of HTTP session layer
+  - `folly/io/async/AsyncSSLSocket.h` → low-level transport (SSL socket), but used *by* HTTP session
+  - `wangle/acceptor/ConnectionManager.h` → wangle is Facebook’s networking library; `ConnectionManager` is for managing connections on server side, often used in upstream/downstream contexts
+
+- **Namespace**: `proxygen`
+- **Class**: `HTTPUpstreamSession`
+  - Inherits from `HTTPSession`
+  - Constructor takes `WheelTimerInstance`, `AsyncTransport::UniquePtr`, `SocketAddress`s, `HTTPCodec`, `TransportInfo`, `InfoCallback`
+  - Methods include:
+    - `isReplaySafe()`, `isReusable()`, `isClosing()` — session lifecycle/state checks
+    - `startNow()`, `newTransaction()`, `newTransactionWithError()` — transaction creation (core HTTP semantics)
+    - `attachThreadLocals(...)`, `detachThreadLocals(...)` — thread-local state management (e.g., event base, SSL context, stats, filters)
+    - `getTransactionTimeoutHandler()`, `allTransactionsStarted()` — transaction lifecycle coordination
+  - Uses `codec_->getTransportDirection() == TransportDirection::UPSTREAM` — confirms this is the *upstream* (client-facing or proxy-to-backend) side of an HTTP session.
+
+- **Raw excerpt** shows:
+  - Implementation of `HTTPUpstreamSession` constructors and core methods.
+  - Direct interaction with `sock_` (transport), `codec_` (HTTP codec), `wheelTimer`, `tinfo`, etc.
+  - Heavy use of `VLOG` for debugging — typical of core protocol logic.
+  - No DNS resolution, no pool configuration, no sampling logic, no QUIC/HTTP3-specific types.
+
+---
+
+### 2. **Module comparison**
+
+| Module | Relevance |
+|--------|-----------|
+| **dns** | ❌ No DNS-related code (`DNSResolver`, `DnsCache`, etc.) — irrelevant. |
+| **pools** | ❌ No backend pool config, no `ServerPool`, `LoadBalancer`, etc. |
+| **sampling** | ❌ No sampling logic (e.g., `Sampler`, `RateLimiter`, `TraceId` sampling). |
+| **general** | ⚠️ Partial: utils like `VLOG`, `CHECK`, `WheelTimerInstance` are used, but this is not a utility file — it's a core HTTP session class. The `general` module is for *auxiliary* code (e.g., `URL`, `IOBufUtil`, `ScopedEventBaseThread`), not session implementation. |
+| **http_general** | ✅ **Strong match**: This module covers `proxygen/lib/http/`, including `session/`, `codec/`, `transaction/`. `HTTPUpstreamSession` is literally under `proxygen/lib/http/session/`, and implements core HTTP session behavior (reusability, transaction lifecycle, codec integration, timeout handling). This is the *HTTP protocol core layer*. |
+| **services** | ⚠️ Partial: `ConnectionManager` from wangle is included, and `services` deals with connection management — but `HTTPUpstreamSession` is not in `lib/services/`, nor does it implement service execution, acceptors, or worker threads. It’s lower-level than `services`. |
+| **httpserver** | ❌ `httpserver/` is high-level (e.g., `HTTPServer`, `RequestHandler`, `ServerBootstrap`). This is internal session logic, not API-facing. |
+| **transport** | ❌ Transport module is for QUIC/HTTP3 (`QuicTransport`, `HQSession`, `DatagramTransport`). This uses TCP-style `AsyncSocket`/`AsyncSSLSocket`, not QUIC. Not transport-layer abstraction. |
+
+---
+
+### 3. **Key evidence for `http_general`**
+- Path: `proxygen/lib/http/session/HTTPUpstreamSession.h` → directly under `http/`, which the `http_general` module covers.
+- Responsibilities listed for `http_general`: *"HTTP protocol parsing, encoding/decoding, session management, transaction management"* — exactly what this file does:
+  - Session management (`isReusable`, `isClosing`, `attach/detachThreadLocals`)
+  - Transaction management (`newTransaction`, `allTransactionsStarted`)
+  - Codec integration (`codec_->isReusable()`, `supportsParallelRequests()`)
+- No dependency on higher-level service orchestration (so not `services` or `httpserver`).
+- Not a utility/helper (so not `general`).
+
+While `ConnectionManager.h` from wangle is included, that’s only because `HTTPUpstreamSession` may be used in proxy/server contexts where connection lifecycle is managed externally — but the *class itself* is still part of the HTTP session core.
+
+---
+
+### Final determination:
+
+The probability that this file belongs to module **http_general** is **95%**.
+
+Other modules have negligible relevance:
+- `general`: ~5% (only due to shared utilities like `VLOG`, `CHECK`, `WheelTimerInstance`, but those are used everywhere — not defining).
+- `services`: ~3% (due to `ConnectionManager.h`, but inclusion ≠ ownership).
+- All others: 0–1%.
+
+> **Answer**:  
+"The probability that this file belongs to module 'http_general' is 95%."

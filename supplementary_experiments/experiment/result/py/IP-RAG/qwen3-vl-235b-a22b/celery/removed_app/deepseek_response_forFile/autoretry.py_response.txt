@@ -1,0 +1,54 @@
+Let’s analyze the file `app/autoretry.py` step by step:
+
+- **File path**: `app/autoretry.py` — suggests it's part of the core app/task infrastructure, not a top-level CLI or backend.
+- **Module docstring**: `"Tasks auto-retry functionality."` — clearly indicates this is about *task retry behavior*, specifically automatic retries (e.g., exponential backoff, handling retry exceptions).
+- **Imports**:
+  - `vine.utils.wraps`: utility for function wrapping (common in internal helpers).
+  - `celery.exceptions.Ignore`, `celery.exceptions.Retry`: core Celery exception types used during task execution to signal skip or retry.
+  - `celery.utils.time.get_exponential_backoff_interval`: a utility function for computing backoff intervals — resides in `utils/time.py`, indicating this module relies on time utilities but is not itself a general utility.
+
+- **Functions**: Only one function: `add_autoretry_behaviour(task, **options)` — this function likely decorates or modifies a task to add auto-retry logic (e.g., automatically retry on certain exceptions with backoff).
+
+Now compare with candidate modules:
+
+- **backends**: No — backends handle *result storage*, not retry logic. Retry *can* happen in backends (e.g., retrying result writes), but this file is about *task-level* retry behavior, not results.
+- **bin**: No — CLI tools; unrelated.
+- **concurrency**: No — concurrency pools execute tasks, but retry is a *task lifecycle* concern, not scheduling/pooling.
+- **contrib**: Possibly? But contrib is for *extensions* (Django integration, pytest, etc.). Auto-retry is a core task feature, not an extension.
+- **events**: No — events are for monitoring and telemetry.
+- **fixups**: No — framework-specific startup fixes.
+- **loaders**: No — loading config/tasks; not runtime behavior.
+- **security**: No — unrelated.
+- **utils**: This is tempting — `utils` contains “common internal utilities”, including time handling. However, `autoretry.py` implements *task behavior*, not a generic utility. The function `add_autoretry_behaviour` is applying retry semantics to tasks — this is tightly coupled with *task execution semantics*, which is managed by the **worker** module (which handles task requests, retries, exceptions, etc.).
+- **worker**: Yes — the worker module includes “task consumption, request handling, remote control, … execution strategies, …” and crucially, *handling of retry exceptions* (e.g., catching `Retry`, scheduling requeues, computing backoff). The function `add_autoretry_behaviour` likely augments a task object so that when executed by the worker, it automatically triggers retry on failure — i.e., it’s part of the *task execution contract* enforced by the worker.
+
+Further evidence: In Celery’s actual source tree (as known from public repo), `celery/app/autoretry.py` exists and is imported by `celery/app/base.py`, and is used to enhance tasks with retry behavior — it's part of the *application/task definition layer*, but its purpose is to support the worker’s retry mechanism. However, note the path: `app/autoretry.py`, not `worker/...`.
+
+But recall: the **worker** module description explicitly includes:
+> “task consumption, request handling, … execution strategies, … and bootstep component management”
+
+And importantly, the *retry mechanism* (including exponential backoff) is implemented in coordination between:
+- Task definition (e.g., `@task(autoretry_for=..., retry_backoff=True)`)
+- The worker’s request handler, which catches `Retry` and reschedules.
+
+The file `app/autoretry.py` provides the *helper* that adds this behavior at task-definition time — it's part of the **application layer**, but among the listed modules, none directly represent “app” as a top-level module. The closest match is **utils**, since it’s a small internal helper that wraps task behavior using utilities (`wraps`, `get_exponential_backoff_interval`), and doesn’t belong to any domain-specific module like backends or worker.
+
+However, looking again at the **utils** module description:
+> “common internal utilities for Celery, including debugging, logging, serialization, time handling, threads, imports, text processing, system information, and graph structures.”
+
+`add_autoretry_behaviour` is not a generic utility — it’s *task-specific*. It’s not reused across subsystems; it’s only used when defining tasks.
+
+In Celery’s actual architecture:
+- `celery/app/autoretry.py` is considered part of the *application API* layer, but since “app” is not a listed candidate module, and the functionality is *supporting task retry semantics*, and retry logic is fundamentally handled by the **worker**, but the *behavior injection* happens at app level.
+
+Given the candidate list, and that **utils** is the catch-all for internal helpers — and this file uses only utilities and modifies task objects via wrapping — the most appropriate assignment is:
+
+✅ **utils**
+
+Why not worker?
+- Worker module contains the *runtime execution* logic (e.g., `Worker`, `Consumer`, `Request` classes that process retries).
+- This file does *not* contain any worker runtime code; it’s a pure helper that augments task objects *before* they reach the worker.
+
+Thus, per reference pattern: small behavior-augmenting helpers that use `vine.wraps`, `celery.utils.*`, and operate on task objects → fall under **utils**.
+
+**Assigned Module**: [utils]

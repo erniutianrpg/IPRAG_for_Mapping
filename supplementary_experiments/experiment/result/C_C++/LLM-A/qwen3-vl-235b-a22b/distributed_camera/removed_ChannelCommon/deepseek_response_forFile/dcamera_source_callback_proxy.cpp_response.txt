@@ -1,0 +1,69 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `dcamera_source_callback_proxy.h` → strongly suggests this is a *proxy* for a callback interface on the **source side** (controller side).
+  - `parcel.h`, `anonymous_string.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` → standard IPC/data marshaling and logging utilities used in OHOS distributed hardware.
+- Namespace: `OHOS::DistributedHardware`
+- Functions:
+  - `DCameraSourceCallbackProxy::OnNotifyRegResult(...)`
+  - `DCameraSourceCallbackProxy::OnNotifyUnregResult(...)`
+
+These functions are **callback proxy methods** that send remote requests (via `SendRequest`) to notify registration/unregistration results — i.e., they forward local callback invocations to a remote service (likely the sink side or service manager).
+
+The pattern matches OHOS's **IPC proxy design**: a `Proxy` class implements client-side stubs that serialize arguments into `MessageParcel` and call `SendRequest()` on a remote object.
+
+Specifically:
+- `OnNotifyRegResult` and `OnNotifyUnregResult` are callbacks *from the source side* to report outcomes of registration/unregistration attempts — likely triggered after the source (controller) tries to register/unregister with a sink (controlled device).
+- The function names and parameters (`devId`, `dhId`, `reqId`, `status`, `data`) align with distributed camera session management.
+
+### 2. **Module Comparison**
+
+Let’s evaluate each candidate:
+
+#### ✅ **DistributedCameraSourceMgr**
+> *"responsible for lifecycle, state machine, controller, input stream, data processing, IPC service, and callback management on the source side... enabling the controller to invoke distributed camera capabilities..."*
+
+- This module explicitly includes **callback management on the source side**.
+- The file implements `DCameraSourceCallbackProxy`, which is clearly part of the **source-side callback infrastructure**, used by the source manager to communicate results back to the remote service (e.g., sink or service registry).
+- The proxy is invoked by the source-side logic (e.g., when registration completes), and it sends results via IPC — exactly what a source manager would need.
+
+#### ❌ DistributedCameraSinkMgr
+- Sink side (controlled device). Callbacks here would be *received*, not sent. This file is sending notifications (client-side proxy), so not sink.
+
+#### ❌ ChannelSource / ChannelSink
+- These handle SoftBus channel establishment and raw data/command transport.
+- This file does **not** use SoftBus APIs; it uses `IRemoteObject::SendRequest`, which is OHOS native IPC (binder-like), not channel-level transport.
+- Also, no mention of `SoftBus`, `Channel`, or streaming data — only control-plane notifications (`NOTIFY_REG_RESULT`, `NOTIFY_UNREG_RESULT`).
+
+#### ❌ CameraDataProcessCommon / CameraDataPreProcess / CameraDataPostProcess
+- These deal with image/video data pipelines — encoding, decoding, format conversion, etc.
+- This file handles **control-plane notifications**, not media data processing.
+
+#### ❌ CameraServiceCommon
+> *"shared basic service capabilities... including basic commands, protocols, camera information, channel information, events, Metadata settings..."*
+- While this is *close*, note: `CameraServiceCommon` is for *shared* utilities, not specifically for **callback proxies** tied to source-side lifecycle management.
+- The class name `DCameraSourceCallbackProxy` and its usage suggest it belongs to the *source manager’s internal IPC layer*, not a generic shared service.
+
+#### ❌ VirtualCameraHdf
+- HDF/HDI layer — deals with virtual device implementation, HDI interfaces, stream operators.
+- This file is at the **distributed hardware framework level**, not HDF driver layer.
+
+#### ❌ utils
+> *"common utilities, error codes, buffers, constants... including local camera query, open, close, stream acquisition, and preview/photo/video callback handling."*
+- While error codes and logging are used, this is not a utility helper — it's a concrete IPC proxy class implementing specific callback forwarding logic.
+- The presence of `MessageParcel`, `SendRequest`, and interface tokens confirms it's part of an IPC contract implementation, not generic utils.
+
+### 3. **Reference Pattern Confirmation**
+In OHOS distributed hardware architecture:
+- `*CallbackProxy` classes are typically part of the **manager** module that owns the callback interface.
+- For example, `DCameraSourceCallbackProxy` would be used by `DistributedCameraSourceMgr` to notify remote services (e.g., sink or service registry) about registration status.
+- The fact that it’s in namespace `OHOS::DistributedHardware` and includes `dcamera_source_callback_proxy.h` (implying header defines the interface) strongly ties it to the **source manager**.
+
+### ✅ Conclusion
+The file implements the **source-side callback proxy** used by the `DistributedCameraSourceMgr` to send registration/unregistration result notifications over IPC. It fits squarely within the responsibilities of **DistributedCameraSourceMgr**.
+
+---
+
+**Assigned Module**: [DistributedCameraSourceMgr]

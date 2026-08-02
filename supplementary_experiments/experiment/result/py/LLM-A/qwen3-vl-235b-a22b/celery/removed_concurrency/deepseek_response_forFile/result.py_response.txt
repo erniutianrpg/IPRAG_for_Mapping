@@ -1,0 +1,84 @@
+Let’s analyze the file content step by step to determine which module it belongs to.
+
+### 1. **File Purpose (from docstring)**:
+> `"Task results/state and results for groups of tasks."`
+
+This clearly indicates the file deals with:
+- Representing task execution outcomes (`AsyncResult`, `EagerResult`)
+- Aggregating results from multiple tasks (`ResultSet`, `GroupResult`)
+- Managing state, metadata, and retrieval of results (e.g., `get()`, `ready()`, `successful()`, `failed()`, `state`, `result`, `traceback`)
+- Supporting chaining/continuation via `then()` (via `Thenable.register`)
+- Integration with backends (e.g., `backend`, `_get_task_meta`, `save`, `restore`)
+
+So this is about **task result abstraction**, not backend implementation itself, but the *interface* and *representation* of results.
+
+### 2. **Imports Analysis**:
+Key imports include:
+- `kombu.utils.objects.cached_property`, `vine.Thenable`, `vine.barrier`, `vine.promise`: low-level async primitives and promise-style composition.
+- `current_app`, `app.app_or_default`: app context usage.
+- `states`, `exceptions.*`: standard Celery state/exception types.
+- `utils.graph.DependencyGraph`, `utils.graph.GraphFormatter`: graph utilities — used in `build_graph()` and `graph()` methods.
+- `_state._set_task_join_will_block`, `_state.task_join_will_block`: internal state management for blocking/join behavior.
+
+Notably:
+- No direct backend-specific imports (e.g., `redis`, `sqlalchemy`, `amqp`, `memcache`) — so **not `backends`**.
+- No CLI-related modules (`argparse`, `click`, etc.) — so **not `bin`**.
+- No event-related imports (`event`, `broadcast`, `snapshot`, etc.) — so **not `events`**.
+- No security primitives (signing, certificates) — so **not `security`**.
+- No loader/config logic (e.g., `autodiscover_tasks`, config loading) — so **not `loaders`**.
+- No worker runtime components (e.g., `consumer`, `heartbeat`, `bootsteps`, `request`, `task_handler`) — so **not `worker`**.
+- No framework fixups (Django-specific, etc.) — so **not `fixups`**.
+- No extension helpers like Django integration, pytest, abortable tasks — so **not `contrib`**.
+
+The only non-core utility import is `utils.graph.*`, which points toward `utils`.
+
+But more importantly: the core classes (`AsyncResult`, `ResultSet`, `GroupResult`, `EagerResult`) are **abstractions over task results**, used across many parts of Celery (e.g., in app, worker, backends), but they are *not themselves backends* — they are the *result interface*.
+
+In Celery’s architecture:
+- The `backends` module implements concrete storage (e.g., RedisBackend, DatabaseBackend).
+- The `results.py` (this file) defines the *client-side result objects* that interact with those backends — i.e., the public API consumers use (`task.delay().get()`, `group(...).join()`, etc.).
+
+Where does such a file belong?
+
+Looking at Celery’s actual source tree (for reference):
+- In real Celery, `celery/result.py` contains exactly these classes: `AsyncResult`, `ResultSet`, `GroupResult`, `EagerResult`.
+- This file is **not** under `backends/`, but is a top-level module alongside `app/`, `worker/`, etc.
+- However, per the **given candidate modules**, we must map it to one of the listed categories.
+
+Let’s re-express the candidate modules with emphasis:
+
+- `app`: covers application-level core logic — *task registration, config, control, events, routing, tracing*.  
+  While `AsyncResult` is used by apps (e.g., `app.send_task().get()`), the result object itself is not part of app *core logic* — it's a supporting abstraction.
+
+- `utils`: provides common internal utilities — *debugging, logging, serialization, time handling, threads, imports, text processing, system info, and **graph structures***.  
+  The presence of `utils.graph.*` imports and the fact that result objects use generic utilities (like `cached_property`, `vine`, `weakref`, `deque`) suggests this is utility-like.
+
+However, note: `utils` is described as “common internal utilities”, and result objects are **not merely utilities** — they are central domain objects. But among the options, none explicitly say “results” or “task-result-abstraction".
+
+Let’s cross-check with reference examples (implied by instruction: *“Use the listed reference examples below to guide your reasoning”* — though no explicit examples were provided in the prompt, we infer from standard Celery structure).
+
+In actual Celery:
+- `celery/result.py` is considered part of the **core public API**, often grouped conceptually with `app`, but technically it's a standalone module.
+- However, in modular categorization like this, since:
+  - It doesn’t implement backends,
+  - Doesn’t handle worker runtime,
+  - Doesn’t deal with CLI, events, security, loaders, fixups, or contrib,
+  - And uses `utils.graph`, but is not itself a utility function/module,
+
+The most defensible assignment is: **`app`**, because:
+- `AsyncResult` is instantiated and returned by `app.send_task()`, `task.delay()`, etc.
+- It holds `app` reference and uses `current_app`.
+- It participates in application-level concerns: task state tracking, propagation, error handling, grouping — all part of the application’s task orchestration layer.
+- The docstring says “Task results/state and results for groups of tasks” — this is part of the application’s task interaction model.
+
+Compare to `backends`: backends are *pluggable storage layers*; this file is the *client-facing result wrapper* that uses backends internally (via `self.backend`). So it’s higher-level than backends.
+
+Thus, per Celery’s logical layering:
+- `app` → user-facing task submission & result handling
+- `backends` → where results are persisted
+- `result.py` sits in the `app` layer as the result abstraction.
+
+✅ Confirmed by real Celery: `celery/result.py` is imported and used directly by `celery/app/task.py`, `celery/app/base.py`, etc., and is considered part of the application interface.
+
+### Final Decision:
+**Assigned Module**: [`app`]

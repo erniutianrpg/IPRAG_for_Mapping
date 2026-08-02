@@ -1,0 +1,59 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+### File Summary:
+- **Module docstring**: “Internal worker state (global). This includes the currently active and reserved tasks, statistics, and revoked tasks.”
+  → Clearly about *worker runtime state*, not app-level configuration, backends, CLI, etc.
+  
+- **Imports**:
+  - `kombu.serialization.pickle`, `kombu.utils.objects.cached_property`: low-level serialization and utility helpers — common in worker internals.
+  - `celery.exceptions.WorkerShutdown`, `WorkerTerminate`: exceptions specific to worker lifecycle.
+  - `celery.utils.collections.LimitedSet`: a utility for bounded collections (e.g., for tracking recent revokes or successes) — used internally by workers.
+  - No imports from `backends`, `events`, `bin`, `app`, `security`, or framework-specific fixups.
+
+- **Constants**: 
+  - `REVOKES_MAX`, `SUCCESSFUL_MAX`, `REVOKE_EXPIRES`, `SUCCESSFUL_EXPIRES` → clearly related to *tracking revoked/successful tasks* in memory/persistence — core to worker state management.
+  - `C_BENCH`, `C_BENCH_EVERY` → likely performance benchmarking flags inside worker loop.
+
+- **Functions**:
+  - `reset_state()`, `maybe_shutdown()` → worker lifecycle/state reset/shutdown logic.
+  - `task_reserved()`, `task_accepted()`, `task_ready()` → these are *state transition callbacks* invoked when a task moves through the worker pipeline (reserved → accepted → ready). These are classic internal worker request handling functions.
+
+- **Class `Persistent`**:
+  - Manages persistent storage of worker state using `shelve`.
+  - Methods like `_merge_revoked_v1/v2/v3`, `_revoked_tasks`, `save`, `sync`, `_dumps` → clearly handles persistence of *revoked tasks*, clock, and other transient worker state across restarts.
+  - Uses `zlib` compression → typical for compact state persistence in workers.
+  - Not a backend (it doesn’t store *results*, only *revokes* and *counts*), nor an event handler.
+
+### Comparison with Candidate Modules:
+
+- **app**: ❌ No — this is not about app creation, config, routing, or task registration. No `Celery` class, no `@task`, no config loading.
+
+- **backends**: ❌ No — backends handle *task results* (e.g., `get()`, `set()`, `forget()`). This deals with *revoked tasks* and *in-flight state*, not results. No use of Redis/DB/RPC interfaces.
+
+- **bin**: ❌ No — CLI entry points, subcommands, argument parsing — none present.
+
+- **concurrency**: ❌ Partial overlap (pools manage execution), but this file doesn’t define pools (`prefork`, `thread`, etc.) or process/thread management. It’s about *state*, not *execution strategy*.
+
+- **events**: ❌ No event sending/receiving logic; no `EventDispatcher`, `EventReceiver`, or `snapshot` code.
+
+- **fixups**: ❌ No Django/framework integration, no `autodiscover_tasks`, no `setup_django`.
+
+- **loaders**: ❌ No config loading, no module importing logic, no `App.loader`.
+
+- **security**: ❌ No signing, certificates, `secure`, `signer`, or cryptographic utilities.
+
+- **utils**: ⚠️ Some utils are imported (`LimitedSet`, `cached_property`), but the *purpose* here is not generic utility — it's highly specialized: managing *worker runtime state*. While `utils` contains many internal helpers, this file is too domain-specific (worker state lifecycle) to be considered a general utility.
+
+- **worker**: ✅✅✅ Strong match:
+  - Docstring explicitly says “Internal worker state (global)”.
+  - Functions track task state transitions during consumption (`task_reserved`, `task_accepted`, `task_ready`) — exactly what the worker does when processing messages from the broker.
+  - `Persistent` class persists revoked tasks and stats across restarts — a known feature in Celery workers (e.g., `--statedb` option).
+  - Exceptions like `WorkerShutdown` are raised *inside* the worker loop.
+  - Constants like `REVOKES_MAX` match Celery’s internal worker state limits (e.g., `celery.worker.state` module in real Celery source).
+
+In fact, this file closely resembles `celery/worker/state.py` in the actual Celery codebase — which is part of the **worker** module.
+
+### Final Assessment:
+The file is *explicitly* about internal worker state management: task reservation, acceptance, completion, revocation tracking, and persistence — all core responsibilities of the worker runtime.
+
+> The probability that this file belongs to module 'worker' is 98%.

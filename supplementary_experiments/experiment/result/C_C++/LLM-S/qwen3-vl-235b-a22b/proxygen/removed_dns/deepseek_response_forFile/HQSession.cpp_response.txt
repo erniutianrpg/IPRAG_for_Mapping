@@ -1,0 +1,104 @@
+Let’s analyze the file content step by step to determine which module it most likely belongs to.
+
+---
+
+### **1. Key Observations from File Content**
+
+#### **Includes**
+The header includes are heavily focused on:
+- `proxygen/lib/http/session/HQSession.h` — core HQ (HTTP/3 over QUIC) session implementation.
+- `proxygen/lib/http/codec/*` — HTTP/3 codecs: `HQControlCodec`, `HQStreamCodec`, `H3EarlyDataHandler`, `QPACK*`, `WebTransportFramer`.
+- `proxygen/lib/http/session/*` — session and transaction management (`HTTPSession`, `HTTPTransaction`, `HTTPSessionStats`).
+- `proxygen/lib/http/webtransport/*` — WebTransport over HTTP/3 (`HTTPWebTransport`, `HqWtSession`, `WtUtils`).
+- QUIC-related headers: `quic/QuicConstants.h`, `quic/common/BufUtil.h`, `quic/folly_utils/Utils.h`, etc.
+- Folly I/O and async utilities (`AsyncTransport`, `IOBufQueue`, `HHWheelTimer`).
+- Wangle connection management (`ConnectionManager.h`).
+
+This strongly indicates a **session-level implementation for HTTP/3 over QUIC**, with deep integration into both HTTP semantics (e.g., priority, settings, goaway) and QUIC transport details (stream IDs, control streams, error handling).
+
+#### **Functions & Types**
+- All major functions are members of `HQSession` (e.g., `dispatchRequestStream`, `createEgressControlStreams`, `onSettings`, `onGoaway`, `handleWrite`, `processReadData`, `findStream`, `sendPriority`, `writeControlStreams`, etc.).
+- Utility functions like `noError`, `isVlogLevel`, `toQuicPriority`, `getWebTransportPrefaceSize`, `writeWTStreamPrefaceToSock`.
+- Constants related to HTTP/3 drafts: `kH3CurrentDraft`, `kHQCurrentDraft`, `kH3FBCurrentDraft`, etc.
+- Uses `quic::StreamId`, `proxygen::hq::UnidirectionalStreamType`, `HTTPCodec::StreamID`, `HTTPPriority`, `QPACKEncoderCodec`, etc.
+
+This is clearly **not**:
+- A *pools* module (no backend server lists or load balancing).
+- A *sampling* module (no sampling logic or probabilistic decisions).
+- An *ssl* module (no TLS context, certificates, handshake logic).
+- A *general* utility module (though it uses utilities, it's not generic—it’s deeply protocol-specific).
+- A *services* module (no service registration, worker threads, or acceptor logic beyond minimal `ConnectionManager` inclusion).
+- An *httpserver* module (this is not a high-level server API; no `HTTPServer`, `RequestHandler`, etc.).
+
+It **is**:
+- Deeply tied to **HTTP/3 session management over QUIC**, including control stream handling, stream lifecycle, priority, settings, WebTransport, and integration with QUIC transport primitives.
+- Located in `proxygen/lib/http/session/`, specifically implementing `HQSession`, which is the core session abstraction for HTTP/3.
+
+#### **Namespace & Structure**
+- Namespace: `proxygen`
+- The code implements `HQSession`, which inherits from `HTTPSession` (as implied by includes and typical Proxygen architecture), and manages:
+  - Stream multiplexing
+  - Control streams (settings, goaway, priority)
+  - Early data
+  - WebTransport preface framing
+  - Error mapping between QUIC and HTTP/3 errors
+
+This matches the definition of:
+
+> **http_general**: This module mainly corresponds to the common HTTP implementation under `proxygen/lib/http/`. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3.
+
+But wait—there’s also:
+
+> **transport**: This module mainly corresponds to lower-level transport capabilities under `proxygen/lib/transport/`, especially transport support related to QUIC / HTTP/3. It is Proxygen's transport-layer support module for HTTP/3/QUIC scenarios, responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache.
+
+So we need to distinguish:
+- Is `HQSession` part of the **HTTP protocol core** (`http_general`) or the **transport layer** (`transport`)?
+
+In Proxygen’s architecture:
+- `proxygen/lib/http/session/` is considered part of the **HTTP layer**, even for HTTP/3.
+- The *transport* module typically contains things like `QuicTransport`, `QuicSocketAdapter`, `QuicPacketBuilder`, etc.—i.e., code that bridges QUIC to HTTP, but not the session logic itself.
+- `HQSession` is the *HTTP/3 session*, which sits **above** the raw QUIC transport but **below** the service/server layer. It handles HTTP semantics (headers, priority, settings) while interacting with QUIC streams—but it does *not* implement QUIC itself.
+
+For example:
+- `HQSession::dispatchRequestStream` maps QUIC stream IDs to HTTP transactions.
+- `HQSession::readControlStream` parses HTTP/3 control frames using `HQControlCodec`.
+- It uses `quic::QuicSocket`, but doesn’t manage the socket lifecycle—that’s handled by higher layers (e.g., `wangle::Acceptor` + `ConnectionManager`).
+
+Thus, `HQSession` is part of the **HTTP protocol implementation**, not the raw transport.
+
+Also, note that the candidate description for `http_general` explicitly says:
+> "...protocol-related capabilities such as HTTP/2 and HTTP/3."
+
+And `HQSession` is the canonical HTTP/3 session class in Proxygen.
+
+Additionally, the includes include many `proxygen/lib/http/codec/` and `proxygen/lib/http/session/` files—exactly what `http_general` covers.
+
+The `transport` module would more likely include:
+- `proxygen/lib/transport/QuicTransport.h`
+- `proxygen/lib/transport/QuicSocket.h`
+- Code dealing with packetization, congestion control, loss recovery—not session state or HTTP frame parsing.
+
+This file does **not** include any `proxygen/lib/transport/` headers, only `quic/...` (which are from the standalone QUIC library, not Proxygen’s transport module).
+
+---
+
+### **2. Module Likelihood Assessment**
+
+| Module | Reasoning | Likelihood |
+|--------|-----------|------------|
+| **pools** | No backend pool logic, no config parsing, no service discovery. | ~0% |
+| **sampling** | No sampling logic (e.g., rate limiting, probabilistic decisions). | ~0% |
+| **ssl** | No TLS context, no certificate handling, no handshake logic. | ~0% |
+| **general** | Uses some utilities (`folly::ScopeGuard`, `IOBufQueue`), but the core is protocol-specific, not generic. Not in `utils/`. | ~10% |
+| **http_general** | Core HTTP/3 session implementation (`HQSession`), codec interaction, stream/transaction management, settings/goaway/priority—all HTTP protocol layer. Matches description exactly. | **~95%** |
+| **services** | Includes `ConnectionManager.h`, but only for transport info; no service execution, request routing, or worker thread logic. Not server-side infrastructure. | ~5% |
+| **httpserver** | No high-level server APIs (e.g., `HTTPServer`, `RequestHandler`, `ResponseBuilder`). This is internal session logic. | ~0% |
+| **transport** | Uses QUIC APIs, but does *not* implement transport logic; no packet handling, no socket ownership, no congestion control; sits above transport. Not in `lib/transport/`. | ~5% |
+
+Note: The 5% for `transport` is due to heavy QUIC usage, but architecturally, `HQSession` is considered part of the HTTP layer in Proxygen.
+
+---
+
+### ✅ Final Answer
+
+The probability that this file belongs to module **http_general** is **95%**.

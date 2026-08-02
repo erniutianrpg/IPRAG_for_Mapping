@@ -1,0 +1,116 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `dcamera_video_surface_listener.h` → suggests a listener for video surface buffer events.
+  - `securec.h` → security-safe memory operations (e.g., `memcpy_s`).
+  - `data_buffer.h` → utility for managing raw data buffers.
+  - `distributed_camera_errno.h` → error codes specific to distributed camera.
+  - `distributed_hardware_log.h` → logging macros like `DHLOGI`, `DHLOGE`.
+- **Namespaces**: `OHOS::DistributedHardware`
+- **Function**: `DCameraVideoSurfaceListener::OnBufferAvailable()`
+  - Called when a new buffer is available from a `Surface`.
+  - Acquires buffer from `surface_`, copies its virtual address (`GetVirAddr()`) into a `DataBuffer`.
+  - Invokes `callback_->OnVideoResult(dataBuffer)` — i.e., delivers processed frame data to a result callback.
+  - Uses `surface_->AcquireBuffer()` / `ReleaseBuffer()` — standard Surface/SurfaceBuffer interaction (common in Android/HarmonyOS graphics pipelines).
+
+This class acts as a **buffer listener** that bridges native Surface buffer acquisition with a higher-level callback interface (`ResultCallback`). It’s clearly on the **sink side**, because:
+- It receives frames from a local `Surface` (likely bound to a camera preview/output stream).
+- It forwards the raw frame data via `OnVideoResult()` — likely to be sent over channel or processed further.
+
+Note: The class name `DCameraVideoSurfaceListener` strongly implies it's part of the **distributed camera sink-side video pipeline**, handling video buffer availability and delivering them for further processing or transmission.
+
+---
+
+### **2. Module Matching**
+
+Let’s evaluate each candidate:
+
+#### ✅ **DistributedCameraSinkMgr**
+- Responsibility: *lifecycle, access control, controller, data processing, image/video output, event notification, IPC services on the sink side*.
+- This file implements an **event listener for video buffers** and triggers a callback (`OnVideoResult`) — directly aligns with “event notification” and “image/video output” on the sink side.
+- The use of `Surface`, `SurfaceBuffer`, and forwarding to `ResultCallback` fits the sink-side output path before sending over channel.
+- **Strong match**.
+
+#### ❌ **ChannelCommon**
+- Focus: SoftBus adaptation, session/channel interfaces/listeners — *communication layer*, not buffer acquisition from Surface.
+- This file does **not** involve channel establishment, session management, or IPC message handling — only local buffer handling.
+- Not a match.
+
+#### ❌ **ChannelSource** / **ChannelSink**
+- These are *channel-layer implementations* (SoftBus sessions, message send/receive).
+- This file has no SoftBus, no `ISession`, no `Send()`/`Receive()` — purely local buffer handling.
+- Not a match.
+
+#### ❌ **CameraDataProcessCommon**
+- Provides *common* data processing frameworks, codecs, color conversion, etc.
+- This file does **no codec work**, no format conversion, no pipeline orchestration — just raw memcpy from Surface buffer to `DataBuffer`.
+- Too low-level and specific to surface buffer delivery — not a generic framework.
+- Weak match at best.
+
+#### ✅ **CameraDataPreProcess**
+- Responsibility: *data preprocessing pipeline on the sink side or input side*, processing image data returned by camera framework **before transmission/encoding**.
+- This file:
+  - Gets raw frame from `Surface` (i.e., from camera framework),
+  - Copies it into a `DataBuffer`,
+  - Passes it to `OnVideoResult()` — likely the next stage (e.g., encoding or channel transmission).
+- That is exactly **preprocessing**: extracting raw frame data and preparing it for downstream processing.
+- Strong match — possibly even stronger than SinkMgr, depending on architecture boundaries.
+
+But note: `DCameraVideoSurfaceListener` sounds like an *adapter* between Surface and higher-level callbacks — often part of the **sink manager’s internal components**, not a standalone preprocessing module.
+
+In HarmonyOS distributed camera architecture (based on known structure), `DCameraVideoSurfaceListener` is typically implemented **inside `DistributedCameraSinkMgr`** as a helper class to handle Surface buffer callbacks and feed into the sink’s data flow.
+
+Also, the include `dcamera_video_surface_listener.h` suggests it's a dedicated header under sink-side logic — not a shared utility.
+
+#### ❌ **CameraDataPostProcess**
+- On **source side**, after receiving data — this is sink-side, so no.
+
+#### ❌ **CameraServiceCommon**
+- Shared basic service capabilities: commands, protocols, metadata, etc.
+- This file does none of that — no command handling, no metadata, no protocol parsing.
+
+#### ❌ **VirtualCameraHdf**
+- HDF/HDI layer: Host/Provider/Device/StreamOperator — this is **userspace**, using `Surface`, not HDF device drivers.
+- No HDF interfaces used.
+
+#### ❌ **utils**
+- Provides *common utilities*: data buffers, error codes, constants.
+- While it uses `DataBuffer`, `distributed_camera_errno.h`, and `securec.h`, the **core logic** here is *behavioral* (buffer acquisition + callback), not a utility function.
+- `DataBuffer` may be defined in `utils`, but this class is not a utility — it’s a functional component tied to sink-side video flow.
+- So: partial overlap, but not the primary home.
+
+---
+
+### **3. Key Discriminators**
+- The class is named `DCameraVideoSurfaceListener` — implies it’s a **listener for video surface events**, tightly coupled to sink-side video output.
+- It lives in `OHOS::DistributedHardware` namespace — same as sink manager.
+- It does **not** do encoding, format conversion, or channel transmission — just buffer acquisition and forwarding.
+- In typical architecture, such listeners are owned by the **Sink Manager**, which orchestrates camera capture, buffer handling, and data dispatch.
+
+Thus:
+- **DistributedCameraSinkMgr** is the *orchestrator* that would instantiate and manage this listener.
+- **CameraDataPreProcess** could be plausible if this were part of a pluggable preprocessing pipeline — but the direct callback to `OnVideoResult()` suggests it's feeding into the sink manager’s internal flow, not a modular preprocessing stage.
+
+Given the naming, location (namespace), and role (bridge between Surface and result callback), the most likely owner is **DistributedCameraSinkMgr**.
+
+---
+
+### ✅ Final Assessment
+
+- **DistributedCameraSinkMgr**: Very high fit — this is a core internal component for sink-side video buffer handling and event delivery.
+- **CameraDataPreProcess**: Medium fit — possible if preprocessing is defined broadly, but less likely since no actual *processing* (e.g., scaling, cropping, format conversion) occurs — just copying.
+- All others: Low or no fit.
+
+**Probability estimate**:
+- DistributedCameraSinkMgr: **95%**
+- CameraDataPreProcess: **30%**
+- Others: ≤5%
+
+---
+
+### ✅ Response:
+The probability that this file belongs to module 'DistributedCameraSinkMgr' is 95%.

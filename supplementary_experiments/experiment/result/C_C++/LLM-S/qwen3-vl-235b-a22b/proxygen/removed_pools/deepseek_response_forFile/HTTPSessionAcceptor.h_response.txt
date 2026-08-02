@@ -1,0 +1,105 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `<memory>` — standard
+  - `<folly/io/async/AsyncSSLSocket.h>` — Folly async I/O, SSL socket (transport-level)
+  - `<proxygen/lib/http/codec/HTTPCodecFactory.h>` — HTTP codec factory (parsing/encoding logic)
+  - `<proxygen/lib/http/session/HTTPDownstreamSession.h>` — downstream session (session management)
+  - `<proxygen/lib/http/session/HTTPErrorPage.h>` — error page generation (HTTP protocol behavior)
+  - `<proxygen/lib/http/session/SimpleController.h>` — controller for session lifecycle (session logic)
+  - `<proxygen/lib/services/HTTPAcceptor.h>` — base acceptor class (server-side infrastructure)
+
+- **Namespace**: `proxygen`
+- **Types**:
+  - `HTTPSessionStats` — likely stats tracking for sessions
+  - `HTTPSessionAcceptor` — main class, inherits from `HTTPAcceptor`, implements session creation logic
+
+- **Key Functions**:
+  - Constructor taking `AcceptorConfiguration`
+  - `onNewConnection(...) override` — called when a new transport connection arrives
+  - `startSession(...)`, `dropIdleConnections(...)`, `onSessionCreationError(...)` — session lifecycle control
+  - `setCodecFactory()`, `getCodecFactory()` — controls how HTTP messages are decoded/encoded
+  - `setDefaultErrorPage()`, `getErrorPage()` — HTTP error handling
+  - `newHandler(...)` — pure virtual: creates transaction handlers (core HTTP request processing)
+  - `getController()` — returns session controller (e.g., `SimpleController`)
+  - `getSessionInfoCallback()` — callback for session metadata
+
+- **Inheritance**:
+  - `public HTTPAcceptor` → from `proxygen/lib/services/`
+  - `private HTTPSessionBase::InfoCallback` → from HTTP session layer
+
+- **Raw excerpt context**:
+  - This is a header defining `HTTPSessionAcceptor`, which is the *central server-side component* that accepts incoming connections, configures session behavior (codec, controller, error pages), and starts sessions.
+  - It sits *between* low-level transport (Folly sockets) and high-level HTTP session/transaction handling.
+  - It's not doing DNS, sampling, or SSL directly — though it uses SSL sockets, it doesn’t manage SSL contexts itself.
+  - It’s not a utility (`general`) nor a high-level server wrapper (`httpserver`).
+  - It’s not QUIC/HTTP3-specific (`transport`), as no QUIC headers or datagram APIs are included.
+
+---
+
+### **2. Module Matching**
+
+#### ✅ **services**
+- Path: `proxygen/lib/services/`
+- Includes `HTTPAcceptor.h` directly.
+- `HTTPSessionAcceptor` inherits from `HTTPAcceptor`.
+- Purpose: Server-side infrastructure — connection acceptance, session creation, configuration.
+- The class handles:
+  - Accepting new connections (`onNewConnection`)
+  - Starting sessions (`startSession`)
+  - Managing idle connections (`dropIdleConnections`)
+  - Configuring session behavior (codec, controller, error pages)
+- This is exactly what the `services` module is defined to do: *"used for connection management and server-side related code... provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration."*
+
+#### ⚠️ **http_general**
+- Path: `proxygen/lib/http/`
+- Includes many HTTP session/codec headers (e.g., `HTTPCodecFactory`, `HTTPDownstreamSession`, `SimpleController`, `HTTPErrorPage`).
+- However, those are *dependencies*, not the primary ownership.
+- `HTTPSessionAcceptor` is not part of the core HTTP protocol logic (like parsing, framing, HPACK), but rather orchestrates how sessions are created *using* those components.
+- The `http_general` module is described as responsible for *"HTTP protocol parsing, encoding/decoding, session management, transaction management"*. While `HTTPSessionAcceptor` touches session management, it does so at the *acceptor level*, not the per-session transaction level. Session management here is higher-level coordination — more infrastructural.
+
+#### ❌ **httpserver**
+- Path: `proxygen/httpserver/`
+- High-level API for building simple servers (e.g., `HTTPServer`, `RequestHandler`).
+- This file is lower-level — it’s used *by* `httpserver`, not part of it.
+- No inclusion of `httpserver/` headers; no use of `RequestHandler`, etc.
+
+#### ❌ **transport**
+- Involves QUIC/HTTP3, low-level sockets like `QuicSocket`, `QuicTransport`.
+- No QUIC headers, no datagram/socket abstraction beyond `AsyncSSLSocket`, which is generic Folly transport.
+- `AsyncSSLSocket` is used, but only as a transport input — not managed by this class.
+
+#### ❌ **ssl**
+- Would involve `SSLContext`, `TLSHandshake`, certificate handling, etc.
+- This class uses `AsyncSSLSocket`, but doesn’t configure or own SSL contexts.
+- No SSL-specific APIs or types.
+
+#### ❌ **dns**, **sampling**, **general**
+- No DNS resolution logic.
+- No sampling counters or probability logic.
+- Not in `utils/`, and not generic utilities — it’s tightly coupled to HTTP server infrastructure.
+
+---
+
+### **3. Final Judgment**
+
+The file defines `HTTPSessionAcceptor`, which:
+- Inherits from `HTTPAcceptor` (in `services/`)
+- Coordinates session creation using HTTP-layer components (`http/`)
+- Is clearly part of the *server-side infrastructure* layer — i.e., the **services** module.
+
+While it depends heavily on `http_general`, its *role* and *location in architecture* align best with **services**, per the module definition.
+
+> Note: In Proxygen’s actual codebase, `HTTPSessionAcceptor` is indeed located in `proxygen/lib/services/` (e.g., `HTTPSessionAcceptor.h` lives there), confirming this mapping.
+
+---
+
+### ✅ Response:
+
+The probability that this file belongs to module 'services' is 95%.  
+The probability that this file belongs to module 'http_general' is 4%.  
+All other modules have ≤1% probability.

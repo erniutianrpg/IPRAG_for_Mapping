@@ -1,0 +1,42 @@
+Let’s analyze the file content step by step to determine the most appropriate module.
+
+### 1. **File identity and purpose**
+- The file implements `HQConnector`, which is part of Proxygen’s HTTP/3 (HTTP over QUIC) stack.
+- `HQConnector` is responsible for initiating a QUIC connection (i.e., establishing the transport layer for an HTTP/3 session), including:
+  - Setting up QUIC transport (`QuicClientTransport::newClient`)
+  - Configuring Fizz (TLS 1.3 handshake via `FizzClientQuicHandshakeContext`)
+  - Managing socket options, event base, UDP socket, PSK cache, etc.
+  - Handling connection lifecycle (`connect`, `reset`, `timeElapsed`)
+
+This is clearly *not* about DNS resolution (`dns`), sampling (`sampling`), or general utilities (`general`). It's also not server-side infrastructure (`services`, `httpserver`) — this is client-side connection initiation.
+
+### 2. **Key includes reveal architecture layer**
+The includes show tight coupling with:
+- `proxygen/lib/http/HQConnector.h`, `HQSession.h`, `H3EarlyDataHandler.h` → HTTP/3-specific components
+- `quic/api/QuicSocket.h`, `quic/common/udpsocket/FollyQuicAsyncUDPSocket.h`, `quic/fizz/client/handshake/FizzClientQuicHandshakeContext.h` → low-level QUIC transport and TLS handshake
+- `quic/congestion_control/CongestionControllerFactory.h` → transport-layer congestion control
+- `folly/io/SocketOptionMap.h`, `FollyQuicEventBase.h` → transport/event integration
+
+This strongly indicates the code sits at the **transport layer**, specifically bridging HTTP/3 semantics with QUIC transport.
+
+### 3. **Compare with candidate modules**
+- `dns`: ❌ No DNS resolution logic; no `Resolver`, `DnsCache`, etc.
+- `sampling`: ❌ No sampling logic.
+- `ssl`: ❌ While it uses Fizz (TLS), it does *not* implement SSL/TLS context management or statistics — it consumes Fizz contexts but doesn’t own them. The module `ssl` would be more about `FizzServerContext`, certificate handling, stats, etc., not connection orchestration.
+- `general`: ❌ Not a utility; it's protocol-specific and deeply tied to QUIC + HTTP/3.
+- `http_general`: ⚠️ Partial overlap: `HQConnector` lives under `proxygen/lib/http/`, and handles HTTP/3 session setup. However, `http_general` is described as “HTTP protocol core layer: parsing, encoding/decoding, session management, transaction management”. But note: `HQConnector` is *not* doing parsing/encoding — it’s *initiating the underlying transport* before any HTTP framing occurs. Session management (`HQSession`) may be in `http_general`, but `HQConnector` is the *transport initiator*, not the session handler per se.
+- `transport`: ✅ Matches definition: “lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3… responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache.”
+
+Even though the header is in `proxygen/lib/http/`, the *functionality* is transport-oriented: it creates and configures the QUIC transport, sets up sockets, handshake context, PSK cache, etc. This aligns precisely with the `transport` module’s description.
+
+Also note: In Proxygen’s actual structure, `HQConnector` is often considered part of the HTTP/3 transport layer — it’s the bridge between HTTP session logic and the QUIC stack.
+
+### 4. **Reference examples guidance**
+Although no explicit reference examples are given in the prompt, the module descriptions are precise. The key phrase for `transport`:  
+> “responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache”  
+— exactly what `HQConnector::connect()` does.
+
+### Conclusion:
+The file implements the client-side QUIC connection establishment for HTTP/3, using QUIC APIs, Folly sockets, and Fizz handshake — squarely in the **transport** layer.
+
+**Assigned Module**: [transport]

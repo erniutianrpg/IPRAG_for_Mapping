@@ -1,0 +1,55 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `proxygen/lib/http/codec/HQStreamCodec.h` — core header for HTTP/3 (HQ = HTTP/3 over QUIC) stream codec.
+  - `folly/Format.h`, `ScopeGuard.h`, `io/Cursor.h` — Folly utilities (common, but not module-defining).
+  - `proxygen/lib/http/HTTP3ErrorCode.h`, `CodecUtil.h`, `HQUtils.h`, `compress/QPACKCodec.h` — all under `proxygen/lib/http/codec/` or related to HTTP/3 framing and header compression (QPACK).
+- Namespace: `proxygen::hq` — explicitly indicates **HTTP/3 (HQ)** layer.
+- Functions:
+  - All functions are methods of `HQStreamCodec`, implementing:
+    - Frame validation (`checkFrameAllowed`)
+    - Parsing of DATA, HEADERS, PUSH_PROMISE frames
+    - Header decoding callbacks (`onHeader`, `onHeadersComplete`, `onDecodeError`)
+    - Encoding/generation of headers, push promises, bodies, trailers, padding, EOM
+    - Integration with QPACK codec (`headerCodec_`, `qpackEncoderWriteBuf_`, etc.)
+- Constructor shows dependency on `QPACKCodec`, `IOBufQueue`s, `HTTPSettings`, and inheritance from `HQFramedCodec`.
+
+This is clearly a **stream-level codec** for HTTP/3 (HQ), handling:
+- Frame parsing/encoding per-stream,
+- Integration with QPACK header compression,
+- Compliance with HTTP/3 frame semantics (e.g., disallowing certain frames on client vs server side),
+- Interaction with higher-level callbacks (e.g., `callback_->onBody`).
+
+### 2. **Module Mapping Analysis**
+
+| Module | Relevance Assessment |
+|--------|----------------------|
+| **pools** | ❌ No relation. No backend pool config, no service discovery logic. |
+| **sampling** | ❌ Not involved in sampling; no sampling counters or logic. |
+| **ssl** | ❌ No SSL/TLS context, certs, handshake logic. This is application-layer (HTTP/3), not transport encryption. |
+| **general** | ⚠️ Partial: uses Folly utilities, but this is *not* generic utility code—it’s tightly coupled to HTTP/3 framing and semantics. `proxygen/lib/utils/` is not referenced. So low relevance. |
+| **http_general** | ✅✅ Strong match. This module is defined as: *"common HTTP implementation under proxygen/lib/http/", responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3.*<br>— `HQStreamCodec` lives in `proxygen/lib/http/codec/`, which is exactly where HTTP/3 codec logic resides.<br>— It implements core HTTP/3 frame parsing/encoding, integrates with QPACK, and follows HTTP/3 spec constraints (e.g., frame ordering, directionality).<br>— This is *not* transport (QUIC socket handling), but the *HTTP layer over QUIC*, i.e., the **HTTP/3 framing layer**, which falls under HTTP protocol implementation—not raw transport. |
+| **services** | ❌ No service execution, connection acceptance, worker threads. This is a low-level codec, not service infrastructure. |
+| **httpserver** | ❌ Not part of high-level server API (`proxygen/httpserver/`). This is internal codec logic used *by* servers, not the server wrapper itself. |
+| **transport** | ⚠️ Close, but **incorrect**. The `transport` module is defined as *"lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3"* — e.g., QUIC connection, datagram, token cache, socket I/O.<br>However, `HQStreamCodec` operates **above** the QUIC transport: it assumes a framed byte stream (via `Cursor`) and handles HTTP/3 *frames*, not packets or streams at the QUIC level. It depends on `HQFramedCodec`, which likely sits between QUIC transport and HTTP semantics.<br>Hence, this belongs to the **HTTP protocol layer**, not transport layer. |
+
+### 3. **Key Discriminators**
+- The presence of `HQStreamCodec`, `FrameType`, `QPACKCodec`, `HTTP3ErrorCode`, and frame parsing/encoding logic places this squarely in the **HTTP/3 protocol implementation**.
+- Proxygen’s architecture separates:
+  - `transport/`: QUIC stack, connection management, packetization.
+  - `http/codec/`: HTTP/2 and HTTP/3 framing, header compression, stream codecs.
+- The file is literally in `proxygen/lib/http/codec/` (implied by includes), and the module `http_general` explicitly covers “HTTP protocol parsing, encoding/decoding … such as HTTP/2 and HTTP/3”.
+
+### Conclusion
+The file is a core component of HTTP/3 framing and header/body encoding/decoding — a canonical part of the HTTP protocol layer in Proxygen.
+
+**Probability assignment:**
+- `http_general`: **95%** — definitive match per definition and location.
+- `transport`: 5% — superficial association due to HTTP/3/QUIC context, but architecturally incorrect layer.
+- All others: ≤2%.
+
+---
+
+"The probability that this file belongs to module 'http_general' is 95%."

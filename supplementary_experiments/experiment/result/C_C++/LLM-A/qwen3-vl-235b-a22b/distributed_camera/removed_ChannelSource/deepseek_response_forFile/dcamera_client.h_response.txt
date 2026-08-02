@@ -1,0 +1,76 @@
+Let’s analyze the provided file step by step to determine which module it belongs to.
+
+### 1. **File Overview**
+- Language: C/C++
+- Header guard: `OHOS_DCAMERA_CLIENT_H`
+- Namespace: `OHOS::DistributedHardware`
+- Class: `DCameraClient`, inherits from `ICameraOperator`
+- Includes many camera-related headers:
+  - `icamera_operator.h` → interface for camera operations
+  - `camera_info.h`, `camera_input.h`, `camera_manager.h`, `capture_session.h`, etc. → standard camera framework components (likely OHOS CameraStandard)
+  - `dcamera_photo_surface_listener.h`, `dcamera_video_surface_listener.h` → distributed camera-specific surface listeners
+- Functions include:
+  - Lifecycle: `Init()`, `UnInit()`
+  - Configuration: `UpdateSettings()`, `ConfigCaptureSession()`, `CreatePhotoOutput()`, `CreateVideoOutput()`
+  - Capture control: `StartCapture()`, `StopCapture()`, `StartPhotoOutput()`, `StartVideoOutput()`
+  - Callbacks: `SetStateCallback()`, `SetResultCallback()`
+- Member variables include:
+  - Camera framework objects (`CameraManager`, `CaptureSession`, `CaptureInput`, `CaptureOutput`s)
+  - Surface pointers (`photoSurface_`, `videoSurface_`)
+  - Listeners (`photoListener_`, `videoListener_`)
+  - State tracking (`isInit_`, `cameraId_`)
+
+This is clearly a **client-side** class that interacts with the local camera hardware (via OHOS CameraStandard) and manages capture sessions, outputs, and callbacks — but in the context of *distributed* camera (note `DCamera` prefix and `DistributedHardware` namespace).
+
+### 2. **Key Clues**
+- Inherits from `ICameraOperator`: This suggests it's an operator implementing camera control logic.
+- Uses `sptr<Surface>` and `DCameraPhotoSurfaceListener`/`DCameraVideoSurfaceListener`: These are used to receive frame data (e.g., preview/photo/video surfaces), typical of a **sink-side** component that captures and delivers frames.
+- The class name `DCameraClient` implies it's the client on the **controlled device** (i.e., the *sink* side), because:
+  - In distributed systems, the *controller* (source) connects to the *client* (sink).
+  - The sink side runs on the device with the physical camera and acts as a server to the controller — but from its own perspective, it's a *client* to the local camera service (i.e., it uses `CameraManager` to open cameras).
+  - However, in OHOS Distributed Camera architecture, `DCameraClient` is conventionally the **sink-side agent** that receives commands (e.g., via IPC/SoftBus) and drives the local camera.
+
+Let’s cross-check with candidate modules:
+
+#### ✅ **DistributedCameraSinkMgr**
+> *"responsible for lifecycle, access control, controller, data processing, image/video output, event notification, and IPC services on the sink side, namely the controlled side, enabling the controlled side to receive commands from the controller and use the local camera to provide image data to the controller."*
+
+- `DCameraClient` handles:
+  - Lifecycle (`Init`, `UnInit`)
+  - Capture session config & output creation (photo/video/preview)
+  - Surface setup and listeners (for delivering frames)
+  - Callback registration (state/result)
+- It does **not** directly handle IPC or SoftBus itself (those would be in `ChannelSink`), but it is the core logic that *uses* the camera framework on the sink side.
+- In OHOS codebase conventions, `DCameraClient` is typically part of the **Sink Manager** layer — it’s the main entry point for sink-side camera operations, coordinating between IPC commands (from `ChannelSink`) and the local camera service.
+
+#### ❌ DistributedCameraSourceMgr
+- This is for the *controller* side (source), where the app/user initiates capture. `DCameraClient` is not on that side — it doesn’t manage remote device discovery, command dispatch, or post-processing of received frames.
+
+#### ❌ ChannelSink / ChannelCommon
+- These handle communication (SoftBus, sessions, message routing). `DCameraClient` has no network/channel logic — it only deals with local camera operations and surface callbacks. So not this.
+
+#### ❌ CameraDataPreProcess / PostProcess
+- No explicit encoding/decoding, color conversion, frame rate control, or pipeline stages here. It creates outputs and starts capture, but doesn’t process frames beyond handing them to surfaces.
+
+#### ❌ VirtualCameraHdf
+- This is at the HDF/HDI driver level — virtual device implementation. `DCameraClient` is higher-level, using `CameraStandard` APIs, not HDF.
+
+#### ❌ utils
+- While it uses utilities (e.g., `std::shared_ptr`, `sptr`), it’s not a utility helper; it’s a core functional class with significant responsibility.
+
+#### ❌ CameraServiceCommon
+- Provides shared basic services (protocols, metadata, etc.), but `DCameraClient` is more concrete and operational — it implements actual capture flow.
+
+### 3. **Conclusion**
+The `DCameraClient` class is the central orchestrator on the **sink side** (controlled device) that:
+- Initializes and controls the local camera,
+- Manages capture sessions and outputs,
+- Sets up surfaces and listeners for photo/video,
+- Responds to high-level capture commands (presumably received via IPC from source),
+- And integrates with the OHOS CameraStandard framework.
+
+This matches **DistributedCameraSinkMgr** exactly — it’s the manager/core component on the sink side.
+
+---
+
+- **Assigned Module**: [DistributedCameraSinkMgr]

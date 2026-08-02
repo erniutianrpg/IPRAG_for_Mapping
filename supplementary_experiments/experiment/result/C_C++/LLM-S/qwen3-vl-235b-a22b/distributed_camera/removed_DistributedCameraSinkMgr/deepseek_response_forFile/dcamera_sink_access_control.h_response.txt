@@ -1,0 +1,124 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+### File Summary:
+- **File name / guard macro**: `OHOS_DCAMERA_SINK_ACCESS_CONTROL_H` → strongly indicates *sink-side* access control.
+- **Includes**: `"icamera_sink_access_control.h"` → interface for sink-side access control (i.e., controlled device side).
+- **Namespace**: `OHOS::DistributedHardware` → consistent with distributed camera framework.
+- **Class**: `DCameraSinkAccessControl`, inherits from `ICameraSinkAccessControl`.
+- **Functions**:
+  - `IsSensitiveSrcAccess(const std::string&)`: checks if a source type is sensitive (e.g., location, biometric).
+  - `NotifySensitiveSrc(const std::string&)`: notifies about sensitive sources (likely for privacy/consent).
+  - `TriggerFrame(const std::string& deviceName)`: triggers frame capture on a specific device — implies *control command execution* on the sink side.
+  - `GetAccessControlType(const std::string& accessType)`: maps access type strings to internal enums or policies.
+
+These functions are **policy enforcement and control logic**, not data transmission, preprocessing, or service abstraction. The class implements *access control decisions* on the **sink side** (i.e., the controlled device), especially around sensitive data (e.g., camera sources that may leak private info), and handles triggering frames — which aligns with responding to controller commands.
+
+Now evaluate each candidate:
+
+---
+
+#### ✅ **ChannelSink**
+- Responsible for *controlled-side channel implementation*: receives commands, sends image data.
+- But this file does **not** deal with SoftBus, sessions, or raw channel I/O — it deals with *access policy enforcement* and *triggering frame capture*, which is higher-level than channel transport.
+- However, access control is often tightly coupled with channel-sink logic (e.g., before allowing a frame trigger). Still, this class is more about *authorization* than *transport*.
+
+#### ✅ **CameraServiceCommon**
+- Provides shared basic service capabilities: basic commands, protocols, camera info, events, metadata, **controller interfaces**.
+- Access control could be part of common services — but note: the class is specifically `Sink`-oriented (`DCameraSinkAccessControl`), and the interface `ICameraSinkAccessControl` suggests it's sink-specific, not generic/common.
+- Also, `CameraServiceCommon` typically includes things like `CameraInfo`, `EventCallback`, `CommandHandler`, not fine-grained access policy logic.
+
+#### ✅ **utils**
+- General utilities: buffers, constants, error codes, local camera ops.
+- This class is not a utility; it’s a concrete policy-enforcement class with virtual methods — too domain-specific for `utils`.
+
+#### ✅ **VirtualCameraHdf**
+- HDF/HDI layer: virtual device, stream operator, metadata, IPC proxies.
+- This class is **not** at the HDF layer — no mention of `HDF`, `IRemoteObject`, `StreamOperator`, etc. It’s a C++ class in `DistributedHardware`, likely application/service layer.
+
+#### ✅ **CameraDataPreProcess**
+- Preprocessing pipeline on sink side: format conversion, scaling, etc.
+- This class does **not** process image data — it handles *access control* and *triggering*, not pixel/frame manipulation.
+
+#### ✅ **DistributedCameraSourceMgr**
+- Source-side (controller) lifecycle, state machine, input stream, IPC service.
+- This is clearly **sink-side** (class name, interface name), so mismatch.
+
+#### ✅ **ChannelSource**
+- Controller-side channel — irrelevant here.
+
+#### ✅ **CameraDataPostProcess**
+- Source-side post-processing — mismatch.
+
+#### ✅ **ChannelCommon**
+- SoftBus adaptation, session mgmt — again, no transport code here.
+
+---
+
+### Key Insight:
+The class `DCameraSinkAccessControl` implements the **sink-side access control policy**, particularly for:
+- Sensitive source detection (privacy),
+- Triggering frames (command execution),
+- Mapping access types (policy configuration).
+
+This fits best under a module that handles **sink-side service logic**, especially security/privacy enforcement *before* allowing camera operations.
+
+Looking again at the modules, none explicitly say “SinkAccessControl”, but:
+
+- **CameraServiceCommon** is described as providing *"shared basic service capabilities... including basic commands, protocols, camera information, channel information, events, Metadata settings, open-camera information, and controller interfaces."*
+
+However, the phrase *"controller interfaces"* suggests it's more source-oriented. Also, access control is often considered part of **service policy**, not transport.
+
+But wait — there is another clue: the interface `ICameraSinkAccessControl` suggests this is part of a **dedicated access control subsystem**, likely co-located with sink-side service logic.
+
+Given the naming (`DCameraSinkAccessControl`) and responsibilities (sensitive src check, frame trigger), this belongs most naturally to the **sink-side service layer**, which — in the absence of a dedicated “SinkService” module — is best captured by:
+
+> **CameraServiceCommon** — because it’s the only module that covers *basic service capabilities* on both sides, and access control is a *basic service* (especially for privacy compliance).
+
+However, let’s double-check: Is there any module more precise?
+
+Re-examining **ChannelSink**:  
+> *"responsible for the controlled-side channel implementation. It communicates with the controller through SoftBus, receives camera commands from the controller, and sends image information..."*
+
+If `TriggerFrame` is the method that actually executes the frame capture upon receiving a command, then the access control check (`IsSensitiveSrcAccess`, `NotifySensitiveSrc`) would be done *before* invoking the actual frame capture — i.e., inside the ChannelSink’s command handler.
+
+Thus, `DCameraSinkAccessControl` is likely a helper class used *by* `ChannelSink`, but its *purpose* is access control — a cross-cutting concern.
+
+In OHOS architecture, such policy classes are often placed in a **common service module** rather than buried in channel transport.
+
+Moreover, the header guard `OHOS_DCAMERA_SINK_ACCESS_CONTROL_H` and namespace `DistributedHardware` match the pattern used in `CameraServiceCommon` (e.g., `dcamera_service_common.h`, `DCameraService` classes in same namespace).
+
+Also, other modules like `VirtualCameraHdf` or `CameraDataPreProcess` are clearly lower-level (HDF, data pipeline), while this is high-level policy.
+
+### Final Assessment:
+- Strongest fit: **CameraServiceCommon** — because access control is a core service capability, especially for secure distributed camera usage, and this class is sink-specific but still part of the service layer, not transport or data processing.
+- Alternative: Could be a new module, but among candidates, `CameraServiceCommon` is most appropriate.
+
+Probability estimate:
+- CameraServiceCommon: **85%**
+- ChannelSink: 10% (uses it, but not where it lives)
+- Others: <5%
+
+But per instruction, we must pick one with %.
+
+Given the class is *named* `DCameraSinkAccessControl`, inherits a *sink-specific interface*, and resides in `DistributedHardware`, and no module is named “SinkAccessControl”, the closest official module covering sink-side service logic is **CameraServiceCommon**.
+
+However — wait! Let’s re-read the description of **CameraServiceCommon**:
+> *"provides shared basic service capabilities for the source and sink sides [...] including basic commands, protocols, camera information, channel information, events, Metadata settings, open-camera information, and controller interfaces."*
+
+“Basic commands” and “controller interfaces” — but this class is *not* a controller interface; it’s a sink-side policy enforcer.
+
+Another angle: In distributed systems, *access control* is often part of the **service layer**, and in OHOS DCamera, there is evidence that `CameraServiceCommon` contains classes like `DCameraSinkManager`, `DCameraSourceManager`, and policy helpers.
+
+Given all, I conclude:
+
+**The probability that this file belongs to module 'CameraServiceCommon' is 85%.**
+
+But let’s consider: Is there a chance it's part of **utils**? Unlikely — utils are stateless helpers, not polymorphic classes with virtual methods.
+
+Alternatively, could it be its own module? Not among candidates.
+
+One last check: The function `TriggerFrame` returns `int32_t`, while others return `bool` — suggests it may interact with underlying camera service (e.g., calling into HDF or camera service). That reinforces it being part of the *service* layer.
+
+✅ Final decision:
+
+"The probability that this file belongs to module 'CameraServiceCommon' is 85%."

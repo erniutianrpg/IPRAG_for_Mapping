@@ -1,0 +1,77 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Path & Includes**
+- Includes:
+  - `proxygen/lib/http/experimental/RFC1867.h`
+  - `proxygen/lib/utils/Logging.h`
+
+The primary include is from `proxygen/lib/http/experimental/`, specifically **RFC1867**, which refers to the *multipart/form-data* parsing standard (HTTP POST form uploads).  
+`Logging.h` is a utility header under `utils/`, but that’s secondary — the core logic is HTTP protocol-specific.
+
+This strongly suggests the file is part of the **HTTP protocol implementation**, not transport, DNS, SSL, or high-level server APIs.
+
+---
+
+### **2. Namespace & Types**
+- Namespace: `proxygen`
+- Type: `enum class BoundaryResult` (local), and references to `RFC1867Codec`, `ParserState`, `HTTPMessage`, `HTTPCodec::StreamID`, `IOBuf`, etc.
+
+Key observations:
+- `RFC1867Codec` is a codec for parsing multipart MIME boundaries — a *protocol-level* parser.
+- Uses `HTTPCodec::StreamID`, `HTTPMessage`, and interacts with `callback_->onError()` — this aligns with Proxygen’s **HTTP codec layer**, where incoming bytes are parsed into structured HTTP messages.
+- The logic involves parsing raw byte streams (`IOBuf`) for boundary detection, headers, CRLF handling — classic HTTP message framing/parsing.
+
+This is not:
+- A transport-layer concern (no QUIC, socket, or connection setup).
+- Not SSL (no TLS context, certificates, handshake logic).
+- Not DNS (no name resolution, DNS queries).
+- Not services or httpserver (no connection acceptance, request routing, handler registration).
+- Not sampling (no sampling rate, probability, counters).
+
+---
+
+### **3. Functionality Summary**
+The excerpt shows:
+- A helper function `isBoundary()` to detect multipart boundaries across fragmented `IOBuf` chains.
+- `RFC1867Codec::onIngress()` — processes incoming data stream for multipart form-data parsing.
+- State machine (`ParserState::START`, `HEADERS_START`, etc.) for incremental parsing.
+- Uses `input_.append()`, `trimStart()`, `Cursor`, etc. — all low-level byte-stream processing.
+- Calls `callback_->onError()` — typical of Proxygen’s codec callback pattern.
+
+This is clearly an **HTTP message decoder** for a specific content-type (`multipart/form-data`), implemented as part of the HTTP codec infrastructure.
+
+Proxygen’s architecture separates:
+- `http_general`: core HTTP parsing/encoding (including codecs like `HTTPCodec`, `HTTPUpstreamCodec`, and experimental parsers like `RFC1867Codec`)
+- `services`/`httpserver`: higher-level server logic built on top
+- `transport`: underlying I/O (e.g., `AsyncSocket`, `QuicTransport`)
+
+Since `RFC1867.h` lives under `proxygen/lib/http/experimental/`, and the code implements a *codec* that integrates with `HTTPCodec` and processes raw ingress data into structured HTTP semantics (headers, body parts), it belongs squarely in the **HTTP protocol core layer**.
+
+---
+
+### **4. Module Comparison**
+| Module | Relevance |
+|--------|-----------|
+| **dns** | ❌ No DNS logic |
+| **sampling** | ❌ No sampling logic |
+| **ssl** | ❌ No TLS/crypto |
+| **general** | ⚠️ Uses `Logging.h` (a general utility), but core logic is HTTP-specific, not generic utility. Too narrow to be "general". |
+| **http_general** | ✅ Direct match: `lib/http/`, codec implementation, experimental RFC1867 parser, integrates with HTTP message/codec abstractions. |
+| **services** | ❌ No service lifecycle, connection management, or handler dispatch. |
+| **httpserver** | ❌ Not high-level server API; no `RequestHandler`, `Server`, etc. |
+| **transport** | ❌ No transport abstraction (QUIC, socket, buffer management beyond IOBuf usage). |
+
+Note: While `IOBuf` and `Logging` come from `utils/`, the *purpose* and *placement* of this file (in `http/experimental/`) and its role (parsing HTTP multipart bodies) make it part of the **HTTP protocol implementation**, i.e., `http_general`.
+
+---
+
+### ✅ Final Determination
+
+The probability that this file belongs to module **http_general** is **95%**.
+
+(Remaining 5% uncertainty due to it being *experimental* — but even experimental HTTP parsers still belong to the HTTP core layer, not other modules.)
+
+> **Answer**:  
+"The probability that this file belongs to module 'http_general' is 95%."

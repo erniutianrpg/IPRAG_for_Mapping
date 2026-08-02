@@ -1,0 +1,78 @@
+Let’s analyze the file content step by step to determine which module it belongs to.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes many `dcamera_*` headers, especially:
+  - `dcamera_client.h`
+  - Callback headers: `dcamera_input_callback.h`, `dcamera_manager_callback.h`, `dcamera_photo_callback.h`, `dcamera_session_callback.h`, `dcamera_video_callback.h`
+  - Utility headers: `dcamera_utils_tools.h`, `metadata_utils.h`, `distributed_camera_constants.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h`
+- Namespaces: `OHOS::DistributedHardware`
+- Core class: `DCameraClient`
+- Functions include:
+  - Lifecycle: `Init()`, `UnInit()`
+  - Configuration: `UpdateSettings()`, `ConfigCaptureSession()`, `CreateCaptureOutput()`, `CreatePhotoOutput()`, `CreateVideoOutput()`
+  - Capture control: `StartCapture()`, `StopCapture()`, `StartPhotoOutput()`, `StartVideoOutput()`
+  - Callback registration: `SetStateCallback()`, `SetResultCallback()`
+
+The excerpt shows that `DCameraClient`:
+- Constructs with a `dhId` (distributed hardware ID)
+- Uses `CameraStandard::CameraManager` (i.e., interacts with local camera framework)
+- Retrieves and selects a local camera via `GetCameras()` and matches `cameraId_`
+- Sets callbacks (`DCameraManagerCallback`)
+- Calls into camera input interface (`cameraInput_->SetCameraSettings(...)`)
+- Manages lifecycle and capture sessions
+
+This is clearly a **client-side** component that *controls* a local camera (on the device where the app runs), likely acting as the **controller side** (source) in a distributed camera scenario — i.e., it’s the part that initiates preview/capture/video on a *remote* or *local* camera (but here it's using local camera APIs directly).
+
+### 2. **Compare with Candidate Modules**
+
+#### ✅ **DistributedCameraSourceMgr**
+> *"responsible for lifecycle, state machine, controller, input stream, data processing, IPC service, and callback management on the source side, namely the controller side, enabling the controller to invoke distributed camera capabilities and use the controlled device's camera..."*
+
+- `DCameraClient` is the **controller-side client**, managing:
+  - Lifecycle (`Init`, `UnInit`)
+  - State & result callbacks
+  - Capture session configuration and start/stop
+  - Interaction with local camera manager → implies it's orchestrating camera usage on behalf of a remote controller (or itself as controller)
+- It does **not** handle IPC directly (no SoftBus/session code visible), but it’s the high-level client that would *use* IPC services (e.g., via `ChannelCommon`/`ChannelSink`) to talk to remote devices.
+- The naming `DCameraClient` strongly suggests it’s the client-facing API on the **source/controller side**.
+
+#### ❌ DistributedCameraSinkMgr
+- This is for the *controlled* side (sink), receiving commands and producing data.
+- Our file is initiating capture, configuring settings, using `CameraManager::GetInstance()` — this is **not sink behavior**.
+
+#### ❌ ChannelCommon / ChannelSink
+- No channel/session/SoftBus logic in the excerpt — only camera framework interaction.
+- Includes no `SoftBus`, `ISession`, or `Channel` types.
+
+#### ❌ CameraDataProcessCommon / PreProcess / PostProcess
+- No codec, frame-rate control, color space conversion, or pipeline stages shown.
+- Focus is on control and setup, not data transformation.
+
+#### ❌ CameraServiceCommon
+> *"shared basic service capabilities... including basic commands, protocols, camera info, channel info, events, Metadata settings, open-camera info, and controller interfaces."*
+
+- While `DCameraClient` uses metadata and camera info, it’s a concrete *client implementation*, not a shared service abstraction.
+- `CameraServiceCommon` would likely be lower-level utilities or interfaces; this is an active client object.
+
+#### ❌ VirtualCameraHdf
+- No HDF/HDI layer terms (`IHdfDevice`, `StreamOperator`, `Provider`, etc.) present.
+- Uses `CameraStandard::CameraManager`, which is standard OHOS camera API, not virtual device driver layer.
+
+#### ❌ utils
+> *"common distributed camera utilities... including local camera query, open, close, stream acquisition, and preview/photo/video callback handling."*
+
+- This is tempting because it includes callback handling and utility headers.
+- However, `DCameraClient` is a full-fledged class with lifecycle, state, and orchestration logic — not just utilities.
+- The `utils` module is likely for helper functions/macros/buffers, not a core client class like this.
+
+### 3. **Key Evidence**
+- Constructor takes `dhId`, extracts `cameraId_` — suggests it's binding to a specific distributed hardware ID (e.g., a remote camera).
+- Uses `CameraStandard::CameraManager` — indicates it’s driving a *local* camera instance, possibly representing a remote one (i.e., source side proxying).
+- Functions like `StartCapture()`, `ConfigCaptureSession()`, `CreatePhotoOutput()` match exactly what a **source/controller** would do.
+- Callbacks registered (`DCameraManagerCallback`, etc.) are for monitoring camera state/events — typical for controller-side supervision.
+
+This aligns precisely with **DistributedCameraSourceMgr**, which is defined as the module handling the *controller side* lifecycle, state, input stream, and callback management.
+
+### Final Decision:
+**Assigned Module**: [DistributedCameraSourceMgr]

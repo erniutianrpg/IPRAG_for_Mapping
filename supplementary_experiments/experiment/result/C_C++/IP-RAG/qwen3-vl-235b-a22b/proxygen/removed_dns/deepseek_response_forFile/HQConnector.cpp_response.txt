@@ -1,0 +1,64 @@
+Let’s analyze the file `proxygen/lib/http/HQConnector.cpp` step by step:
+
+### 1. **File Path and Context**
+- Path: `proxygen/lib/http/HQConnector.cpp`
+- Belongs to the `http/` subdirectory under `proxygen/lib/`, which — per the candidate module definitions — strongly suggests association with **`http_general`**, *unless* it deals specifically with transport-layer concerns (e.g., QUIC sockets, handshake setup, etc.), in which case **`transport`** may be more appropriate.
+
+### 2. **Key Dependencies (Includes)**
+The includes reveal critical context:
+- `proxygen/lib/http/HQConnector.h` → interface for this class
+- `proxygen/lib/http/session/HQSession.h` → session-level HTTP/3 (HQ = HTTP/3 over QUIC) session management
+- `proxygen/lib/http/codec/H3EarlyDataHandler.h` → HTTP/3 codec/early data handling (protocol layer)
+- `quic/api/QuicSocket.h`, `quic/common/udpsocket/FollyQuicAsyncUDPSocket.h`, `quic/fizz/client/handshake/FizzClientQuicHandshakeContext.h` → low-level QUIC transport and TLS handshake setup
+- `folly/io/SocketOptionMap.h`, `FollyQuicEventBase.h`, etc. → Folly-based event-driven I/O infrastructure
+
+This mix shows that `HQConnector` bridges:
+- **HTTP-level concerns**: it's part of the HTTP stack (`proxygen/lib/http/`) and manages `HQSession`, which is an HTTP/3 session.
+- **Transport-level concerns**: it directly constructs and configures QUIC clients (`QuicClientTransport::newClient`), sets up UDP sockets, Fizz handshake contexts, PSK caches, etc.
+
+But crucially:  
+→ It does **not** implement QUIC transport itself (that’s in `quic/`).  
+→ It does **not** handle server-side connection acceptance or service dispatch (so not `services` or `httpserver`).  
+→ It is **client-side** connector logic — responsible for initiating an HTTP/3 (HQ) connection.
+
+### 3. **Functionality Summary**
+From the code excerpt and function signatures:
+- `HQConnector::connect(...)` creates a QUIC client transport, configures Fizz handshake, sets hostname/SNI, attaches callbacks.
+- It manages lifecycle: `reset()`, `timeElapsed()`, holds `session_` (an `HQSession`).
+- It accepts high-level parameters like `transactionTimeout`, `useConnectionEndWithErrorCallback`, and passes them down.
+- It uses `HQSession` (from `proxygen/lib/http/session/`) — indicating tight integration with HTTP session abstraction.
+
+So `HQConnector` is a **client-side HTTP/3 connection initiator**, sitting at the boundary between:
+- HTTP session management (`http_general`)
+- QUIC transport setup (`transport`)
+
+### 4. **Module Definition Comparison**
+
+Let’s evaluate each candidate:
+
+- **`pools`**: ❌ No backend pool logic, no service discovery.
+- **`sampling`**: ❌ No sampling logic.
+- **`ssl`**: ❌ While it uses Fizz/TLS contexts, it doesn’t manage SSL stats or contexts as a standalone module — just consumes them.
+- **`general`**: ❌ This is for `lib/utils/` and generic helpers — not protocol-specific HTTP/3 connectors.
+- **`http_general`**: ✅ Defined as “common HTTP implementation under `proxygen/lib/http/`”, responsible for “HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3”.  
+   - `HQConnector` lives under `lib/http/`, creates `HQSession`, handles HTTP/3 connection setup — fits this definition well.
+- **`services`**: ❌ Server-side only; this is client-side connector.
+- **`httpserver`**: ❌ High-level server API wrapper — this is not in `httpserver/`.
+- **`transport`**: ⚠️ Defined as “lower-level transport capabilities under `proxygen/lib/transport/`, especially transport support related to QUIC / HTTP/3”.  
+   - However, note: `HQConnector.cpp` is **not** under `lib/transport/`. It’s under `lib/http/`.  
+   - Also, `transport` module is described as handling “QUIC transport, HTTP/3 datagram/socket, and token/PSK cache” — but those are implemented in `quic/`, and `HQConnector` *uses* them, not implements them.
+   - The key distinction: `transport` module would contain abstractions *below* HTTP (e.g., `HQTransport`, `QuicPacketizer`, etc.), whereas `HQConnector` is an HTTP-layer component that orchestrates transport usage.
+
+### 5. **Reference Example Guidance**
+Although no explicit examples are given, the module definitions emphasize directory structure and responsibility:
+- `http_general` → `proxygen/lib/http/`
+- `transport` → `proxygen/lib/transport/`
+
+Since `HQConnector.cpp` resides in `proxygen/lib/http/`, and its role is to connect an HTTP/3 session (i.e., part of the HTTP protocol stack’s client-side connection establishment), it belongs to **`http_general`**.
+
+This aligns with how Proxygen structures its layers:
+- `lib/http/` contains HTTP/1, HTTP/2, and HTTP/3 session/connection logic.
+- `HQConnector` is the HTTP/3 analog of `HTTPConnector` (for HTTP/1.1) or `H2Connector`, all of which belong to `http_general`.
+
+### ✅ Final Decision:
+**Assigned Module**: [http_general]

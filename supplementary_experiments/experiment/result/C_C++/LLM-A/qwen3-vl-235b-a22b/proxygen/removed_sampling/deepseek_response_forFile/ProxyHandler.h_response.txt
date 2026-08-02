@@ -1,0 +1,72 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `"SessionWrapper.h"` (custom, likely internal)
+  - `folly/Memory.h`, `folly/io/async/AsyncSocket.h`, `folly/io/async/DelayedDestruction.h` → Folly async I/O utilities
+  - `proxygen/httpserver/RequestHandler.h` → **high-level HTTP server interface**
+  - `proxygen/lib/http/HTTPConnector.h` → low-to-mid-level HTTP client-side connection handling (used for upstream proxying)
+
+- Namespaces: `ProxyService`, `proxygen`
+- Types:
+  - `ResponseHandler` (forward-declared)
+  - `ProxyStats`
+  - `ProxyHandler` — inherits from:
+    - `proxygen::RequestHandler` (**key**: this is from `httpserver/`)
+    - `folly::DelayedDestruction`
+    - `proxygen::HTTPConnector::Callback`
+    - `folly::AsyncSocket::ConnectCallback`
+    - `folly::AsyncReader::ReadCallback`
+    - `folly::AsyncWriter::WriteCallback`
+  - `ServerTransactionHandler` — inner class implementing `proxygen::HTTPTransactionHandler`
+
+- Functions include:
+  - Constructor with `ProxyStats*`, `folly::HHWheelTimer*`
+  - Callbacks for HTTP request lifecycle (`onRequest`, `onBody`, `onEOM`, etc.)
+  - Callbacks for upstream connection (`connectSuccess`, `connectError`)
+  - Server-side transaction callbacks (`onServerHeadersComplete`, etc.)
+
+This strongly suggests a **reverse proxy handler** that:
+- Accepts an incoming HTTP request via `proxygen::RequestHandler` (i.e., part of an HTTP server),
+- Establishes an upstream HTTP connection using `HTTPConnector`,
+- Relays request/response between client and upstream server,
+- Manages transaction state and lifecycle.
+
+### 2. **Mapping to Candidate Modules**
+
+Let’s evaluate each candidate:
+
+#### ✅ `httpserver`
+- Definition: *“wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers… high-level HTTP server framework.”*
+- Key indicator: Inheritance from `proxygen::RequestHandler`, which lives in `proxygen/httpserver/RequestHandler.h`.
+- The class `ProxyHandler` is clearly a concrete implementation of a request handler for an HTTP server — i.e., it's part of the *server-side application logic*, not core protocol or transport.
+- Even though it uses `HTTPConnector` (from `lib/http/`) for upstream proxying, its primary role is as a **request handler in an HTTP server**, which aligns with `httpserver`.
+
+#### ❌ `services`
+- Definition: *“connection management and server-side related code… service execution, connection acceptance, worker threads…”*
+- This is more about infrastructure (e.g., `HTTPServer`, `Worker`, `AcceptCallback`), not per-request handlers like `ProxyHandler`.
+- `ProxyHandler` is not managing connections at the server level; it’s handling one request and orchestrating an upstream connection — more application-layer than service infrastructure.
+
+#### ❌ `http_general`
+- Definition: *“common HTTP implementation under proxygen/lib/http/… HTTP protocol parsing, encoding/decoding, session/transaction management”*
+- While `HTTPConnector` and `HTTPTransactionHandler` are from `lib/http/`, the file does **not** implement protocol parsing or core transaction/session logic — it *uses* those abstractions.
+- The class is not part of `lib/http/`; it’s using `httpserver/RequestHandler` as base, indicating higher-level usage.
+
+#### ❌ `pools`, `dns`, `ssl`, `transport`
+- No DNS resolution logic → not `dns`.
+- No pool configuration or backend list management → not `pools`.
+- No SSL context creation, certificate handling, or TLS stats → not `ssl`.
+- No QUIC, HTTP/3, datagrams, or transport sockets → not `transport`.
+
+### 3. **Reference Examples (Implied Reasoning)**
+Although no explicit reference examples were given in the prompt, the naming and structure match known Proxygen patterns:
+- Classes inheriting `RequestHandler` (e.g., in `examples/` or custom services) belong to the `httpserver` module.
+- `HTTPConnector` is used *by* request handlers to make outbound requests — but the handler itself resides in the `httpserver` layer.
+
+### ✅ Conclusion
+The file implements a proxy request handler that plugs into Proxygen’s HTTP server framework via `RequestHandler`. It is **not** core protocol (`http_general`), nor infrastructure (`services`), nor transport (`transport`). Its location and role align best with the **`httpserver`** module.
+
+---
+
+**Assigned Module**: [httpserver]

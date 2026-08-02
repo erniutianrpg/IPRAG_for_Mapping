@@ -1,0 +1,77 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **File path (implied)**: `proxygen/lib/http/HQConnector.h` (included in `#include <proxygen/lib/http/HQConnector.h>`)
+- **Class name**: `HQConnector`
+  - “HQ” stands for **HTTP/3 over QUIC** (i.e., HTTP over QUIC), as seen from usage of `quic::QuicClientTransport`, `FizzClientQuicHandshakeContext`, `FollyQuicAsyncUDPSocket`, etc.
+- **Key responsibilities**:
+  - Manages connection setup for HTTP/3 (QUIC-based) clients.
+  - Orchestrates creation of QUIC transport (`QuicClientTransport`), handshake context (`FizzClientQuicHandshakeContext`), UDP socket, event base, PSK cache, etc.
+  - Integrates with Proxygen’s HTTP session layer (`HQSession`), but does *not* implement HTTP semantics directly — rather, it sets up the underlying transport and handshake for an HTTP/3 connection.
+  - Uses `fizz::client` for TLS 1.3 handshake over QUIC.
+  - No DNS resolution logic (no `dns` includes or functions).
+  - Not a server-side module (no listening sockets, no service handling).
+  - Not generic utilities (e.g., no string helpers, timers, etc. beyond what’s needed for connection lifecycle).
+
+---
+
+### **2. Include Analysis**
+Includes reveal strong coupling to:
+- `proxygen/lib/http/HQConnector.h`, `HQSession.h`, `H3EarlyDataHandler.h` → HTTP/3-specific session/connector logic (**HTTP layer**, but tightly coupled to transport).
+- `quic/api/QuicSocket.h`, `quic/common/udpsocket/FollyQuicAsyncUDPSocket.h`, `quic/fizz/client/handshake/FizzClientQuicHandshakeContext.h` → **QUIC transport layer**.
+- `folly/io/SocketOptionMap.h`, `FollyQuicEventBase.h` → Folly I/O infrastructure, used by transport.
+- `CongestionControllerFactory.h` → QUIC congestion control (transport-level).
+- **No includes from `dns`, `pools`, `services`, `httpserver`, or generic utils like `proxygen/lib/utils/`.**
+
+This strongly suggests the file is part of the **HTTP/3 transport stack**, not core HTTP parsing, server infrastructure, or generic utilities.
+
+---
+
+### **3. Functionality Mapping**
+| Function | Responsibility | Module relevance |
+|---------|----------------|------------------|
+| `HQConnector::connect(...)` | Sets up QUIC client transport, handshake, socket, event base, PSK cache, hostname, etc. | Core transport setup for HTTP/3 — bridges HTTP session and QUIC transport |
+| `setTransportSettings`, `setQuicPskCache` | Configures QUIC transport parameters & PSK cache | Transport-layer configuration |
+| `reset()`, `timeElapsed()` | Connection lifecycle management | Ancillary to transport/session coordination |
+
+Note: While `HQSession` is in `proxygen/lib/http/`, `HQConnector` is specifically responsible for *establishing the QUIC transport* that `HQSession` will use — i.e., it's the **glue between HTTP session and QUIC transport**.
+
+In Proxygen’s architecture:
+- `http_general` covers HTTP/1, HTTP/2, HTTP/3 *session*, *codec*, *transaction* logic.
+- But **HTTP/3 transport (QUIC)** is intentionally separated into a dedicated transport layer — especially because QUIC is not just a transport for HTTP, but a full-stack protocol with its own socket, congestion control, handshake, etc.
+
+The presence of:
+- `quic/` headers (not under `proxygen/`)
+- `FizzClientQuicHandshakeContext`
+- `FollyQuicAsyncUDPSocket`
+- `QuicClientTransport`
+
+… indicates this is **not pure HTTP logic**, but rather **HTTP-over-QUIC transport orchestration**.
+
+---
+
+### **4. Candidate Module Evaluation**
+
+| Module | Fit Reasoning | Likelihood |
+|--------|---------------|------------|
+| **dns** | No DNS-related code or includes. ❌ | ~0% |
+| **pools** | No backend pool, server list, or load-balancing logic. ❌ | ~0% |
+| **ssl** | Uses Fizz (TLS), but only as part of QUIC handshake; no SSL context management, stats, or standalone TLS logic. Not the focus. ⚠️ | ~10% |
+| **general** | Not in `utils/`, no generic helpers. Focus is highly specialized. ❌ | ~5% |
+| **http_general** | Includes `HQSession.h`, `H3EarlyDataHandler.h`, and lives under `proxygen/lib/http/`. But `HQConnector` is *not* doing HTTP parsing/encoding — it’s setting up the QUIC transport *for* HTTP/3. In Proxygen, HTTP/3 transport is often considered distinct from core HTTP logic. ⚠️ | ~30% |
+| **services** | Server-side infrastructure (e.g., `Service`, `RequestHandler`). This is a *client-side connector*. ❌ | ~0% |
+| **httpserver** | High-level server APIs (e.g., `HTTPServer`, `ResponseHandler`). This is client-side and low-level. ❌ | ~0% |
+| **transport** | ✅ Directly uses QUIC transport APIs (`QuicClientTransport`, `FollyQuicAsyncUDPSocket`, `CongestionController`, `FizzClientQuicHandshakeContext`). Purpose is to *establish and manage the QUIC transport layer for HTTP/3*. The module description says: *"transport support related to QUIC / HTTP/3... responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache."* This matches *exactly*. | **~95%** |
+
+> Note: Although the header is under `proxygen/lib/http/`, the *role* of `HQConnector` is transport orchestration. In practice, Proxygen separates HTTP/3 transport concerns into a de facto "transport" layer even if physically located under `/http/`. The inclusion of deep QUIC internals confirms this.
+
+---
+
+### **Conclusion**
+The file implements a client-side connector that sets up QUIC transport for HTTP/3, integrating Folly, QUIC, and Fizz — squarely fitting the **transport** module definition.
+
+**Final answer:**
+
+"The probability that this file belongs to module 'transport' is 95%."

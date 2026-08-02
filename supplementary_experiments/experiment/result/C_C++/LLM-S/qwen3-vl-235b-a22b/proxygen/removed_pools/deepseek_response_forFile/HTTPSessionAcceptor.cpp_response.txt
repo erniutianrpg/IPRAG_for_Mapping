@@ -1,0 +1,66 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Location & Includes**
+- Includes:
+  - `proxygen/lib/http/session/HTTPSessionAcceptor.h`
+  - `proxygen/lib/http/session/HTTPDefaultSessionCodecFactory.h`
+- This strongly suggests the file is part of the **HTTP session layer**, specifically handling connection acceptance and session creation for HTTP traffic.
+- The namespace is `proxygen`, consistent with core Proxygen code.
+
+### 2. **Key Types & Functions**
+- Class: `HTTPSessionAcceptor`
+  - Inherits from `HTTPAcceptor` (implied by constructor initialization list).
+  - Manages creation of `HTTPDownstreamSession`.
+  - Uses `HTTPCodecFactory`, `HTTPDefaultSessionCodecFactory`, `HTTPCodec`, `HTTPErrorPage`, etc.
+  - Implements `onNewConnection`, which is a transport-level callback (from `wangle::Acceptor` or similar), but *specialized for HTTP* — it creates codecs, sets up sessions, handles protocol negotiation (`nextProtocol`), and configures settings (e.g., `ENABLE_CONNECT_PROTOCOL`).
+- It uses:
+  - `folly::AsyncTransport::UniquePtr` → low-level transport abstraction.
+  - `wangle::SecureTransportType`, `wangle::TransportInfo` → Wangle (Facebook’s networking library) integration.
+  - `SocketAddress`, `SimpleController`, `TransactionTimeoutSet` → session/state management.
+
+This is **not**:
+- DNS resolution → no DNS-related types/functions (`DnsResolver`, `DNSQuestion`, etc.) → ❌ `dns`
+- Sampling logic → no sampling counters, probability thresholds, etc. → ❌ `sampling`
+- SSL/TLS context/stats → while it handles secure transport type, it does *not* manage SSL contexts, certificates, or handshake logic directly; that’s delegated to lower layers (e.g., `wangle::SSLContext`). No `SSL_CTX`, `TLSHandshake`, etc. → ❌ `ssl`
+- General utilities → this is not in `utils/`, and it’s not generic (e.g., no `ScopedGuard`, `TimerUtil`, `StringPrintf`, etc.) → ❌ `general`
+- Transport/QUIC layer → no QUIC-specific types (`QuicSocket`, `QuicPacketBuilder`, `Http3`, `DatagramTransport`, etc.). Uses standard `AsyncTransport`, not QUIC transports. → ❌ `transport`
+
+### 3. **Module Candidates Remaining**
+- ✅ `http_general`:  
+  - Defined as: *“common HTTP implementation under proxygen/lib/http/... responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3.”*
+  - `HTTPSessionAcceptor` lives in `proxygen/lib/http/session/`, which is exactly where HTTP session infrastructure resides.
+  - It manages codec factories, session creation, error pages, protocol negotiation — all core HTTP session lifecycle logic.
+  - This is *not* high-level server API (that’s `httpserver`), nor service orchestration (`services`).
+
+- ⚠️ `services`:  
+  - Defined as: *“connection management and server-side related code… service execution, connection acceptance, worker threads, service configuration.”*
+  - While `HTTPSessionAcceptor` *does* handle connection acceptance, in Proxygen’s architecture, `services/` typically contains higher-level constructs like `ServiceHandler`, `Server`, `Worker`, `ConnectionManager`, etc., often built *on top of* `HTTPSessionAcceptor`.
+  - `HTTPSessionAcceptor` is more foundational — it's used *by* services, not part of the service orchestration layer itself.
+  - The file does **not** include headers like `proxygen/lib/services/`, nor use `Service`, `RequestHandler`, `Worker`, etc.
+
+- ⚠️ `httpserver`:  
+  - Defined as: *“high-level APIs for building simple C++ HTTP servers… wraps proxygen/lib/”*
+  - Files under `proxygen/httpserver/` are usually user-facing (e.g., `HTTPServer.h`, `ResponseHandler`, `RequestHandler` interface).
+  - This file is clearly internal implementation, not a public API wrapper.
+
+### 4. **Conclusion**
+The file implements `HTTPSessionAcceptor`, which is a core component of the HTTP session layer in `proxygen/lib/http/session/`. It handles:
+- Codec factory selection
+- Session instantiation (`HTTPDownstreamSession`)
+- Protocol negotiation (`nextProtocol`)
+- Error page handling
+- Integration with transport and controller
+
+This fits **exactly** the definition of `http_general`: the HTTP protocol core layer, including session management and codec handling.
+
+> Note: In Proxygen’s actual source tree, `HTTPSessionAcceptor.cpp` resides in `proxygen/lib/http/session/`, which is grouped under the broader `http/` module — i.e., `http_general`.
+
+---
+
+**Final Assessment:**
+
+- `http_general`: ✅ Strong match — location, responsibilities, dependencies.
+- `services`: Low match — this is *used by* services, but not part of them.
+- All others: Clearly mismatched.
+
+"The probability that this file belongs to module 'http_general' is 95%."

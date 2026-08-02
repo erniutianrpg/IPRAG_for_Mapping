@@ -1,0 +1,87 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+services\cameraservice\sourceservice\include\distributedcameramgr\dcamerainterface\icamera_source_data_process.h
+```
+- Located under `sourceservice` → indicates **source side** (controller side).
+- Subdirectory `dcamerainterface` suggests this is an **interface definition**, not implementation.
+- Filename: `icamera_source_data_process.h` — clearly denotes an **interface for source-side data processing**.
+
+### 2. **Content Summary**
+- Defines two types:
+  - `DCameraStreamConfig`: a simple config struct for stream parameters (width, height, format, etc.), used for configuring streams.
+  - `ICameraSourceDataProcess`: a pure virtual interface with methods for:
+    - `FeedStream(...)`: feeding data buffers (i.e., receiving encoded/processed frames from sink side? Or pushing local frames? But note: *source* side typically *receives* data from sink and processes it for app consumption — see below).
+    - `ConfigStreams(...)`, `ReleaseStreams(...)`: stream lifecycle management.
+    - `StartCapture(...)`, `StopCapture()`: capture control.
+    - `GetAllStreamIds(...)`: query stream IDs.
+
+Crucially, the interface is named `ICameraSourceDataProcess`, and resides in the **source service**. The methods suggest it's the **source-side component that orchestrates data flow into the controller application** — i.e., it receives or manages the data pipeline *on the source side*, likely after transmission from sink.
+
+But let’s cross-check semantics:
+
+- In distributed camera architecture:
+  - **Source side (controller)**: initiates requests, receives video/photo data, displays preview, saves media.
+  - **Sink side (controlled)**: runs on remote device, opens camera, captures frames, encodes, sends over channel.
+
+Thus, `ICameraSourceDataProcess` is likely the interface that the **source-side data processing pipeline implements**, to handle incoming data (e.g., decode, post-process, frame-rate adjust, convert format) before handing to upper layers (e.g., CameraClient).
+
+Key method: `FeedStream(std::vector<std::shared_ptr<DataBuffer>>& buffers)`  
+→ This implies *receiving* buffers (likely from network/channel), which aligns with **post-processing on source side**.
+
+Also, `StartCapture()` / `StopCapture()` are high-level controls — but note: on source side, these may trigger commands to sink, *or* manage local capture state if source also has local camera (but here context is distributed, so likely coordinating remote capture).
+
+However, the interface itself is **abstract**, defining what a source-side data processor must implement — not the actual processing logic.
+
+### 3. **Compare with Candidate Modules**
+
+Let’s evaluate each candidate:
+
+- **DistributedCameraSourceMgr**:  
+  Described as responsible for *lifecycle, state machine, controller, input stream, data processing, IPC service, callback management on the source side*.  
+  → This is a **manager** module, likely higher-level than an interface. It would *use* `ICameraSourceDataProcess`, not be the interface itself. So not the best fit.
+
+- **DistributedCameraSinkMgr**:  
+  Sink-side — irrelevant (file is in `sourceservice`). ❌
+
+- **ChannelCommon / ChannelSink**:  
+  Communication layer — this header does not define channel/session interfaces; no SoftBus, session, or transport concepts. ❌
+
+- **CameraDataProcessCommon**:  
+  *"common data processing frameworks, data processing pipeline interfaces, codecs, color space conversion..."*  
+  → Key phrase: **pipeline interfaces**. This interface (`ICameraSourceDataProcess`) is exactly a *pipeline interface* for source-side data processing. But note: it's specifically *source*-side, while `CameraDataProcessCommon` is described as *common* (shared between source and sink). Is this interface shared? Unlikely — it’s named `source_data_process`. Also, no codec/format conversion logic here — just orchestration of streams and feeding buffers.
+
+- **CameraDataPreProcess**:  
+  *"data preprocessing pipeline on the sink side or input side"* — sink-side. Our file is source-side. ❌
+
+- **CameraDataPostProcess**:  
+  *"data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution..."*  
+  → This matches the **role** of the implementer of `ICameraSourceDataProcess`. But is the *interface* itself part of `CameraDataPostProcess`? Typically, interfaces like this belong to the module that defines the contract for post-processing. Since the interface is specifically for *source-side* data processing and includes methods like `FeedStream` (ingesting received data), `StartCapture`, etc., it is most logically part of the **CameraDataPostProcess** module — as the *interface* that the post-processor implements.
+
+  Let’s verify:  
+  - `FeedStream`: likely feeds decoded/received frames into post-processing pipeline.  
+  - `ConfigStreams`, `ReleaseStreams`: configure the post-processing pipeline’s expected streams.  
+  - `StartCapture`/`StopCapture`: coordinate with sink, but on source side, may trigger post-processing activation.
+
+  Given the naming (`_source_data_process`) and location (`sourceservice/include/...`), and the fact that post-processing happens on source side, this interface is the contract for the **CameraDataPostProcess** module.
+
+- **CameraServiceCommon**:  
+  Shared basic capabilities: commands, protocols, camera info, events, metadata, etc.  
+  This interface is more about *data flow control*, not generic protocols or metadata. Less fitting.
+
+- **VirtualCameraHdf**:  
+  HDF/HDI layer — this is high-level C++ interface, not HDF driver code. ❌
+
+- **utils**:  
+  Utilities like buffers, constants, error codes. While it includes `DataBuffer`, the interface itself is not a utility — it's a core functional interface. Not a match.
+
+### 4. **Conclusion**
+
+The file defines an abstract interface `ICameraSourceDataProcess` that specifies how source-side data processing (i.e., post-processing of received camera data) should be implemented. This directly aligns with the responsibility of the **CameraDataPostProcess** module, which handles post-processing on the source side.
+
+Although the interface is *declared* in a header under `dcamerainterface`, the module it belongs to is defined by its semantic role — and per the candidate descriptions, **CameraDataPostProcess** is explicitly for “data post-processing pipeline on the source side”.
+
+Thus:
+
+- **Assigned Module**: [CameraDataPostProcess]

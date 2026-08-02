@@ -1,0 +1,90 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - Standard: `<bitset>`, `<deque>`
+  - Folly: `<folly/Optional.h>`, `folly::io::Cursor`
+  - Proxygen HTTP core:  
+    - `HTTPHeaders.h`  
+    - `HTTPCodec.h`  
+    - `HTTPSettings.h`  
+    - `HeaderCodec.h` (compression-related)
+- **Namespaces**: `folly`, `proxygen`
+- **Key Types**:
+  - `class Cursor` (from `folly::io`, used for buffer parsing)
+  - `class HTTPParallelCodec` — inherits from `HTTPCodec`
+  - `enum ClosingState` (internal state for graceful shutdown/drain logic)
+- **Functions/Methods**:
+  - Constructor: `HTTPParallelCodec(TransportDirection direction)`
+  - Overridden virtual methods from `HTTPCodec`:  
+    `createStream()`, `setCallback()`, `setParserPaused()`, `onIngressEOF()`, etc.
+  - Stream ID management (`isInitiatedStream`, `setNextEgressStreamId`)
+  - Goaway/drain control (`enableDoubleGoawayDrain`, `disableDoubleGoawayDrain`)
+  - State tracking (`ClosingState`, `isWaitingToDrain`, `isReusable`)
+  - Template helper: `deliverCallbackIfAllowed`
+
+The excerpt shows this is a **codec implementation**, specifically for handling *parallel* HTTP streams (likely HTTP/2 or HTTP/3 multiplexed streams), with support for:
+- Stream ID allocation
+- Direction-aware stream initiation (odd/even stream IDs per direction)
+- Graceful shutdown with double GOAWAY semantics
+- Callback delivery and flow control
+
+This is clearly part of the **HTTP protocol layer**, not transport, DNS, SSL, or high-level server framework.
+
+---
+
+### **2. Module Comparison**
+
+#### ✅ **http_general**
+- Matches:  
+  - Lives under `proxygen/lib/http/`  
+  - Core HTTP codec abstractions (`HTTPCodec`, `HTTPHeaders`, `HTTPSettings`, `HeaderCodec`) are all in `lib/http/codec/`  
+  - `HTTPParallelCodec` is a concrete codec implementation — typical of `http_general` (e.g., `HTTP1Codec`, `HTTP2Codec`, `HTTP3Codec`, `HTTPParallelCodec` would be a variant for parallel request handling, possibly for HTTP/2 or experimental multiplexing).
+  - Uses `folly::io::Cursor` — standard in proxygen’s parsing layer.
+  - Handles session/state management, stream IDs, goaway, flow control — all core HTTP protocol concerns.
+- Evidence: The header includes only HTTP-layer headers, no transport (QUIC/socket), no SSL, no DNS, no service framework.
+
+#### ❌ **dns**
+- No DNS-related types, functions, or includes (e.g., `DNSResolver`, `DnsQuestion`, `dns.h`).  
+→ **0%**
+
+#### ❌ **sampling**
+- No sampling logic (e.g., `Sampled`, `RateLimiter`, `Sampler`).  
+→ **0%**
+
+#### ❌ **ssl**
+- No SSL/TLS context, certificates, handshake logic, or OpenSSL/BoringSSL includes.  
+→ **0%**
+
+#### ❌ **general**
+- While `general` covers utils (e.g., `TimeUtil`, `ScopedEventBaseThread`, `ScopeGuard`), this file is deeply tied to HTTP protocol semantics and inherits from `HTTPCodec`. It's *not* a generic utility — it’s protocol-specific.  
+→ Low likelihood (~5–10%), but not primary.
+
+#### ❌ **services**
+- `services/` deals with connection pooling, service execution, `RequestHandler`, `Service`, etc. This file has no service dispatch, no worker threads, no connection acceptance logic.  
+→ **0%**
+
+#### ❌ **httpserver**
+- `httpserver/` is high-level (e.g., `HTTPServer`, `RequestHandler`, `ResponseBuilder`). This is a low-level codec — not part of the server API wrapper.  
+→ **0%**
+
+#### ❌ **transport**
+- Transport layer deals with QUIC sockets, `QuicSocket`, `UDPSocket`, `AsyncTransport`, etc. While `HTTPParallelCodec` may *use* transport, it does **not include or depend on transport headers**, and its logic is purely HTTP framing/session. Also, `TransportDirection` is an enum defined in HTTP layer (not transport).  
+→ Very unlikely (~5%).
+
+---
+
+### **3. Final Reasoning**
+- `HTTPParallelCodec` is a subclass of `HTTPCodec`, which is the base interface for HTTP protocol encoding/decoding in Proxygen.
+- All included headers are from `proxygen/lib/http/codec/` and related HTTP infrastructure.
+- The functionality (stream ID management, goaway, parallel request support) is squarely in the domain of **HTTP protocol implementation**, specifically for multiplexed protocols like HTTP/2.
+- In Proxygen’s architecture, such codecs reside in `lib/http/` → mapped to **`http_general`**.
+
+---
+
+### ✅ Conclusion
+
+"The probability that this file belongs to module 'http_general' is 95%."

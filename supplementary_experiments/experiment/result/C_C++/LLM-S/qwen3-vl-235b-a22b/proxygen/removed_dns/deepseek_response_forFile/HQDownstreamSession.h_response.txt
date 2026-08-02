@@ -1,0 +1,66 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File metadata**
+- **Language**: C/C++
+- **Includes**: `proxygen/lib/http/session/HQSession.h`
+- **Namespace**: `proxygen`
+- **Types**:
+  - `class HQDownstreamSession` (inherits from `HQSession`)
+  - `class HQEgressPushStream` (inherits from `detail::singlestream::SSEgress` and `HQStreamTransportBase`)
+- **Functions**: Many virtual methods related to HTTP transaction handling, push streams, stream management, timeouts, thread-local attachment, QUIC stream IDs, etc.
+- **Raw excerpt** shows:
+  - Definition of `HQDownstreamSession`, a concrete session type for downstream (i.e., server-side) HTTP/3 (HQ = HTTP/3 over QUIC) sessions.
+  - Inheritance from `HQSession`, which is clearly part of HTTP/3 session abstraction.
+  - Heavy use of QUIC types: `quic::StreamId`, `hq::PushId`, `HTTPCodec::StreamID`, etc.
+  - Interaction with `HTTPTransaction`, `HTTPMessage`, `HTTPSessionController`, `WheelTimerInstance`, `HeaderCodec::Stats`, `folly::SSLContext`, etc.
+  - Methods like `newPushedTransaction`, `sendPushPromise`, `findEgressPushStream`, `createEgressPushStream`, `pushAllowedByGoaway` — all specific to **HTTP/3 server-side push semantics**.
+
+### 2. **Module analysis**
+
+#### ✅ **transport**
+- *Definition*: “lower-level transport capabilities under `proxygen/lib/transport/`, especially transport support related to QUIC / HTTP/3… responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and token/PSK cache.”
+- Evidence:
+  - The class name `HQDownstreamSession` suggests it's part of the **HTTP/3 (HQ)** session layer.
+  - Includes `HQSession.h`, which likely lives in `proxygen/lib/http/session/`, but note: `HQSession` itself is typically built on top of QUIC transport abstractions.
+  - Use of `quic::StreamId`, `hq::PushId`, `SSEgress`, `HQStreamTransportBase` strongly indicates this is **transport-layer session management**, not pure HTTP parsing or service logic.
+  - `HQEgressPushStream` inherits from `HQStreamTransportBase`, implying it's a transport-level stream abstraction.
+  - The file is *not* in `utils/`, `services/`, or `httpserver/`; its role is managing QUIC streams and HTTP/3 framing — core to transport.
+
+#### ❌ **http_general**
+- *Definition*: common HTTP implementation under `proxygen/lib/http/`, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3.
+- Partial overlap: Yes, it deals with HTTP sessions and transactions. But:
+  - `http_general` usually covers *generic* HTTP session base classes, codec, headers, etc.
+  - `HQDownstreamSession` is specifically for **HTTP/3 over QUIC**, which sits *above* raw QUIC transport but *below* service logic — i.e., it's tightly coupled with QUIC stream lifecycle and transport events (`onWriteCipherAvailable`, `onTransportReady`, `onFullHandshakeDone`, `onAppRateLimited`, etc.), which are transport-layer callbacks.
+  - In Proxygen’s architecture, HTTP/3 (HQ) session code is often placed under `lib/transport/` or `lib/http/session/`, but given that it directly manipulates QUIC stream IDs and interacts with `quic::` types, and the module description explicitly says *“transport-layer support module for HTTP/3/QUIC scenarios”*, this fits better under **transport**.
+
+#### ❌ **services**
+- Deals with connection acceptance, worker threads, service execution — higher-level than session/stream management. This file has no service registration, no acceptor logic, no worker loop. So unlikely.
+
+#### ❌ **httpserver**
+- High-level APIs for building servers (e.g., `HTTPServer`, `RequestHandler`). This is a low-level session class — not a server wrapper.
+
+#### ❌ **general**, **sampling**, **pools**, **ssl**
+- No relevance: no utility functions, no sampling logic, no pool config, no SSL context creation/stats (though it uses `SSLContext`, it doesn’t manage it).
+
+### 3. **Key distinguishing factor**
+The presence of:
+- `quic::StreamId`
+- `hq::PushId`
+- `HQStreamTransportBase`
+- `SSEgress` (single-stream egress — a transport-level construct)
+- Overridden transport lifecycle hooks (`onTransportReady`, `onFullHandshakeDone`, `onWriteCipherAvailable`)
+→ All point to **transport-layer HTTP/3 session implementation**, not generic HTTP or service logic.
+
+In Facebook’s Proxygen repo structure (which this mirrors):
+- `proxygen/lib/transport/` contains QUIC-related transport adapters and HQ session implementations.
+- `HQSession.h` is typically in `proxygen/lib/http/session/`, but the *concrete downstream session* that ties QUIC streams to HTTP transactions is considered part of the transport stack because it bridges QUIC transport to HTTP semantics.
+
+Thus, while it lives in the HTTP session directory, its *responsibility* aligns with the **transport** module per the provided definition: *“transport-layer support module for HTTP/3/QUIC scenarios”*.
+
+### Final assessment:
+- **transport**: Very high fit — core responsibility is managing HTTP/3 sessions over QUIC transport, including push streams, stream IDs, and transport events.
+- **http_general**: Medium-low — it’s HTTP-related, but too specialized and transport-integrated to be “general HTTP”.
+
+> Probability estimate: Given the explicit mention of QUIC types, transport lifecycle callbacks, and push stream transport abstractions, this file is **clearly part of the transport module**.
+
+**The probability that this file belongs to module 'transport' is 95%.**

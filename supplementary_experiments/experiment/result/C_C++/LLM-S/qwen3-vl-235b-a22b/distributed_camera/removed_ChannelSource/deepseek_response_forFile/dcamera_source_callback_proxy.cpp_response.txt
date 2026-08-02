@@ -1,0 +1,103 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `dcamera_source_callback_proxy.h` → strongly suggests this is a *callback proxy* for the **source side** (controller side), as "source_callback_proxy" implies it's used by the source to receive callbacks from remote (sink) services.
+  - `parcel.h`, `anonymous_string.h` → indicate use of OHOS IPC (MessageParcel, IRemoteObject), typical for proxy/stub implementations in OHOS distributed systems.
+  - `distributed_camera_errno.h`, `distributed_hardware_log.h` → domain-specific error codes and logging for distributed camera/hardware.
+
+- **Namespaces**: `OHOS::DistributedHardware` → standard namespace for distributed hardware modules in OpenHarmony.
+
+- **Functions**:
+  - `DCameraSourceCallbackProxy::OnNotifyRegResult(...)`
+  - `DCameraSourceCallbackProxy::OnNotifyUnregResult(...)`
+
+These are **callback methods** implemented in a **proxy class**, meaning this class is on the *client side* (i.e., the **source/controller side**) and sends IPC requests to notify the remote service (likely the sink side) about registration/unregistration results.
+
+Note: The function names suggest this proxy is used to *send* notifications *to* the remote (e.g., sink), but the naming is slightly confusing — let’s clarify:
+
+- In OHOS IPC pattern:
+  - A `*Proxy` class lives on the **client side** and calls `remote->SendRequest(...)` to invoke methods on the **server side** (`*Stub`).
+  - So `DCameraSourceCallbackProxy` is likely the client-side proxy that the **source side uses to send callback notifications** to the **sink side** (or perhaps to a central manager), indicating registration/unregistration outcomes.
+
+But wait — the method names `OnNotifyRegResult` and `OnNotifyUnregResult` imply these are *callbacks being received*, yet the implementation shows sending a request (`SendRequest(NOTIFY_REG_RESULT, ...)`) — this suggests the naming is inverted or the role is actually **the source side acting as a server**, and this is its *stub*? No — the class is named `Proxy`, and it calls `Remote()->SendRequest()`, which is classic **client-side proxy behavior**: it’s sending a request to notify something (e.g., a manager or sink) of a result.
+
+However, in distributed camera architecture:
+- The **source (controller)** registers with the **sink (controlled device)** to start using its camera.
+- After registration, the sink may return a result; but here, the *source* is sending `OnNotifyRegResult` — that seems backward.
+
+Let’s double-check the logic in the code:
+```cpp
+int32_t DCameraSourceCallbackProxy::OnNotifyRegResult(...) {
+    sptr<IRemoteObject> remote = Remote(); // get remote service object
+    ...
+    remote->SendRequest(NOTIFY_REG_RESULT, req, reply, option);
+}
+```
+This means: this object is a **proxy**, and when `OnNotifyRegResult` is called locally (e.g., by source-side logic), it forwards that notification via IPC to the remote service (which would be a `Stub` implementing `IDCameraSourceCallback`).
+
+So:  
+→ This proxy is used by the **source side** to notify some remote entity (likely the **sink side** or a **manager**) about registration/unregistration results.  
+→ That fits the **source side’s responsibility to report status back** after attempting to register/unregister a camera session.
+
+Thus, this file is part of the **source-side IPC infrastructure**, specifically handling callback notifications *from* source to remote (not receiving callbacks).
+
+Now match to modules:
+
+---
+
+### **Module-by-Module Evaluation**
+
+#### ✅ **DistributedCameraSourceMgr**
+- Responsibility: *"lifecycle, state machine, controller, input stream, data processing, IPC service, and callback management on the source side"*
+- Key phrase: **callback management on the source side**
+- This file implements a callback proxy used by the source side to notify remote entities — exactly fits “callback management”.
+- Also includes `dcamera_source_callback_proxy.h`, which is likely part of the SourceMgr’s IPC layer.
+- High relevance.
+
+#### ❌ **DistributedCameraSinkMgr**
+- Sink side (controlled device). This file is clearly source-side (proxy sending requests, not receiving).
+- Not a match.
+
+#### ❌ **ChannelCommon**
+- Focus: SoftBus adaptation, session/channel interfaces — low-level transport.
+- This file uses `MessageParcel`, not SoftBus APIs directly. No session/channel management logic.
+- Too generic; not matching.
+
+#### ❌ **ChannelSink**
+- Sink-side channel implementation. Again, this is source-side proxy.
+- Not matching.
+
+#### ❌ **CameraDataProcessCommon**, **CameraDataPreProcess**, **CameraDataPostProcess**
+- All about *data processing pipelines* (encoding, decoding, format conversion, etc.).
+- This file has no image/data processing — only IPC marshaling of status notifications.
+- Not relevant.
+
+#### ❌ **CameraServiceCommon**
+- Shared basic service capabilities: commands, protocols, camera info, events, metadata, etc.
+- While error codes and logging are used, this file is specifically about *callback proxy implementation*, not shared service logic.
+- Less specific than SourceMgr.
+
+#### ❌ **VirtualCameraHdf**
+- HDF/HDI layer, virtual camera devices, stream operator, metadata at driver level.
+- This is high-level IPC, not HDF-related. No `HDF`, `Device`, `StreamOperator` references.
+- Not matching.
+
+#### ❌ **utils**
+- General utilities: buffers, constants, error codes, local camera ops.
+- While it includes error codes and logging, the core functionality here is *IPC proxy implementation*, which is more structural than utility.
+- Too broad; SourceMgr is more precise.
+
+---
+
+### **Conclusion**
+The file implements `DCameraSourceCallbackProxy`, a client-side proxy used by the **source (controller)** to send registration/unregistration result notifications via IPC. This is a core part of the **callback management** component of the **DistributedCameraSourceMgr**, which explicitly includes “callback management on the source side”.
+
+No other module fits as precisely.
+
+**Probability estimate**: Very high confidence.
+
+> The probability that this file belongs to module 'DistributedCameraSourceMgr' is 95%.

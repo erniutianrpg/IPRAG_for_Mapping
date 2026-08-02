@@ -1,0 +1,74 @@
+Let’s analyze the file `proxygen/lib/http/session/HTTPSession.cpp` step by step, using the provided context.
+
+---
+
+### 1. **File Path and Location**
+- Path: `proxygen/lib/http/session/HTTPSession.cpp`
+- This is clearly under `proxygen/lib/http/session/`, which is part of the HTTP protocol implementation layer — not transport, not services, not utils.
+
+---
+
+### 2. **Includes Analysis**
+The includes reveal key dependencies:
+- `HTTPSession.h` (self)
+- `HTTP2Codec.h`, `HTTPChecks.h`, `HTTPHeaderSize.h`: core HTTP/2 parsing/encoding logic
+- `HTTPSessionController.h`, `HTTPSessionStats.h`: session-level control and metrics
+- `WebTransportSession.h`, `WtUtils.h`: WebTransport (WT) support — an extension built on top of HTTP/2 or HTTP/3, but still *session*-level
+- `ConnectionManager.h` (from wangle): connection lifecycle management, but used here for session shutdown/draining
+- `AsyncFizzBase.h`: SSL/TLS via Fizz — but only used for certificate requests (e.g., `sendCertificateRequest`), not core SSL handling
+- No direct QUIC/transport-specific headers (e.g., no `quic/`, `folly/io/async/AsyncUDPSocket`, etc.)
+
+So while SSL and transport are *used*, they are not the focus — this file is orchestrating HTTP session behavior.
+
+---
+
+### 3. **Functionality Overview**
+The functions listed show that `HTTPSession`:
+- Manages HTTP codec (HTTP/2, possibly HTTP/1.1 or HTTP/3 via codec abstraction)
+- Handles stream lifecycle: `createTransaction`, `findTransaction`, `incrementIncoming/OutgoingStreams`
+- Implements HTTP/2 frame handlers: `onHeadersComplete`, `onBody`, `onTrailersComplete`, `onWindowUpdate`, `onSettings`, `onPing*`, `onGoaway`, etc.
+- Manages flow control, session stats, draining, shutdown, write scheduling
+- Supports WebTransport (`sendWTMaxData`, etc.) — again, as an extension *within* the HTTP session
+- Integrates with `HTTPSessionController`, `HTTPSessionStats`, `ByteEventTracker`, etc.
+
+This is a **central session manager** for HTTP connections — it bridges the transport (socket) and the transaction layer (`HTTPTransaction`), handling protocol state, multiplexing, flow control, and error handling.
+
+It does **not**:
+- Implement DNS resolution → not `dns`
+- Implement sampling logic → not `sampling`
+- Manage SSL contexts or certificates end-to-end → not `ssl` (only uses Fizz for specific ops like cert request)
+- Provide generic utilities (e.g., string helpers, time formatting) → not `general`
+- Implement service infrastructure (e.g., acceptors, workers, service registration) → not `services`
+- Provide high-level server APIs (e.g., `HTTPServer`, `RequestHandler`) → not `httpserver`
+- Deal with QUIC sockets, datagrams, or transport-layer framing beyond what HTTP/2 codec expects → not `transport`
+
+---
+
+### 4. **Comparison to Candidate Modules**
+Let’s map candidate definitions:
+
+| Module | Definition | Match? |
+|--------|------------|--------|
+| `dns` | DNS resolution before connection | ❌ Not relevant |
+| `sampling` | Sampling logic | ❌ No sampling code here |
+| `ssl` | SSL/TLS context & stats | ❌ Only minor Fizz usage; not core SSL module |
+| `general` | `lib/utils/`, common auxiliaries | ❌ This is *not* utility code; it's core HTTP session logic |
+| `http_general` | Common HTTP impl under `lib/http/`: parsing, encoding/decoding, session/transaction mgmt, HTTP/2/3 | ✅ Strong match — this *is* the session management component of HTTP core |
+| `services` | `lib/services/`, server infra (acceptors, workers) | ❌ Uses `ConnectionManager` but not implementing service logic |
+| `httpserver` | High-level HTTP server API (`proxygen/httpserver/`) | ❌ This is lower-level than that |
+| `transport` | QUIC/HTTP3 transport layer | ❌ No QUIC; WebTransport is handled via HTTP/2 extensions, not native transport |
+
+Note: The `http_general` description explicitly says:
+> *"responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+`HTTPSession.cpp` is literally the **session management** component — it owns the codec, manages streams/transactions, handles HTTP/2 frames, flow control, etc.
+
+Also, the file resides in `proxygen/lib/http/session/`, which is logically part of the HTTP core layer — exactly where `http_general` is defined to live.
+
+---
+
+### ✅ Conclusion
+
+The file implements the core HTTP session logic — coordinating between transport, codec, transactions, and flow control — and fits precisely under the **`http_general`** module.
+
+**Assigned Module**: [http_general]

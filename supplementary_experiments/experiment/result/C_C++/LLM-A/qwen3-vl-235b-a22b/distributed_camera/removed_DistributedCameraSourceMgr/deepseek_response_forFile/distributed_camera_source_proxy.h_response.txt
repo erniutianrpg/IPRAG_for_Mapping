@@ -1,0 +1,65 @@
+Let’s analyze the file content step by step and compare it with the candidate modules.
+
+### File Content Summary:
+- **Language**: C/C++
+- **Includes**:
+  - `iremote_proxy.h`, `iremote_broker.h`: Indicates this is an **IPC proxy** class using OHOS’s distributed object (IRemoteObject) mechanism.
+  - `refbase.h`: Standard OHOS reference-counted base class.
+  - `idistributed_camera_source.h`: Interface definition for the *source* side of distributed camera (i.e., the controlled side that provides camera data).
+- **Class**: `DistributedCameraSourceProxy`
+  - Inherits from `IRemoteProxy<IDistributedCameraSource>` → This is a **client-side proxy** for remote invocation of `IDistributedCameraSource`.
+  - Implements methods like `InitSource`, `ReleaseSource`, `RegisterDistributedHardware`, `UnregisterDistributedHardware`, `DCameraNotify` — all part of the *source-side interface*.
+- **Namespace**: `OHOS::DistributedHardware`
+- **Purpose**: This class is used on the **controller side** to invoke methods on the *remote source* (i.e., the device hosting the physical camera). It acts as a local stub/proxy to send IPC calls to the actual `IDistributedCameraSource` implementation running on the sink/source device.
+
+Important nuance:  
+- In distributed camera architecture, the **"source"** refers to the device that *hosts the physical camera* (i.e., the *controlled* side), and the **"sink"** or **"controller"** is the device requesting/using the camera (i.e., the *controlling* side).
+- However, the *proxy* class `DistributedCameraSourceProxy` lives on the **controller side**, and proxies calls *to* the source-side service. So it's a client proxy for the source interface.
+
+Now compare with candidate modules:
+
+1. **DistributedCameraSinkMgr**  
+   → Described as responsible for lifecycle, access control, controller, data processing, image/video output, event notification, and IPC services **on the sink side** (i.e., the *controlled* side).  
+   ❌ This is not the sink-side manager; this is a proxy used on the *controller* side to talk to the sink/source. Not a match.
+
+2. **ChannelCommon**  
+   → Provides common channel-layer capabilities (SoftBus, session mgmt, interfaces).  
+   ❌ This file does *not* use SoftBus directly; it uses OHOS IPC (`IRemoteProxy`). Also, no session/channel logic here.
+
+3. **ChannelSource**  
+   → Responsible for the **controller-side channel implementation**, establishes connections via SoftBus, sends commands, receives image info.  
+   ⚠️ Close, but note: this file is *not* channel-layer—it’s a high-level IPC proxy for the camera source interface. It doesn’t handle transport (SoftBus), just marshals method calls over OHOS IPC. Also, ChannelSource likely deals with transport/session, not proxying IDistributedCameraSource.
+
+4. **ChannelSink**  
+   → Controlled-side channel implementation.  
+   ❌ This is not on the controlled side; proxy is client-side.
+
+5. **CameraDataProcessCommon / CameraDataPreProcess / CameraDataPostProcess**  
+   → All about data processing pipelines (pre/post, codecs, etc.).  
+   ❌ No data processing here—just interface proxy methods.
+
+6. **CameraServiceCommon**  
+   → Provides shared basic service capabilities for *source and sink sides*, including basic commands, protocols, camera info, events, metadata, controller interfaces.  
+   ✅ This is promising: `DistributedCameraSourceProxy` implements the *controller-facing interface* to the source service — i.e., part of the shared service layer. It defines how the controller interacts with the source via standardized IPC contracts. The methods (`InitSource`, `RegisterDistributedHardware`, etc.) are core service operations, not transport or data processing.
+
+7. **VirtualCameraHdf**  
+   → Implements virtual camera at HDF/HDI layer, includes IPC proxies/callbacks at low level.  
+   ❌ This is not HDF/HDI layer; it’s higher-level IPC using `IRemoteProxy`, not HDI.
+
+8. **utils**  
+   → General utilities, buffers, error codes, local camera ops.  
+   ❌ This is not utility code; it’s a formal proxy class implementing a defined interface.
+
+### Key Insight:
+The class `DistributedCameraSourceProxy` is the **client-side proxy** for the `IDistributedCameraSource` interface. In OHOS architecture, such proxy classes are typically part of the **service contract layer**, which is shared between controller and controlled sides — i.e., part of the *common service definition*.
+
+Looking again at **CameraServiceCommon** description:
+> "provides shared basic service capabilities for the source and sink sides [...] including basic commands, protocols, camera information, channel information, events, Metadata settings, open-camera information, and controller interfaces."
+
+The methods in this proxy (`InitSource`, `RegisterDistributedHardware`, `DCameraNotify`) are exactly those *basic commands* and *controller interfaces* — they define how the controller invokes services on the source.
+
+Also, note that `IDistributedCameraSource.h` (included) would be the interface header, and its proxy is logically co-located with the service definition — i.e., in `CameraServiceCommon`.
+
+✅ Therefore, the most appropriate module is:
+
+**Assigned Module**: [CameraServiceCommon]

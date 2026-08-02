@@ -1,0 +1,76 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### File Content Summary:
+- **Language**: C/C++
+- **Includes**:
+  - `decode_video_callback.h` → suggests this is a callback handler for video decoding.
+  - `distributed_hardware_log.h` → logging specific to distributed hardware (likely part of Distributed Hardware subsystem).
+- **Namespaces**: `OHOS::DistributedHardware`
+- **Functions**:
+  - `DecodeVideoCallback::OnError(...)`
+  - `DecodeVideoCallback::OnInputBufferAvailable(...)`
+  - `DecodeVideoCallback::OnOutputFormatChanged(...)`
+  - `DecodeVideoCallback::OnOutputBufferAvailable(...)`
+
+These are all standard AV codec callback methods (similar to Android’s `MediaCodec.Callback` or OHOS Media framework callbacks), used when a video decoder (e.g., via `Media::AVCodec`) signals events like buffer availability, format changes, or errors.
+
+- The implementation forwards each callback to a `std::shared_ptr<DecodeDataProcess> targetDecoderNode`, which suggests this class (`DecodeVideoCallback`) acts as a *bridge* between the low-level media decoder and higher-level data processing logic.
+- The presence of `decodeVideoNode_` (a weak pointer) and delegation to `DecodeDataProcess` implies this is part of a **decoding pipeline**, likely on the **source side**, where received encoded video streams are decoded for local use (e.g., preview on controller device).
+
+### Candidate Module Analysis:
+
+Let’s evaluate each candidate in light of this:
+
+1. **DistributedCameraSourceMgr**  
+   - Focus: lifecycle, state machine, controller-side management, IPC service, *callback management*.  
+   - This file is *not* managing lifecycle/state/IPC directly; it's specifically handling *decoder callbacks*, not high-level camera control. So unlikely.
+
+2. **ChannelCommon / ChannelSource / ChannelSink**  
+   - These deal with *channel communication* (SoftBus, sessions, command/data transmission).  
+   - This file does **not** involve network/session/channel logic — only media decoding callbacks. So no.
+
+3. **CameraDataProcessCommon**  
+   - Provides common data processing frameworks, codecs, color space conversion, etc.  
+   - It mentions “codecs” — and this file is clearly involved in video decoding (via `AVCodec` callbacks).  
+   - But note: `CameraDataProcessCommon` is described as *common framework*, interfaces, foundational components — not necessarily the concrete callback implementation.
+
+4. **CameraDataPreProcess**  
+   - Sink-side preprocessing: processes image data *before* transmission/encoding.  
+   - This is **decoding**, i.e., *after* transmission — so not pre-processing. Incorrect side.
+
+5. **CameraDataPostProcess**  
+   - Source-side post-processing: *decodes, converts formats, processes frame rate/resolution* of received image data so controller can use it like local camera.  
+   - ✅ This matches perfectly:
+     - It’s on the **source side** (controller side).
+     - It involves **decoding** (video decode callbacks).
+     - It forwards to `DecodeDataProcess`, which likely implements the actual post-processing (format conversion, etc.).
+     - The purpose is to make distributed camera data usable locally — exactly what post-processing does.
+
+6. **CameraServiceCommon**  
+   - Shared basic service capabilities: commands, protocols, metadata, open-camera info, etc.  
+   - Not relevant — no service logic here.
+
+7. **VirtualCameraHdf**  
+   - HDF/HDI layer virtual camera device implementation.  
+   - This is higher-level application logic, not driver/HDF layer.
+
+8. **utils**  
+   - General utilities, buffers, constants, error codes, *local camera query/open/close*, and **preview/photo/video callback handling**.  
+   - Note: it explicitly says “preview/photo/video callback handling”.  
+   - However, this file is specifically about *video decoding callbacks*, not generic camera callbacks (e.g., `CameraCallback`). Also, it’s tightly coupled with `DecodeDataProcess`, suggesting it's part of a structured pipeline, not a utility helper.
+
+But let’s double-check:  
+- Is `DecodeVideoCallback` a utility? Unlikely — it’s a concrete class implementing a decoder callback interface, tightly integrated with `DecodeDataProcess`.  
+- In OHOS distributed camera architecture, the **post-processing stage on source side** typically includes a decoder (e.g., for H.264 stream from sink), and uses callbacks like these to feed decoded frames into rendering/preview.
+
+The key phrase from **CameraDataPostProcess**:  
+> *"It decodes, converts formats, and processes frame rate, resolution, and related properties of received image data so that the controller can use distributed camera data as if using a local Camera."*
+
+This file is literally the *decoder callback glue* enabling that decoding step.
+
+### Conclusion:
+The file implements the decoder callback handler that feeds into the post-processing pipeline on the **source side**, making it a core component of **CameraDataPostProcess**.
+
+---
+
+**Assigned Module**: [CameraDataPostProcess]

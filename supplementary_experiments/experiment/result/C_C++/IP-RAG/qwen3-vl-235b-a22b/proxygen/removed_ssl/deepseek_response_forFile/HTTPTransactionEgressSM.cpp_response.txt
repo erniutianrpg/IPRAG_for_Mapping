@@ -1,0 +1,45 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+proxygen/lib/http/session/HTTPTransactionEgressSM.cpp
+```
+- Located under `proxygen/lib/http/session/` — this strongly suggests it belongs to the HTTP protocol layer, specifically session and transaction management.
+- The name `HTTPTransactionEgressSM` indicates an **egress** (outbound) **state machine** for an HTTP transaction.
+
+### 2. **Content Analysis**
+- Includes header: `proxygen/lib/http/session/HTTPTransactionEgressSM.h`
+- Uses `folly::Indestructible` to define a static transition table for a state machine.
+- Implements `HTTPTransactionEgressSMData::find(...)`, which maps `(State, Event) → State`, defining the behavior of the egress state machine.
+- Defines `operator<<` for `State` enum for debugging/logging.
+- The states and events reflect the lifecycle of sending an HTTP response:
+  - `Start` → `HeadersSent` → `RegularBodySent` / `ChunkHeaderSent` / `DatagramSent` → `TrailersSent` → `EOMQueued` → `SendingDone`
+  - Events like `sendHeaders`, `sendBody`, `sendTrailers`, `sendEOM`, `eomFlushed`, etc., are all about *sending* parts of an HTTP message.
+
+This is clearly part of the **HTTP transaction lifecycle management**, specifically the *outbound* (egress) side — i.e., how the server (or proxy) sends responses.
+
+### 3. **Comparison with Candidate Modules**
+
+| Module | Relevance |
+|--------|-----------|
+| `dns` | ❌ No DNS logic here. |
+| `pools` | ❌ No backend pool or load-balancing logic. |
+| `sampling` | ❌ No sampling logic. |
+| `general` | ⚠️ General utilities, but this is *not* generic — it's tightly coupled to HTTP transaction semantics. `general` usually covers things like `TimeUtil`, `ScopedEventBaseThread`, etc., not protocol-specific state machines. |
+| `http_general` | ✅ Strong match. As described: “common HTTP implementation under `proxygen/lib/http/`”, “responsible for … transaction management, and protocol-related capabilities”. The path `lib/http/session/` fits exactly under this module. State machines for HTTP transactions (ingress/egress) are core to HTTP protocol handling. |
+| `services` | ⚠️ This module is for *server-side infrastructure* (connection acceptance, worker threads, service execution), not per-transaction state logic. While this code may be used by services, the file itself is lower-level protocol logic. |
+| `httpserver` | ❌ High-level server APIs (e.g., `HTTPServer`, request handlers). This is internal state machine logic, not API-facing. |
+| `transport` | ❌ Transport layer (QUIC, sockets, datagram transport). Although `sendDatagram` appears, that’s still at the HTTP semantic level (HTTP/3 datagrams), not transport socket handling. The state machine is still HTTP-layer. |
+
+### 4. **Reference Context**
+The description of `http_general` explicitly includes:
+> “responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3.”
+
+This file implements the **egress transaction state machine**, which is a core part of transaction management — precisely what `http_general` covers.
+
+Also note: In Proxygen’s architecture, `HTTPTransactionIngressSM` and `HTTPTransactionEgressSM` are canonical components of the HTTP transaction layer, residing in `lib/http/session/`, and are considered part of the core HTTP implementation — not higher-level services or transport.
+
+---
+
+### ✅ Final Decision:
+**Assigned Module**: [`http_general`]

@@ -1,0 +1,54 @@
+Let’s analyze the file step by step:
+
+### 1. **File content summary**
+- **Includes**:
+  - `fizz/backend/openssl/certificate/CertUtils.h`: Fizz (Facebook’s TLS library) OpenSSL certificate utilities.
+  - `fizz/client/PskCache.h`, `PskSerializationUtils.h`: Fizz client-side PSK (Pre-Shared Key) caching and serialization.
+  - `wangle/client/persistence/FilePersistentCache.h`: Wangle (Facebook’s networking library) persistent file-based cache.
+
+- **Namespaces**: `folly`, `proxygen` — indicates integration with Proxygen and Folly ecosystems.
+
+- **Types**:
+  - `struct PersistentCachedPsk`: A serialized PSK + usage counter.
+  - `class PersistentFizzPskCache`: Implements `fizz::client::PskCache`, using a file-backed persistent cache (`wangle::FilePersistentCache`) to store PSKs across sessions.
+
+- **Functions**:
+  - Lifecycle: destructor.
+  - PSK management: `getPsk`, `peekPsk`, `putPsk`, `removePsk`.
+  - Usage tracking: `getPskUses`, `setMaxPskUses`.
+  - Serialization helpers: `toDynamic`, `convertTo`.
+
+- **Key behavior**:
+  - Persists TLS PSKs (used in TLS 1.3 session resumption) to disk via `wangle::FilePersistentCache`.
+  - Integrates with Fizz’s PSK serialization/deserialization (using OpenSSL cert serializer).
+  - Uses `folly::Optional`, `LOG`, etc., typical of Facebook infrastructure.
+
+### 2. **What is PSK?**
+PSK (Pre-Shared Key) is a TLS 1.3 mechanism for session resumption, allowing clients and servers to resume encrypted sessions without full handshake. Caching PSKs persistently enables resumption across restarts.
+
+This is **transport-layer / TLS-level functionality**, specifically supporting **TLS session resumption** via PSKs — not HTTP semantics, not service logic, not sampling or pooling.
+
+### 3. **Candidate module analysis**
+
+- **pools**: ❌ No server lists, no load balancing, no backend pool config.
+- **sampling**: ❌ No sampling logic (e.g., rate limiting, probabilistic decisions).
+- **ssl**: ⚠️ *Close*, but note: this module is described as “SSL/TLS context and statistics-related capabilities”. However, this file is not about TLS context setup or stats — it's about **caching PSKs persistently**, which is a *supporting capability* for TLS session resumption. But `ssl` module may be too generic; we need to see if there's a better fit.
+- **general**: ❌ General utils are usually low-level helpers (e.g., string utils, time, scoped guards). This is domain-specific (PSK persistence), not general-purpose.
+- **http_general**: ❌ Not HTTP protocol logic (no parsing, headers, transactions, HTTP/2 frames).
+- **services**: ❌ Server-side infrastructure (workers, connections), but this is client-side PSK caching (note: `fizz::client::PskCache`).
+- **transport**: ✅ The description says:  
+  > *"Proxygen's transport-layer support module for HTTP/3/QUIC scenarios, responsible for working with low-level transport capabilities such as QUIC transport, HTTP/3 datagram/socket, and **token/PSK cache**."*
+
+  Crucially, it explicitly mentions **"token/PSK cache"** — this matches *exactly* what this file implements: a persistent PSK cache used by Fizz (which underlies Proxygen’s TLS layer), integrated via Wangle’s persistence.
+
+  Also, `PersistentFizzPskCache` is likely used by Proxygen’s client or server when establishing TLS connections (especially for QUIC/HTTP/3 where PSKs are critical for 0-RTT resumption), making it part of the transport layer’s session resumption infrastructure.
+
+### 4. **Cross-check with reference examples (implied)**  
+Although no explicit reference examples are given, the inclusion of `wangle/client/persistence/FilePersistentCache.h` and `fizz/client/*` strongly ties this to transport-level session state management — not application-layer HTTP.
+
+### ✅ Conclusion:
+The file implements a **persistent PSK cache**, which is explicitly called out in the **transport** module description as part of transport-layer support (especially for HTTP/3/QUIC). It sits below HTTP, in the TLS/session-resumption layer, and integrates with Fizz/Wangle — all core components of Proxygen’s transport stack.
+
+---
+
+**Assigned Module**: [transport]

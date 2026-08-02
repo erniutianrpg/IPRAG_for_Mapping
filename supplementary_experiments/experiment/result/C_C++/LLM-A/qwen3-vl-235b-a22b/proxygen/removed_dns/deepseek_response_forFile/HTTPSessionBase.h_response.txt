@@ -1,0 +1,48 @@
+Let’s analyze the file content step by step to determine which architecture module it belongs to.
+
+### 1. **File context and purpose**
+- The file is a header (`#pragma once`) defining `HTTPSessionBase`, a core class in Proxygen.
+- It inherits from `wangle::ManagedConnection`, indicating it's part of connection management but at the HTTP session layer.
+- It includes many headers from:
+  - `proxygen/lib/http/codec/` → HTTP codec, filters (e.g., `HTTPCodecFilter`, `RateLimitFilter`)
+  - `proxygen/lib/http/observer/` → Observability for sessions
+  - `proxygen/lib/http/session/` → Session and transaction logic (`HTTPSessionActivityTracker`, `HTTPTransaction`)
+  - `proxygen/lib/utils/` → Utilities like `Time`, `WheelTimerInstance`
+  - `wangle/acceptor/` → Connection lifecycle management (via `ManagedConnection`)
+  - `fizz/`, `folly/io/async/` → TLS and I/O infrastructure
+
+### 2. **Key types and responsibilities**
+The class `HTTPSessionBase`:
+- Manages HTTP session lifecycle (callbacks like `onCreate`, `onTransportReady`, `onDestroy`, etc.)
+- Handles HTTP transactions (`newTransaction`, `onTransactionAttached/Detached`)
+- Supports HTTP/2 features: stream limits, flow control, settings, ping, priorities
+- Integrates with observers, stats, controllers, codec filters, rate limiting
+- Manages read/write buffers, slow consumer detection, egress/ingress events
+- Has SSL/TLS integration (`SSLContext`, `sendCertificateRequest`)
+- Uses `WheelTimerInstance` for timers (e.g., slow consumer, ping probes)
+
+This is clearly the **core HTTP session abstraction**, sitting *above* transport (QUIC/TCP) and *below* high-level server frameworks (like `httpserver`). It implements the HTTP protocol semantics (session state, transactions, flow control, framing), not just utilities or transport.
+
+### 3. **Compare with candidate modules**
+
+| Module | Match? | Reason |
+|--------|--------|--------|
+| `pools` | ❌ | No backend pool config, no service discovery logic. |
+| `sampling` | ❌ | No sampling logic; this is about session lifecycle and protocol handling. |
+| `ssl` | ❌ | While it uses SSL contexts, SSL is only a dependency — not the focus. Not about SSL context management/stats. |
+| `general` | ⚠️ Partial | Includes some utils (`Time`, `WheelTimerInstance`), but the bulk is HTTP session logic, not generic utilities. `general` is for `lib/utils/`, not `lib/http/session/`. |
+| `http_general` | ✅ Strong match | Defined as: *"common HTTP implementation under proxygen/lib/http/, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*  
+→ This file defines `HTTPSessionBase`, which is central to session management, transaction attachment/detachment, HTTP/2 flow control, settings, ping, observers — exactly what `http_general` covers.
+| `services` | ❌ | `services` is for `lib/services/`, higher-level server infrastructure (e.g., `ServiceHandler`, `ServerTransport`, worker threads). This is lower-level, session-focused, not service execution. |
+| `httpserver` | ❌ | That’s the high-level API layer (`proxygen/httpserver/`), e.g., `HTTPServer`, `RequestHandler`. This is internal session logic, not an API wrapper. |
+| `transport` | ❌ | Transport is for QUIC/HTTP3 low-level (e.g., `QuicTransport`, `DatagramTransport`). This uses `ManagedConnection` (Wangle), but doesn’t implement transport; it consumes transport via `getTransport()` and `TransportInfo`. |
+
+### 4. **Supporting evidence from includes**
+- All included headers are from `proxygen/lib/http/*` (codec, observer, session, utils) and `wangle/acceptor/`, consistent with `http_general`.
+- No headers from `lib/services/`, `httpserver/`, or `lib/transport/`.
+- Even though `fizz` and `folly::SSLContext` are used, they’re dependencies — not the module’s responsibility.
+
+### Conclusion
+The file defines the foundational HTTP session abstraction (`HTTPSessionBase`) that orchestrates transactions, protocol features (HTTP/2), observers, flow control, and integrates with codecs and transport — squarely within the **`http_general`** module per the definition.
+
+**Assigned Module**: [http_general]

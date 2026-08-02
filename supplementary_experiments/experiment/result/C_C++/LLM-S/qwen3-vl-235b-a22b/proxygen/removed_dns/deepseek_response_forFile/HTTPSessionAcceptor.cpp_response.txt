@@ -1,0 +1,57 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File context & key components**
+- **Includes**:
+  - `proxygen/lib/http/session/HTTPSessionAcceptor.h`
+  - `proxygen/lib/http/session/HTTPDefaultSessionCodecFactory.h`
+  
+  → Both are under `proxygen/lib/http/session/`, which is part of the HTTP protocol layer, not transport or high-level server wrappers.
+
+- **Namespace**: `proxygen` — standard for core Proxygen code.
+
+- **Class**: `HTTPSessionAcceptor`
+  - Inherits from `HTTPAcceptor` (implied by constructor: `: HTTPAcceptor(...)`)
+  - Manages creation of new HTTP sessions (`HTTPDownstreamSession`) upon connection acceptance.
+  - Uses `HTTPCodecFactory`, `HTTPCodec`, `TransportDirection`, `SettingsId`, `HTTPDownstreamSession`, etc.
+  - Handles codec selection based on `nextProtocol`, sets egress settings (e.g., `ENABLE_CONNECT_PROTOCOL`), manages session lifecycle.
+  - Integrates with `SimpleController`, `TransactionTimeoutSet`, `SocketAddress`, `AsyncTransport`.
+
+- **Key responsibilities visible**:
+  - Accepting new connections (transport-level event).
+  - Instantiating appropriate HTTP codec (protocol-level decoding/encoding).
+  - Creating downstream HTTP sessions.
+  - Error page handling, idle connection dropping.
+  - Binding to config (e.g., `bindAddress`, `setEnableConnectProtocol_`).
+
+This is **not**:
+- A *transport* module (no QUIC, no raw socket/datagram handling; uses `folly::AsyncTransport`, but that’s abstracted).
+- An *ssl* module (SSL is referenced only via `sock->getSecurityProtocol()`, but no SSL context setup or certificate logic).
+- A *pools*, *sampling*, or *general* module (no pool management, sampling logic, or generic utils like ` folly::StringPiece`, `ScopeGuard`, etc.).
+- An *httpserver* module: `proxygen/httpserver/` typically contains high-level APIs like `HTTPServer::start()`, `RequestHandler`, `ResponseBuilder`, etc. This is lower-level session creation logic, not application-facing server API.
+- A *services* module? Let’s examine: `proxygen/lib/services/` usually includes things like `Service`, `ServiceHandler`, `Worker`, `ConnectionManager`, etc., often built *on top* of `HTTPSessionAcceptor`. But `HTTPSessionAcceptor` itself is more foundational — it's the bridge between transport acceptor and HTTP session.
+
+### 2. Module definitions recap:
+- **http_general**: *"common HTTP implementation under proxygen/lib/http/... responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."*
+
+  ✅ `HTTPSessionAcceptor` directly handles:
+    - Session creation (`HTTPDownstreamSession`)
+    - Codec factory usage (`HTTPDefaultSessionCodecFactory`)
+    - Protocol negotiation (`nextProtocol`, `TransportDirection::DOWNSTREAM`)
+    - Settings negotiation (e.g., `ENABLE_CONNECT_PROTOCOL`)
+    - Error pages, timeouts — all part of HTTP session lifecycle.
+
+  The path `proxygen/lib/http/session/` is a subdirectory of `proxygen/lib/http/`, and this class is clearly part of the HTTP protocol stack’s session layer — exactly what `http_general` covers.
+
+- **services**: Defined as *"connection management and server-side related code... on top of low-level HTTP abstractions"*. While `HTTPSessionAcceptor` is used by services, it is itself a *low-level HTTP abstraction*, not a service orchestrator. For example, `proxygen/lib/services/ConnectionManager.cpp` would use `HTTPSessionAcceptor`, but not vice versa.
+
+- **general**: Too generic; this file is HTTP-specific (uses `HTTPCodec`, `HTTPDownstreamSession`, `HTTPErrorPage`, etc.), not utility code.
+
+### 3. Conclusion:
+The file implements `HTTPSessionAcceptor`, a core component in Proxygen’s HTTP session layer, responsible for accepting connections and spawning HTTP sessions with proper codec and configuration. It lives in `proxygen/lib/http/session/`, which falls squarely under the **http_general** module definition.
+
+Other modules are either too high-level (`httpserver`, `services`) or too low-level/specialized (`transport`, `ssl`, `pools`, `sampling`, `general`).
+
+---
+
+**The probability that this file belongs to module 'http_general' is 95%.**  
+(The remaining 5% accounts for possible ambiguity if the project internally classifies `session/` under `services`, but per the given module definitions, `http_general` is the best fit.)

@@ -1,0 +1,56 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+services\cameraservice\sinkservice\include\distributedcameramgr\dcamera_sink_controller.h
+```
+- The path explicitly contains `sinkservice`, indicating this is part of the **sink side** (i.e., the *controlled* device — the one hosting the physical camera and sending data to the controller).
+- The header is named `dcamera_sink_controller.h`, reinforcing that it's a controller component on the sink side.
+
+### 2. **Class Name & Inheritance**
+```cpp
+class DCameraSinkController : public ICameraController,
+                              public EventSender,
+                              public DistributedHardware::EventBusHandler<DCameraFrameTriggerEvent>,
+                              public DistributedHardware::EventBusHandler<DCameraPostAuthorizationEvent>,
+                              public std::enable_shared_from_this<DCameraSinkController>
+```
+- Inherits from `ICameraController`: This confirms it implements the controller interface for camera operations.
+- Handles events like `DCameraFrameTriggerEvent` and `DCameraPostAuthorizationEvent` — typical for sink-side event handling (e.g., frame trigger from source, authorization responses).
+- Uses `EventBusHandler`, suggesting it participates in event-driven communication within the sink service.
+
+### 3. **Key Public Methods**
+These methods reflect **sink-side responsibilities**:
+- `StartCapture`, `StopCapture`, `UpdateSettings`, `GetCameraInfo`, `OpenChannel`, `CloseChannel`, `Init`, `UnInit`: Standard controller lifecycle and control operations — but on the *sink* side (i.e., responding to commands from source).
+- `OnDataReceived(std::vector<std::shared_ptr<DataBuffer>>& buffers)`: Processes incoming data — but note: on the sink side, this likely refers to *receiving control commands or metadata*, not image data (image data flows *from* sink *to* source). However, looking at context:
+    - The class also has `output_` (of type `ICameraSinkOutput`) and `operator_` (of type `ICameraOperator`), implying it orchestrates local camera capture and output.
+    - `HandleReceivedData` and `OnDataReceived` are likely for handling *control-plane* data or metadata (e.g., session state, triggers), not raw video frames (which would go through channel → encoder → transport).
+
+Crucially, the class:
+- Takes `std::shared_ptr<ICameraSinkAccessControl>` in constructor → access control is sink-side concern.
+- Has `channel_`, `operator_`, `output_` members → integrates with channel, camera operator (HDF/HDI), and output interfaces — all core to sink-side operation.
+
+### 4. **Comparison with Candidate Modules**
+
+| Candidate Module | Fit? | Reason |
+|------------------|------|--------|
+| **DistributedCameraSourceMgr** | ❌ | Source-side (controller side); this is sink-side (`sinkservice`). |
+| **DistributedCameraSinkMgr** | ✅ | Direct match: “responsible for lifecycle, access control, controller, data processing, image/video output, event notification, and IPC services on the sink side”. This class is literally the *sink controller*, implementing `ICameraController`, handling events, managing channel, access control, and output — exactly what `DistributedCameraSinkMgr` describes. |
+| ChannelCommon / ChannelSource | ❌ | These are about *channel layer* (SoftBus/session), not the high-level controller logic. While `DCameraSinkController` uses `ICameraChannel`, it doesn’t implement channel protocols itself. |
+| CameraDataProcessCommon / Pre/PostProcess | ❌ | No evidence of pipeline stages, codecs, color conversion, etc. This is a controller, not a data processor. |
+| CameraServiceCommon | ❌ | Provides *shared* interfaces (e.g., structs, base events), but this is an *implementation* class specific to sink-side controller logic. |
+| VirtualCameraHdf | ❌ | HDF/HDI layer implementation; this is higher-level service logic (uses `ICameraOperator`, but doesn’t implement HDI). |
+| utils | ❌ | This is not a utility header; it's a core controller class with complex state and behavior.
+
+### 5. **Reference Example Guidance**
+Although no explicit reference examples were provided, the naming convention and structure align with typical OHOS distributed camera architecture:
+- `*_sink_controller.h` → belongs to `DistributedCameraSinkMgr`
+- The module description for `DistributedCameraSinkMgr` explicitly mentions:  
+  > “controller, data processing, image/video output, event notification [...] enabling the controlled side to receive commands from the controller and use the local camera to provide image data”
+
+This class is the central controller on the sink side — it receives commands (via events or IPC), coordinates camera operator, manages channel, handles access control, and drives output.
+
+---
+
+### ✅ Final Decision:
+**Assigned Module**: [DistributedCameraSinkMgr]

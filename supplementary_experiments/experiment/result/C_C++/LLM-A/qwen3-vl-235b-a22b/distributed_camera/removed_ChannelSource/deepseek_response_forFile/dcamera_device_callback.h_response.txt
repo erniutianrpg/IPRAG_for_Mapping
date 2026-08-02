@@ -1,0 +1,92 @@
+Let’s analyze the file content step by step and compare it with the candidate modules.
+
+### File Content Summary:
+- **Language**: C/C++
+- **Header guard**: `DISTRIBUTED_CAMERA_DEVICE_CALLBACK_H`
+- **Includes**: `"dcamera_device_callback_stub.h"` — suggests this is a concrete implementation (or interface) derived from a stub (likely IPC stub).
+- **Namespaces**: `OHOS::DistributedHardware`
+- **Class**: `DCameraDeviceCallback`, inherits from `DCameraDeviceCallbackStub`
+- **Functions**:
+  - Constructor/destructor
+  - `OnError(ErrorType type, int32_t errorMsg)` — error notification callback
+  - `OnResult(uint64_t timestamp, const std::shared_ptr<CameraStandard::CameraMetadata>& result)` — metadata/result callback
+
+This class is clearly a **callback handler** for camera device events (errors and results), and it inherits from a *stub*, implying it's part of an IPC mechanism (e.g. used on the client side to receive callbacks from a remote service).
+
+The use of `CameraStandard::CameraMetadata` indicates integration with the standard camera framework (likely OHOS Camera Standard API), and the class is in `DistributedHardware`, suggesting it belongs to the distributed camera subsystem.
+
+Now, let’s evaluate candidate modules:
+
+#### ✅ DistributedCameraSourceMgr
+> Responsible for lifecycle, state machine, controller, input stream, data processing, IPC service, **and callback management on the source side** (controller side), enabling the controller to invoke distributed camera capabilities...
+
+- Callback management on the **source side** matches: this class is likely used by the **source/controller** to receive callbacks (e.g., from sink side via IPC) about errors or metadata.
+- The class name `DCameraDeviceCallback` implies it handles callbacks *from* the device (i.e., remote camera), which the source/controller would consume.
+- Involves IPC (inherits from stub), consistent with IPC service responsibilities of SourceMgr.
+
+#### ❌ DistributedCameraSinkMgr
+> …on the **sink side** (controlled side), enabling controlled side to receive commands and provide image data…
+
+- This class is not about receiving commands or providing image data — it's about *receiving* callbacks (e.g., from the sink to the source). So unlikely to be sink-side.
+
+#### ❌ ChannelCommon / ChannelSink
+> Communication foundation / sink-side channel implementation.
+
+- While IPC is involved, this class is not about session/channel management or SoftBus adaptation — it's a high-level callback interface tied to camera device events, not raw channel transport.
+
+#### ❌ CameraDataProcessCommon / PreProcess / PostProcess
+> Data processing pipelines (codec, color space, frame rate, etc.)
+
+- No data processing logic here — just event/callback handling.
+
+#### ❌ CameraServiceCommon
+> Shared basic service capabilities: basic commands, protocols, camera info, events, Metadata settings, open-camera info, controller interfaces.
+
+- Close, but note: this class is specifically a *callback implementation*, not a service interface or protocol definition. However, `CameraServiceCommon` does mention “events” and “Metadata settings”, and callback interfaces could fall under shared services.
+
+But compare:
+- `CameraServiceCommon` is more about *shared definitions* (e.g., structs, enums, base interfaces), whereas this file defines a concrete callback class inheriting from a stub — typically instantiated on the **client/source side** to handle remote notifications.
+
+#### ❌ VirtualCameraHdf
+> HDF/HDI layer, virtual camera devices, Provider/Device/StreamOperator, IPC proxies/callbacks at HDF level.
+
+- This is too low-level (HDF/HDI), while the code uses `CameraStandard::CameraMetadata`, indicating it's above HDF — in the framework/service layer.
+
+#### ❌ utils
+> Common utilities, buffers, constants, error codes, local camera query/open/close, and **preview/photo/video callback handling**.
+
+- Note: “preview/photo/video callback handling” — this seems relevant! But `utils` is for *generic* utilities, and this class is specifically named `DCameraDeviceCallback`, placed in `DistributedHardware`, and inherits from a stub — suggesting it's part of the core distributed camera architecture, not a generic utility.
+
+Also, `utils` usually contains helper functions/classes without inheritance from stubs; this one is tightly coupled to IPC stub hierarchy.
+
+---
+
+### Key Clue:
+- The class inherits from `DCameraDeviceCallbackStub`. In OHOS IPC patterns, *Stub* classes are server-side (implementing interface), and *Proxy* classes are client-side. But here, `DCameraDeviceCallback` inherits from `Stub`, meaning it’s likely the **server-side implementation** of the callback interface — i.e., the *sink side* registers this callback with the source, and the source calls back into it.
+
+Wait — need to double-check typical pattern:
+
+In OHOS HIDL/AIDL-like IPC:
+- Interface defined (e.g., `IDCameraDeviceCallback`)
+- Stub: abstract base class for server implementation (`IDCameraDeviceCallbackStub`)
+- Proxy: client-side proxy to call remote methods
+
+But here, the class is `DCameraDeviceCallback : public DCameraDeviceCallbackStub`, and it implements `OnError` and `OnResult` as `virtual override` — so it’s a concrete implementation of the stub → meaning it’s the **server-side handler**, i.e., the side that *receives* the callback invocation from the remote peer.
+
+So: if the *source* (controller) wants to receive callbacks from the *sink*, the sink must invoke methods on the source’s callback object — thus the source must expose a callback interface (via IPC), and the sink holds a proxy to it.
+
+Therefore:
+- The source side creates an instance of `DCameraDeviceCallback` (inheriting from stub), registers it with the sink (via IPC), and the sink calls `OnError`/`OnResult` on that object.
+- So `DCameraDeviceCallback` lives on the **source side** and serves as the callback receiver.
+
+That aligns precisely with:
+> **DistributedCameraSourceMgr**: “…callback management on the source side…”
+
+Also, reference examples imply that SourceMgr handles “callback management” — this class is literally a callback manager implementation.
+
+### Conclusion:
+The file defines a concrete callback handler used on the **source/controller side** to receive device events (errors, metadata) from the remote sink — exactly what `DistributedCameraSourceMgr` is responsible for.
+
+---
+
+**Assigned Module**: [DistributedCameraSourceMgr]

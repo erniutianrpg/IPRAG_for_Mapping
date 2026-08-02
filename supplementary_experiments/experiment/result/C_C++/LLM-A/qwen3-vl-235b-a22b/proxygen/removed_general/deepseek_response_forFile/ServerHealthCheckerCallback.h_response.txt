@@ -1,0 +1,62 @@
+Let’s analyze the file content and map it to the most appropriate module among the candidates.
+
+### Step 1: Understand the file’s purpose
+The header defines:
+- `ServerHealthChecker` (forward-declared class)
+- `ServerLoadInfo`: structure holding CPU and queue load metrics.
+- `ThriftWWWCustomHealthCheckerFields`: custom fields for health checks (e.g., JIT weight, uptime).
+- `ServerDownInfo`: enum listing reasons a server may be considered down (e.g., timeout, non-200, connect error).
+- `serverDownInfoStr()`: utility to convert enum to string.
+- `ServerHealthCheckerCallback`: abstract interface with virtual methods:
+  - `processHealthCheckFailure`
+  - `processHealthCheckSuccess`
+- Nested `ExtraInfo` struct (inherits from `vector<pair<string,string>>`) with helper methods (`toMap()`, optional custom fields).
+
+This is clearly about **health checking logic** — specifically, reporting success/failure of health checks, capturing load info, and categorizing failure reasons.
+
+Key clues:
+- Uses `proxygen::TimePoint` (from `proxygen/lib/utils/Time.h`)
+- Includes `folly/SocketAddress.h` → implies network endpoints are involved
+- No HTTP message parsing, no transport sockets, no SSL, no DNS resolution, no pooling configuration per se.
+- The callback interface suggests this is part of a *health-checking subsystem* used by a load balancer or proxy to monitor backend servers.
+
+### Step 2: Evaluate candidate modules
+
+#### `dns`: ❌  
+No DNS resolution logic. Not relevant.
+
+#### `pools`: ✅ Candidate  
+> *"mainly responsible for configuration and generation related to server lists or backend member pools, serving as backend server-pool configuration support for proxy, load-balancing, or service-discovery scenarios."*
+
+Health checking is tightly coupled with **backend pool management** — you typically health-check members of a pool before routing traffic. In load-balancing systems (like Proxygen-based proxies), health checkers are often part of or tightly integrated with the pool module. The presence of `ServerLoadInfo`, `ServerDownInfo`, and callbacks for success/failure strongly suggests this supports dynamic pool membership decisions (e.g., marking servers down/up based on health).
+
+Also note: `ServerHealthChecker` is likely implemented elsewhere (possibly in `pools/`), and this header defines the contract/interface used by pool managers.
+
+#### `sampling`: ❌  
+No sampling logic (e.g., probabilistic sampling, rate limiting). Not applicable.
+
+#### `ssl`: ❌  
+No SSL/TLS context, certificates, handshake logic.
+
+#### `http_general`: ❌  
+While health checks may use HTTP requests (e.g., GET /health), this header does **not** contain HTTP parsing, encoding, session, or transaction logic. It’s purely about *interpretation and reporting* of health status — not protocol handling.
+
+#### `services`: ❌  
+> *"used for connection management and server-side related code... service execution, connection acceptance, worker threads..."*  
+This is client-side health checking (checking backends), not server-side infrastructure. No connection acceptance or service execution here.
+
+#### `httpserver`: ❌  
+High-level HTTP server framework — this is not about building an HTTP server; it's about checking health of remote servers.
+
+#### `transport`: ❌  
+No QUIC, socket, datagram, or low-level transport logic. `SocketAddress` is used, but only to identify endpoints — not to manage transport connections.
+
+### Step 3: Cross-reference with known Proxygen structure
+In Facebook’s Proxygen (open-source), health checking logic (especially for load balancing) lives in `proxygen/lib/loadbalancing/` or `proxygen/lib/pools/`. Though not listed explicitly, the `pools` module description matches best: it covers backend pool configuration and *implicitly* health monitoring as part of pool management.
+
+Moreover, the types like `ServerLoadInfo`, `ServerDownInfo`, and callback interface are typical of a health-check abstraction used by a pool manager to decide whether to route traffic to a given backend.
+
+### Conclusion:
+The file defines the interface and data structures for health checking backend servers — a core concern of **pool management** in a load-balancing context.
+
+**Assigned Module**: [`pools`]

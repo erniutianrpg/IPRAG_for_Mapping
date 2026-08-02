@@ -1,0 +1,84 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### File Content Summary:
+- **Header guard**: `OHOS_DCAMERA_PHOTO_SURFACE_LISTENER_H`
+- **Includes**:
+  - `surface.h` → indicates interaction with Android-like `Surface` (used for graphics buffer consumption, e.g., preview/photo output)
+  - `icamera_operator.h` → suggests integration with camera operator interface (likely part of camera service or client-side control)
+- **Namespaces**: `OHOS::DistributedHardware` → confirms this is part of OpenHarmony Distributed Hardware subsystem.
+- **Class**: `DCameraPhotoSurfaceListener`, inherits from `IBufferConsumerListener`
+  - Constructor takes `sptr<Surface>` and `std::shared_ptr<ResultCallback>`
+  - Implements `OnBufferAvailable()` — a callback invoked when a new buffer (e.g., captured image frame) is available from the `Surface` (i.e., consumer side).
+- **Purpose**: This class listens for buffer availability on a `Surface`, likely used to receive photo frames (e.g., after capture), and notify via a callback (`ResultCallback`). It's *consumer*-side logic — i.e., it receives data (a photo buffer) and triggers a result callback.
+
+### Key Observations:
+- `IBufferConsumerListener` is a standard interface for consumers of `Surface` buffers (common in Android/HarmonyOS graphics stack). The listener is typically attached to a `Surface`’s buffer queue.
+- Since this is for **photo** (not preview/video), and it’s listening to buffer availability on a `Surface`, it strongly suggests this is on the **source side** (controller side), where the app/controller wants to receive the captured photo.
+- The `ResultCallback` implies it’s delivering results back to the caller (e.g., the app or `DistributedCameraSourceMgr`).
+- The class does **not** handle:
+  - IPC communication (no SoftBus/channel code),
+  - Camera hardware access (no HDF/HDI),
+  - Data preprocessing/postprocessing pipelines (no codec, format conversion),
+  - Channel management,
+  - Lifecycle/state machine logic.
+
+It is a **callback adapter** that bridges `Surface` buffer events to application-level result callbacks — specifically for photo capture.
+
+Now compare with candidate modules:
+
+1. **DistributedCameraSourceMgr**  
+   - Responsible for lifecycle, controller, input stream, callback management on the *source* (controller) side.
+   - Handles photo capture commands and receiving results.
+   - Needs to register listeners for surface buffer availability (e.g., when photo is ready).
+   - ✅ This class fits as a *helper component* used *by* `DistributedCameraSourceMgr` to handle photo buffer delivery.
+   - High relevance: source-side callback handling for photo.
+
+2. **DistributedCameraSinkMgr**  
+   - Sink side (controlled device), sends image data *to* controller.
+   - Would produce buffers (e.g., via `SurfaceProducer`), not consume them.
+   - ❌ This is a *consumer* of buffers (`IBufferConsumerListener`), so unlikely sink-side.
+
+3. **ChannelCommon / ChannelSink**  
+   - Deal with transport (SoftBus, sessions), not surface buffer consumption.
+   - No channel/session code here.
+   - ❌ Not matching.
+
+4. **CameraDataProcessCommon / PreProcess / PostProcess**  
+   - Focus on pipeline processing (codec, color space, frame rate).
+   - This class does no processing — just forwards buffer availability to callback.
+   - ❌ Not matching.
+
+5. **CameraServiceCommon**  
+   - Shared basic services: commands, protocols, metadata, open-camera info.
+   - While `ResultCallback` may be defined there, this class is more about *delivery* than protocol definition.
+   - Possible indirect dependency, but not core responsibility.
+   - ⚠️ Low-to-medium relevance.
+
+6. **VirtualCameraHdf**  
+   - HDF/HDI layer implementation; deals with virtual device, stream operator, metadata at driver level.
+   - This is high-level C++ user-space callback, not HDF.
+   - ❌ Not matching.
+
+7. **utils**  
+   - Provides common utilities: buffers, constants, error codes, *and* “local camera query, open, close, stream acquisition, and preview/photo/video callback handling”.
+   - Explicitly mentions “preview/photo/video callback handling” — this class is exactly a photo callback handler.
+   - It’s lightweight, reusable, and fits the pattern of utility classes that wrap platform-specific interfaces (like `Surface` + `IBufferConsumerListener`) into higher-level callbacks.
+   - ✅ Strong match: it’s a utility for handling photo callbacks using Surface.
+
+Now, decide between **DistributedCameraSourceMgr** and **utils**:
+
+- Is this class *part of* `DistributedCameraSourceMgr` (i.e., internal to that module), or is it a shared utility?
+  - The header name `DCameraPhotoSurfaceListener.h` and its generic design (only depends on `Surface`, `ResultCallback`, no manager-specific state) suggest it’s intended to be reused — possibly by multiple source-side components.
+  - In OpenHarmony architecture, such thin adapter classes are typically placed in `utils` or `common` helper modules, not embedded deep inside a manager.
+  - The `utils` module description explicitly includes “preview/photo/video callback handling”, which matches *exactly*.
+
+Thus, while `DistributedCameraSourceMgr` *uses* this class, the file itself is more appropriately classified under **utils**.
+
+### Final Probability Assessment:
+- **utils**: 90% — directly matches the described responsibility; lightweight callback adapter; fits utility pattern.
+- **DistributedCameraSourceMgr**: 60% — it’s used by this module, but the file is not *core* to its lifecycle/state logic; it’s a supporting component.
+- All others: ≤10%.
+
+---
+
+**The probability that this file belongs to module 'utils' is 90%.**

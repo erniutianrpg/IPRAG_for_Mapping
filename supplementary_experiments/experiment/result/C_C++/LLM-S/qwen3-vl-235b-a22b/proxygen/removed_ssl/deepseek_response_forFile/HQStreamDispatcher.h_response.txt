@@ -1,0 +1,86 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `quic/api/QuicSocket.h` → QUIC transport layer (low-level)
+  - `proxygen/lib/http/codec/HQFramer.h`, `HQUnidirectionalCodec.h` → HTTP/3 (HQ = HTTP over QUIC) framing and codec logic
+  - `folly/io/async/EventBase.h` → Folly event loop infrastructure (used across Proxygen for async I/O)
+
+- **Namespace**: `proxygen`
+- **Key Types**:
+  - `HQStreamDispatcherBase`: Base class for dispatching streams in HTTP/3 (HQ), inherits from `quic::QuicSocket::PeekCallback`
+  - `HQUniStreamDispatcher`, `HQBidiStreamDispatcher`: Concrete dispatchers for unidirectional and bidirectional streams
+  - `DispatchTimeout`: Internal timer callback for stream ownership timeout
+  - `CallbackBase`: Abstract interface for callbacks handling stream dispatch/rejection
+
+- **Functions**:
+  - Stream ownership management (`takeTemporaryOwnership`, `hasOwnership`, `releaseOwnership`)
+  - Stream dispatch logic: `dispatchControlStream`, `dispatchPushStream`, `dispatchRequestStream`, etc.
+  - Preface parsing: `parseUniStreamPreface`, `parseBidiStreamPreface`
+  - Timeout handling: `dispatchTimeoutExpired`
+  - Integration with QUIC socket peek API (`onDataAvailable`, `peekError`)
+
+- **Raw excerpt** shows:
+  - A class that implements `quic::QuicSocket::PeekCallback`
+  - Uses `HQFramer` and `HQUnidirectionalCodec` — both are *HTTP/3-specific* codec components
+  - Manages stream lifecycle during initial handshake/preface parsing phase
+  - Handles control, push, request, and WebTransport streams — all HTTP/3 stream types
+
+---
+
+### **2. Module Mapping Analysis**
+
+#### ✅ **transport** module:
+> *"mainly corresponds to lower-level transport capabilities under proxygen/lib/transport/, especially transport support related to QUIC / HTTP/3. It is Proxygen's transport-layer support module for HTTP/3/QUIC scenarios..."*
+
+- This file directly interacts with `quic::QuicSocket::PeekCallback`, which is a low-level QUIC transport interface.
+- It manages stream ownership *before* full HTTP semantics are applied — i.e., at the transport/stream-multiplexing layer.
+- Uses `HQFramer.h` and `HQUnidirectionalCodec.h`, which are part of the HTTP/3 codec stack but are tightly coupled with transport stream dispatching.
+- The dispatcher is not doing HTTP message parsing per se, but rather *stream classification and routing* based on preface bytes — a responsibility that sits between raw QUIC transport and higher-level HTTP processing.
+
+This strongly aligns with the **transport** module definition.
+
+#### ❌ **http_general**:
+> *"common HTTP implementation under proxygen/lib/http/, responsible for HTTP protocol parsing, encoding/decoding, session management..."*
+
+- While `HQFramer.h` lives under `proxygen/lib/http/codec/`, this file is not doing generic HTTP parsing or transaction management.
+- It does *not* handle HTTP headers, bodies, or transactions — only stream type identification and dispatch.
+- The dispatcher is *pre*-HTTP-processing; it decides *which* handler gets the stream, not how to process the HTTP message.
+- So although it uses HTTP/3 codecs, its role is transport-oriented.
+
+#### ❌ **services**, **httpserver**, **dns**, **pools**, **sampling**, **general**:
+- None of these involve QUIC stream dispatching, peek callbacks, or HTTP/3 preface parsing.
+- `general` covers utils like `ScopedFile`, `TimerUtil`, etc. — not stream dispatch logic.
+- `services` is about server-side infrastructure (e.g., `ServiceHandler`, connection pools), not low-level stream demux.
+- `httpserver` is high-level server API wrappers — too far up the stack.
+
+---
+
+### **3. Key Differentiator**
+The critical clue is:
+```cpp
+class HQStreamDispatcherBase : public quic::QuicSocket::PeekCallback
+```
+→ This ties the class directly to the **QUIC transport layer**, where stream data is first observed *before* being handed off to HTTP layers.
+
+In Proxygen’s architecture:
+- `transport/` handles QUIC socket interaction, stream lifecycle, and early dispatch.
+- `http/` (including `http/codec/`) handles framing, headers, body, etc. *after* streams are assigned.
+
+This file sits at the boundary, but its responsibilities (ownership, timeout, preface-based dispatch) are **transport-layer concerns**, not application-layer HTTP processing.
+
+---
+
+### ✅ Final Assessment
+
+The probability that this file belongs to module **transport** is **95%**.
+
+Other modules are implausible (<5% combined), as none match the QUIC PeekCallback integration, stream ownership management, or HTTP/3 preface dispatch logic.
+
+---
+
+**Answer**:  
+"The probability that this file belongs to module 'transport' is 95%."

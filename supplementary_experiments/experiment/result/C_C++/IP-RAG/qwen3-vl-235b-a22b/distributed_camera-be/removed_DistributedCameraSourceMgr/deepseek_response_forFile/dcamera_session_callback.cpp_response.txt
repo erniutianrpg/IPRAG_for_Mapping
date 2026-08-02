@@ -1,0 +1,101 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+services\cameraservice\cameraoperator\client\src\callback\dcamera_session_callback.cpp
+```
+- Located under `cameraoperator/client/src/callback/` — this suggests it's part of the **client-side** (i.e., controller side) of the camera operator.
+- The term *client* in this context typically means the **source/controller side**, which initiates operations and receives callbacks from remote devices.
+
+### 2. **File Content Summary**
+- Includes:
+  - `"dcamera_session_callback.h"` → defines a session callback interface.
+  - `"distributed_camera_constants.h"` → common constants (e.g., error codes, event types).
+  - `"distributed_hardware_log.h"` → logging utilities.
+- Namespace: `OHOS::DistributedHardware`
+- Class: `DCameraSessionCallback`
+  - Constructor takes a `std::shared_ptr<StateCallback>` — implying it wraps or forwards events to a higher-level state callback.
+  - Implements `OnError(int32_t errorCode)`
+    - Logs error.
+    - If `callback_` is valid, creates a `DCameraEvent` with:
+      - `eventType_ = DCAMERA_MESSAGE`
+      - `eventResult_ = DCAMERA_EVENT_CAMERA_ERROR`
+    - Calls `callback_->OnStateChanged(event)` — i.e., propagates error as a state change event.
+
+This is clearly a **callback handler for session-level errors**, translating low-level session errors into high-level state events for the client (controller) side.
+
+### 3. **What does this belong to?**
+Let’s map to candidate modules:
+
+- **DistributedCameraSinkMgr**: Sink-side lifecycle & control — but this is *client-side*, not sink. ❌  
+- **ChannelCommon**: Provides *channel-layer* capabilities like SoftBus adaptation, session management, channel interfaces/listeners.  
+  - This file deals with *session callback* handling — specifically error reporting from a session.  
+  - Session callbacks are part of channel layer abstraction (e.g., when a session fails, the channel notifies via callback).  
+  - However, this file is *not* implementing the channel itself (like establishing connections), but rather a *callback wrapper* used by clients.  
+  - Still, session callbacks are tightly coupled with channel infrastructure.
+
+- **ChannelSource**: Controller-side channel implementation — establishes connections, sends commands, receives image data.  
+  - This file is likely used *by* ChannelSource (or CameraOperator on source side) to handle session errors.  
+  - But is it *part of* ChannelSource? Let’s see:  
+    - The class `DCameraSessionCallback` is a thin adapter that converts session errors into `DCameraEvent` and forwards to a `StateCallback`.  
+    - It doesn’t handle IPC, SoftBus, or session creation — just error propagation.  
+    - So it’s more of a *client-facing utility* than core channel logic.
+
+- **CameraServiceCommon**: Shared basic service capabilities — includes “events”, “controller interfaces”, “basic commands”, “protocols”.  
+  - The file handles *event notification* (`DCameraEvent`, `OnStateChanged`) — fits "event notification" in description.  
+  - Also uses `distributed_camera_constants.h`, which aligns with shared constants.  
+  - And it’s under `cameraoperator/client/`, which is likely part of the CameraService client stack.
+
+- **utils**: Provides “common distributed camera utilities… including … preview/photo/video callback handling” and “local camera query, open, close, stream acquisition, and preview/photo/video callback handling”.  
+  - This file is a *callback handler* for session errors — could be considered a utility.  
+  - But note: it's specifically for *session-level* errors (not preview/photo/video streams), and lives in `callback/` directory.  
+  - The `utils` module description emphasizes *general support capabilities related to CameraClient/CameraOperator*, which matches well.
+
+Let’s compare with reference patterns (though none provided, we infer from naming and structure):
+
+- In OHOS distributed hardware, `*_callback.cpp` files under `client/src/callback/` are typically part of the **client-side utility layer**, used to bridge low-level channel/session events to high-level service logic.
+- The fact that it wraps a `StateCallback` and emits `DCameraEvent` suggests it's part of the **eventing infrastructure** used across service layers — which is exactly what `CameraServiceCommon` claims: “events”, “controller interfaces”, “basic commands”.
+
+But wait: `CameraServiceCommon` says it provides *shared* capabilities for **both source and sink sides**, while this file is explicitly under `cameraoperator/client/` — i.e., source/controller side only.
+
+Also, `utils` says:  
+> “including local camera query, open, close, stream acquisition, and **preview/photo/video callback handling**”
+
+However, this is *session* callback (not preview/photo/video), and it's about *error reporting*, not stream data.
+
+Now consider:  
+The class `DCameraSessionCallback` is likely used by `CameraOperatorClient` (or similar) to receive session-level notifications from the channel layer. Since it's tightly coupled with session management and event forwarding, and given that **ChannelCommon** is described as providing:
+> “session management, channel interfaces, and channel listener interfaces”
+
+— and session callbacks are part of *channel listener interfaces* — this strongly points to **ChannelCommon**.
+
+In OHOS architecture:
+- `ChannelCommon` typically defines abstract interfaces like `ISessionCallback`, and concrete implementations (like `DCameraSessionCallback`) reside in client/server modules that *use* the channel.
+- However, if the implementation is generic (not sink/source specific) and used by both sides, it belongs in `ChannelCommon`.
+- Here, the implementation is minimal and generic: it just forwards errors as events. No sink/source-specific logic.
+
+But the file path is `cameraoperator/client/`, suggesting it's owned by the camera operator client — which is part of the **source/controller** side. That leans toward **ChannelSource**, but ChannelSource is described as “responsible for the controller-side channel implementation” — meaning the *core channel logic*, not callback adapters.
+
+Let’s re-read candidate definitions carefully:
+
+> **ChannelCommon**: This module provides common channel-layer capabilities, including SoftBus adaptation, session management, channel interfaces, and **channel listener interfaces**.
+
+A `DCameraSessionCallback` is a concrete implementation of a *channel listener interface* — so even if instantiated on the client side, its *role* is as part of the channel abstraction layer.
+
+Moreover:
+- It includes `distributed_camera_constants.h` and uses `DHLOGE` — standard for distributed hardware modules.
+- It does **not** contain any camera data processing, HDF interaction, virtual device logic, etc.
+
+Given all this, the most precise match is:
+
+✅ **ChannelCommon** — because:
+- It implements a session callback (a channel listener interface),
+- It is generic (no sink/source-specific behavior),
+- It bridges low-level session events to higher-level state events, which is foundational for channel communication,
+- And such callback adapters are typically placed in the common channel module or consumed by it — but since the file is named `dcamera_session_callback.*` and resides in a client callback dir, and given the module descriptions, **ChannelCommon** is the only one that explicitly mentions *channel listener interfaces*.
+
+Alternative: Could it be `CameraServiceCommon`? That module emphasizes “basic commands, protocols, camera information, channel information, events…”. The word “channel information” and “events” is tempting. But `CameraServiceCommon` is more about *service-level* abstractions (e.g., camera info structs, command enums), whereas this is specifically about *session lifecycle callback handling*, which is lower-level — i.e., channel layer.
+
+Thus, final decision:
+
+**Assigned Module**: [ChannelCommon]

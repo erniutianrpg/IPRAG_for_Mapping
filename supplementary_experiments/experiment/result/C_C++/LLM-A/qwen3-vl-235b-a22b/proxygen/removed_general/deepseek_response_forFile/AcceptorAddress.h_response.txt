@@ -1,0 +1,57 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### File Overview:
+- **Language**: C/C++
+- **Includes**:
+  - `glog/logging.h` → logging (debug/fatal)
+  - `folly/SocketAddress.h` → represents network socket addresses (IP + port, family, etc.)
+  - `folly/hash/Hash.h` → hashing utilities
+  - `<functional>`, `<utility>` → standard C++ utilities
+- **Namespace**: `proxygen`, `std`
+- **Key type defined**: `struct AcceptorAddress`
+  - Contains:
+    - `folly::SocketAddress address`
+    - `enum class AcceptorType { TCP, UDP }`
+  - Has equality (`==`) and less-than (`<`) operators for ordering
+  - Has `operator<<` overloads for streaming output (for logging/debug)
+  - Specialization of `std::hash<AcceptorAddress>` using `folly::hash::hash_combine`
+
+This struct represents a *network acceptor endpoint* — i.e., an address+protocol pair used to bind or listen on. It's clearly about **accepting incoming connections**, not about DNS resolution, SSL, HTTP parsing, or QUIC transport directly.
+
+### Candidate Module Evaluation:
+
+1. **dns**  
+   → Involves DNS resolution; this file has no DNS-related code (no `DnsResolver`, `HostResolver`, etc.). ❌
+
+2. **pools**  
+   → Backend server pools, load balancing, service discovery. This is about *accepting* connections, not selecting backends. ❌
+
+3. **sampling**  
+   → Sampling logic (e.g., request sampling). No sampling logic here. ❌
+
+4. **ssl**  
+   → SSL/TLS context, certs, handshake stats. No SSL types or functions. ❌
+
+5. **http_general**  
+   → Core HTTP protocol layer: parsing, encoding, sessions, transactions, HTTP/2/3 framing.  
+   While `AcceptorAddress` might be *used* by HTTP servers, it is not itself part of HTTP protocol logic — it's lower-level, transport-agnostic. Not a match. ❌
+
+6. **services**  
+   → Defined as: *"used for connection management and server-side related code... provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration."*  
+   Crucially: **"connection acceptance"** is explicitly mentioned.  
+  `AcceptorAddress` is precisely the kind of type used to represent what a server accepts on — e.g. binding to TCP/UDP sockets with specific addresses. It’s likely used in `proxygen/lib/services/` (e.g., in `ServerTransport`, `AcceptingSocket`, `ServiceConfig`, etc.) to configure or identify listening endpoints.
+
+7. **transport**  
+   → Specifically for *QUIC / HTTP/3* low-level transport (e.g., `QuicTransport`, `QuicSocket`, `DatagramTransport`).  
+  This file uses `folly::SocketAddress`, which is generic (IPv4/IPv6/TCP/UDP), not QUIC-specific. No mention of QUIC, datagrams, tokens, PSK, etc. So not transport module. ❌
+
+### Supporting Evidence:
+- The struct is named `AcceptorAddress`, not `ConnectionAddress`, `Endpoint`, or `QuicAddress`.
+- It supports both TCP and UDP — typical for a general-purpose acceptor (e.g., for HTTP(S) over TCP, or maybe UDP-based protocols like DNS-over-UDP or future HTTP/3 listeners — but note: HTTP/3 would use QUIC-specific abstractions, not raw `SocketAddress`).
+- The presence of `std::hash` specialization suggests it’s used in containers (e.g., maps/sets of acceptors), common in service configuration or listener management.
+- In Proxygen’s actual codebase (external knowledge), `AcceptorAddress` lives in `proxygen/lib/services/` — specifically in `AcceptorAddress.h`, used by `ServerTransport` and `ServiceConfig`.
+
+### Conclusion:
+The file defines a core type for representing *listening endpoints* used in server-side infrastructure — directly aligning with the **services** module definition: *"server-side infrastructure such as ... connection acceptance"*.
+
+**Assigned Module**: [services]

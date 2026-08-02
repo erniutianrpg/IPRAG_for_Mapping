@@ -1,0 +1,118 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **File Summary**
+- **Language**: C/C++
+- **Includes**:
+  - `<vector>` → standard container
+  - `"data_buffer.h"` → suggests data buffer handling (likely from `utils` or `CameraDataProcessCommon`)
+  - `"types.h"` → likely defines common types like `DCEncodeType`, `DCStreamType`, `DCStreamInfo`, `DCCaptureInfo`, etc.
+- **Macro**: `OHOS_ICAMERA_SOURCE_DATA_PROCESS_H` → strongly indicates *source-side* camera data processing interface.
+- **Namespaces**: `OHOS::DistributedHardware` → confirms this is part of OpenHarmony’s Distributed Hardware subsystem.
+- **Types defined**:
+  - `DCameraStreamConfig`: A lightweight config struct for stream parameters (width, height, format, encode type, stream type). Used for configuring streams — typical in *source-side* configuration logic.
+  - `ICameraSourceDataProcess`: An **abstract interface class** with pure virtual methods for:
+    - `FeedStream()` — feeding buffers (i.e., receiving/processing incoming data)
+    - `ConfigStreams()` / `ReleaseStreams()` — managing stream lifecycle
+    - `StartCapture()` / `StopCapture()` — control capture state
+    - `GetAllStreamIds()` — query active streams
+
+These methods suggest this interface is implemented on the **source side** (controller side) to:
+- Accept stream configuration,
+- Start/stop capture,
+- Receive and process data buffers (e.g., from sink side via channel),
+- Manage stream IDs.
+
+Note: The method `FeedStream(std::vector<std::shared_ptr<DataBuffer>>& buffers)` implies *receiving* data buffers — which is unusual if this were purely a *source* (controller) module, because typically the *sink* (controlled device) captures and sends data. However, in distributed camera architecture, the **source side (controller)** may still need to *process* received image data (e.g., decode, rescale, display), especially if it's acting as the *consumer* of video frames.
+
+But wait — the interface name is `ICameraSourceDataProcess`. In OHOS distributed camera design:
+- “Source” = controller side (the device initiating the request, e.g., phone using remote camera).
+- “Sink” = controlled side (the device hosting the physical camera).
+
+So `ICameraSourceDataProcess` is likely the **interface that the source-side data processing pipeline implements**, i.e., it receives data *from the sink*, processes it (post-processing), and makes it available to upper layers (e.g., app preview surface). That matches **CameraDataPostProcess**.
+
+Let’s verify against modules:
+
+---
+
+### **Module-by-Module Comparison**
+
+#### 1. **DistributedCameraSourceMgr**
+- Responsibilities: lifecycle, state machine, controller, input stream, data processing, IPC service, callback management on source side.
+- This module is more high-level orchestration — likely *uses* interfaces like `ICameraSourceDataProcess`, but does not define the interface itself.
+- The file defines an *interface*, not a manager implementation.
+- ❌ Unlikely (too high-level; this is an interface spec, not manager logic)
+
+#### 2. **ChannelCommon**
+- Focus: SoftBus adaptation, session/channel interfaces/listeners.
+- No mention of `DataBuffer`, `DCameraStreamConfig`, or capture control — this is communication layer, not data processing.
+- ❌ Unlikely
+
+#### 3. **ChannelSource**
+- Responsible for establishing connections, sending commands, receiving image info.
+- While it *receives* image data, it typically passes raw data to a processing module — it wouldn’t define a full data processing interface like `FeedStream`, `ConfigStreams`, etc.
+- Also, `ChannelSource` would deal with channel/session APIs, not stream config structs.
+- ❌ Unlikely
+
+#### 4. **ChannelSink**
+- Controlled side — receives commands, sends image data.
+- But this interface is named `ICameraSourceDataProcess`, and includes `FeedStream` (which implies *ingesting* buffers), suggesting it’s on the side that *receives* data — i.e., source side.
+- Also, sink side would have `SendStream`, not `FeedStream`.
+- ❌ Unlikely
+
+#### 5. **CameraDataProcessCommon**
+- Provides *common* data processing frameworks, pipelines, codecs, color space conversion, frame-rate control — foundational for *both* sides.
+- Could include shared structs like `DCameraStreamConfig`, but the interface `ICameraSourceDataProcess` is specifically *source*-oriented (note the name), not generic/common.
+- Also, common modules usually avoid naming like `Source` in their interfaces.
+- ⚠️ Possible, but less likely — this is too specific to source side.
+
+#### 6. **CameraDataPreProcess**
+- Sink-side preprocessing: processes image data *before* transmission/encoding.
+- But this interface is `SourceDataProcess`, and `FeedStream` suggests *receiving* data — opposite of pre-process (which would *output* processed data for transmission).
+- ❌ Unlikely
+
+#### 7. **CameraDataPostProcess**
+- Source-side post-processing: decodes, converts formats, adjusts frame rate/resolution of *received* image data so controller can use it like local camera.
+- Matches perfectly:
+  - `FeedStream(buffers)` → receives decoded/raw frames from channel
+  - `ConfigStreams`, `StartCapture`, `StopCapture` → control how post-processing pipeline handles streams
+  - `DCameraStreamConfig` → configures output stream properties (e.g., resolution/format expected by app)
+  - Interface is abstract → meant to be implemented by concrete post-processor (e.g., software decoder + scaler)
+- ✅ Strong match
+
+#### 8. **CameraServiceCommon**
+- Shared basic service capabilities: commands, protocols, camera info, metadata, open-camera info, controller interfaces.
+- While it may define types like `DCCaptureInfo`, it typically doesn’t define a *data processing interface* with `FeedStream`.
+- This is more about service contracts and metadata, not data flow processing.
+- ❌ Unlikely
+
+#### 9. **VirtualCameraHdf**
+- HDF/HDI layer implementation: virtual device, stream operator, metadata, IPC proxies.
+- This is low-level hardware abstraction — unlikely to define a C++ interface like `ICameraSourceDataProcess` at this layer.
+- Also, no HDF-related types (e.g., `IDevice`, `IStreamOperator`) appear here.
+- ❌ Unlikely
+
+#### 10. **utils**
+- Provides utilities: data buffers, constants, error codes, helper functions.
+- Includes `data_buffer.h`, which is used here — but this file defines a *core interface*, not just utilities.
+- `DCameraStreamConfig` is a domain-specific config, not a generic utility.
+- ❌ Unlikely (though `data_buffer.h` may come from utils, the interface itself is higher-level)
+
+---
+
+### **Conclusion**
+The file defines:
+- A source-side data processing interface (`ICameraSourceDataProcess`)
+- Stream configuration struct (`DCameraStreamConfig`)
+- Methods consistent with *post-processing* of received camera data on the controller side (feed buffers, configure streams, start/stop capture)
+
+This aligns **most precisely** with the **CameraDataPostProcess** module, which is responsible for post-processing on the source side.
+
+> Note: The presence of `FeedStream` might initially seem confusing (why would source “feed” data?), but in this context, “feed” means *feeding into the post-processing pipeline* — i.e., the channel delivers buffers to this interface for processing.
+
+---
+
+**Final Answer**:
+
+The probability that this file belongs to module 'CameraDataPostProcess' is 95%.

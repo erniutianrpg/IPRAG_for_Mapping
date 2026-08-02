@@ -1,0 +1,45 @@
+Let’s analyze the file content step by step to determine the most appropriate module.
+
+### 1. **File identity and purpose**
+- The file implements `HQConnector`, which is part of Proxygen’s HTTP/3 (HTTP over QUIC) client-side connection logic.
+- Includes:
+  - `proxygen/lib/http/HQConnector.h` — clearly indicates this is an HTTP/3 connector.
+  - Multiple QUIC-related headers: `QuicSocket.h`, `FollyQuicEventBase.h`, `FollyQuicAsyncUDPSocket.h`, `CongestionControllerFactory.h`, `FizzClientQuicHandshakeContext.h`.
+  - Also includes `HQSession.h`, `H3EarlyDataHandler.h` — all related to HTTP/3 session and early data handling.
+- Functions:
+  - `connect()` sets up a QUIC client transport using `quic::QuicClientTransport::newClient(...)`, configures Fizz handshake context, PSK cache, socket options, etc.
+  - Uses `FollyQuicEventBase`, `FollyQuicAsyncUDPSocket`, and integrates with Fizz (TLS 1.3 handshake library).
+  - Manages session lifecycle (`session_->dropConnection()`) and timing.
+
+This is **not** DNS resolution (`dns`), not pool management (`pools`), not sampling (`sampling`), not generic SSL/TLS context setup (`ssl` — though it uses Fizz, that’s embedded in QUIC handshake, not standalone SSL module), and not server-side infrastructure (`services`, `httpserver`).
+
+### 2. **Module comparison**
+- `http_general`:  
+  - Described as “common HTTP implementation under `proxygen/lib/http/`”, covering HTTP protocol parsing, encoding/decoding, session/transaction management, HTTP/2 and HTTP/3.
+  - `HQConnector` lives under `proxygen/lib/http/` and is directly involved in HTTP/3 session establishment — fits this description well.
+  - However, note that `http_general` is said to be the *core HTTP layer*, while `HQConnector` is specifically about **transport-level connection setup for HTTP/3**, i.e., bridging HTTP semantics to QUIC transport.
+
+- `transport`:  
+  - Defined as: “lower-level transport capabilities under `proxygen/lib/transport/`”, especially for QUIC / HTTP/3 — responsible for QUIC transport, HTTP/3 datagram/socket, token/PSK cache.
+  - But note: `HQConnector` is *not* under `lib/transport/`. It's under `lib/http/`. Its role is to *initiate* a QUIC connection *on behalf of* an HTTP client — i.e., it's a higher-level HTTP/3 connector, not a raw transport primitive.
+  - The `transport` module likely contains things like `QuicTransport`, `DatagramTransport`, or socket wrappers — but `HQConnector` is more of an HTTP-layer adapter.
+
+- Let’s check Proxygen structure (from known FB/OSS layout):
+  - `proxygen/lib/http/`: Contains `HTTPSession`, `HTTPTransaction`, `HQSession`, `HQConnector`, `H3Codec`, etc. → This is where HTTP/3 *application-layer* logic resides (i.e., mapping HTTP semantics onto QUIC streams).
+  - `proxygen/lib/transport/`: Less commonly used; many QUIC-related components are actually in `quic/` (external dependency) and integrated via `proxygen/lib/http/`.
+
+Given the candidate definitions:
+> `http_general`: This module mainly corresponds to the common HTTP implementation under `proxygen/lib/http/`. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3.
+
+`HQConnector` is part of HTTP session/connection establishment for HTTP/3 — it’s tightly coupled with `HQSession`, which is clearly in the HTTP layer. It does *not* implement raw UDP sockets or congestion control (those are in `quic/`), but orchestrates them for HTTP use.
+
+The `transport` module is described as being for *lower-level transport capabilities*, especially under `lib/transport/`. Since `HQConnector` is in `lib/http/`, and its job is to connect an HTTP client to a QUIC transport (i.e., it's HTTP-facing), it belongs to the HTTP core layer — not the transport abstraction layer.
+
+Also, reference examples (implied by instruction) suggest that HTTP/3 connectors like `HQConnector` fall under `http_general`, because:
+- `HQSession.h` and `H3EarlyDataHandler.h` are HTTP/3 protocol/session components.
+- The connector is the entry point for initiating an HTTP/3 connection — analogous to how `HTTPConnector` would be for HTTP/1.1 or HTTP/2.
+
+### 3. Conclusion
+The file implements `HQConnector`, a class in `proxygen/lib/http/` that initiates HTTP/3 (QUIC-based) connections, integrating QUIC transport and Fizz handshake, but from the perspective of the HTTP layer. It is part of the HTTP protocol stack — specifically HTTP/3 support — and thus best fits:
+
+**Assigned Module**: [http_general]

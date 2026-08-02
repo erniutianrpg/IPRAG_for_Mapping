@@ -1,0 +1,62 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `dcamera_source_handler.h`, `dcamera_source_callback.h`, `dcamera_source_handler_ipc.h` → strongly indicate *source-side handler* logic.
+  - `anonymous_string.h`, `dh_utils_tool.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` → generic utilities, error codes, logging — common across modules but used here in source context.
+- **Namespaces**: `OHOS::DistributedHardware` — consistent with distributed hardware framework.
+- **Functions**:
+  - `DCameraSourceHandler::InitSource()`
+  - `DCameraSourceHandler::ReleaseSource()`
+  - `DCameraSourceHandler::RegisterDistributedHardware()`
+  - `DCameraSourceHandler::UnregisterDistributedHardware()`
+  - `DCameraSourceHandler::ConfigDistributedHardware()`
+  
+  All are **controller-side (source)** operations: initializing/releasing the source, registering/unregistering remote devices, configuring hardware — i.e., managing the *source-side lifecycle and IPC interactions* with distributed camera services.
+
+- **Key Implementation Details**:
+  - Uses `DCameraSourceHandlerIpc::GetInstance().GetSourceLocalDHMS()` → IPC proxy to local DHMS (Distributed Hardware Management Service) on source side.
+  - Calls `IDistributedCameraSource->InitSource()`, `RegisterDistributedHardware()`, etc. — interface methods defined for *source-side service*.
+  - Manages callbacks (`callback_->PushRegCallback`, `PopRegCallback`) — callback registration for async IPC responses.
+  - Uses `optLock_` (mutex) for thread safety during registration — typical for controller-side state management.
+  - Logs via `DHLOGI/E` — standard distributed hardware logging.
+
+This is clearly a **source-side handler** that acts as the *entry point for the controller* to interact with distributed camera capabilities — not the sink (controlled device), not channel transport, not data processing.
+
+---
+
+### **2. Module Comparison**
+
+| Candidate Module | Relevance Assessment |
+|------------------|----------------------|
+| **DistributedCameraSourceMgr** | ✅ **High match**: The description says it handles *lifecycle, state machine, controller, input stream, data processing, IPC service, and callback management on the source side*, specifically enabling the *controller* to invoke distributed camera capabilities. This file implements exactly that: `InitSource`, `ReleaseSource`, `Register/Unregister/ConfigDistributedHardware`, uses IPC (`DCameraSourceHandlerIpc`), manages callbacks, and lives in `OHOS::DistributedHardware`. It's the core controller-side manager. |
+| **DistributedCameraSinkMgr** | ❌ Low: Sink side is *controlled*, receives commands, provides image data; this file is *initiating* registration/config — source/controller behavior. No sink-specific logic (e.g., `OnCommandReceived`, `StartPreview`, `SendFrame`). |
+| **ChannelCommon** | ❌ Low: No SoftBus session management, no channel interfaces or listeners. This file doesn’t deal with transport layer — only IPC to local service. |
+| **ChannelSource** | ❌ Medium-low: ChannelSource would handle *SoftBus connection establishment*, sending control commands over channel, receiving image streams. But this file does *not* use SoftBus APIs or channel sessions — it talks to local IPC service (`IDistributedCameraSource`). So it's higher-level than channel. |
+| **CameraDataProcessCommon** | ❌ Low: No data pipeline, codec, color space, frame rate control — just control-plane operations. |
+| **CameraDataPreProcess / PostProcess** | ❌ None: No image/data processing logic. |
+| **CameraServiceCommon** | ⚠️ Partial: Provides shared basic services (commands, protocols, metadata). While this file uses some common types (`EnableParam`, `RegisterCallback`), its *role* is active management — not just providing shared definitions. It’s more operational than foundational. Less likely than SourceMgr. |
+| **VirtualCameraHdf** | ❌ No: HDF/HDI layer implementation (Host/Provider/Device/StreamOperator) — this is user-space service logic, not driver/HDI. |
+| **utils** | ⚠️ Minor: Uses utility headers (`dh_utils_tool.h`, `anonymous_string.h`, `distributed_camera_errno.h`), but the *core logic* is not utility — it’s a concrete handler class with business logic. Utilities would be standalone functions or helper classes, not a singleton handler managing IPC and lifecycle. |
+
+---
+
+### **3. Key Differentiator**
+The presence of:
+- `IMPLEMENT_SINGLE_INSTANCE(DCameraSourceHandler)`
+- Direct use of `DCameraSourceHandlerIpc` to talk to `IDistributedCameraSource`
+- Registration/unregistration of *distributed hardware* (i.e., remote camera devices)
+- Being named `DCameraSourceHandler` (not “Sink”, “Channel”, or “Utils”)
+
+All point unambiguously to the **DistributedCameraSourceMgr**, which — per the description — is the *controller-side manager* for distributed camera source functionality.
+
+In OHOS distributed camera architecture, `DCameraSourceHandler` is typically the singleton entry point for apps/controllers to access distributed camera features — exactly what this file implements.
+
+---
+
+### ✅ Final Judgment
+
+"The probability that this file belongs to module 'DistributedCameraSourceMgr' is 95%."

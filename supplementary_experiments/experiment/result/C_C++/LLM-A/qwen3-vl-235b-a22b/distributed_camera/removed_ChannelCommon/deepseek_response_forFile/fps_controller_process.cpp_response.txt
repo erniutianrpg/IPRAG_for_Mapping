@@ -1,0 +1,58 @@
+Let’s analyze the file content step by step to determine which module it belongs to.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `fps_controller_process.h` → indicates this is a *frame-rate controller* component.
+  - `dcamera_utils_tools.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` → standard distributed camera utilities, error codes, and logging — common across many modules.
+- Namespace: `OHOS::DistributedHardware` → consistent with distributed hardware subsystem.
+- Functions:
+  - `FpsControllerProcess::InitNode()`, `ReleaseProcessNode()`, `ProcessData(...)`
+  - Core logic includes:
+    - Frame rate calculation (`CalculateFrameRate`)
+    - Frame dropping decision (`IsDropFrame`)
+    - Frame rate correction (`UpdateFrameRateCorrectionFactor`, `ReduceFrameRateByUniformStrategy`)
+    - Maintaining incoming frame time history
+    - Synchronization via mutex (`std::lock_guard<std::mutex> lck(mtx)`)
+  - The class `FpsControllerProcess` appears to be a *node in a data processing pipeline*, specifically for controlling output frame rate — likely inserted between decoding and rendering or transmission.
+
+### 2. **Key Observations**
+- This is **not** about channel establishment (so not `ChannelSource`/`ChannelSink`).
+- Not about lifecycle/state machine of source/sink managers (`DistributedCameraSourceMgr`, `DistributedCameraSinkMgr`) — no IPC, command handling, or device management.
+- Not about virtual camera HDF layer (`VirtualCameraHdf`) — no HDI/HDF interfaces, stream operators, metadata proxies.
+- Not about service-level common APIs (`CameraServiceCommon`) — no protocol definitions, events, or controller interfaces.
+- Not about raw utilities (`utils`) — while it uses utility headers, the core logic is domain-specific (FPS control), not generic helpers.
+- It is clearly part of a **data processing pipeline**, specifically doing *frame rate control* — i.e., regulating how many frames are passed forward based on target FPS and observed input rate.
+
+### 3. **Candidate Module Matching**
+Let’s evaluate the two most relevant candidates:
+
+#### ✅ `CameraDataProcessCommon`
+> *"This module provides common data processing frameworks, data processing pipeline interfaces, codecs, color space conversion, **frame-rate control**, image types, and other common capabilities, supplying foundational components for data processing flows on both the source and sink sides."*
+
+- Explicitly mentions **frame-rate control** as part of its scope.
+- Provides *foundational components* for data processing pipelines — exactly what `FpsControllerProcess` is: a reusable node in a pipeline that controls FPS.
+- The class name `FpsControllerProcess` suggests it's a *process node*, fitting the "pipeline interfaces" description.
+- Used on *both* source and sink sides — FPS control could be needed on either side (e.g., sink-side to avoid overloading display; source-side to reduce bandwidth).
+
+#### ❌ `CameraDataPostProcess`
+> *"Responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution, and related properties..."*
+
+- While it mentions “processes frame rate”, it emphasizes *decoding*, *format conversion*, and being on the *source side/output side*.
+- However, the code here does **not decode** — it only inspects timestamps and decides whether to drop or forward frames.
+- Also, `ProcessData` receives `inputBuffers` and may drop them — this is more like an *intermediate filter* than final post-processing before consumption.
+- Moreover, the class is named `FpsControllerProcess`, not tied to “post” semantics; it could be inserted anywhere in the pipeline (e.g., after decode, before encode/transmit).
+
+#### ❌ `CameraDataPreProcess`
+> *"Data preprocessing pipeline on the sink side or input side... before it enters the transmission/encoding flow."*
+
+- This would be closer if the FPS control happened *before* encoding (e.g., at capture time), but the code accesses `timeUs` from decoder output (`FindInt64("timeUs", ...)`) — indicating it operates *after decoding*, likely on the **sink side** (controlled device) before rendering or sending to controller.
+- Still, the module description emphasizes *preprocessing* (e.g., cropping, scaling, noise reduction), not frame-rate throttling per se.
+- More importantly, FPS control is explicitly called out in `CameraDataProcessCommon`, making that a stronger match.
+
+### 4. **Conclusion**
+The file implements a **frame-rate control node** within a data processing pipeline, using standard distributed camera infrastructure. Its responsibilities align precisely with the description of **`CameraDataProcessCommon`**, which explicitly includes *frame-rate control* as a core capability and provides foundational pipeline components used on both sides.
+
+Thus:
+
+- **Assigned Module**: [CameraDataProcessCommon]

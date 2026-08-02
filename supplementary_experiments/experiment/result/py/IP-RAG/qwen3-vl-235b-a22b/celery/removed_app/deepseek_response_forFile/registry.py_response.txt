@@ -1,0 +1,70 @@
+Let’s analyze the file `app/registry.py` step by step:
+
+### File Overview:
+- **Path**: `app/registry.py`
+- **Docstring**: `"Registry of available tasks."`
+- **Imports**:
+  - `inspect`, `importlib.import_module`: standard Python introspection/module loading — common in loader/registry logic.
+  - `celery._state.get_current_app`: internal Celery app state access — suggests this is part of the app-level infrastructure.
+  - `celery.app.autoretry.add_autoretry_behaviour`, `celery.exceptions.InvalidTaskError`, `celery.exceptions.NotRegistered`: task-related exception and behavior utilities — tightly coupled with task registration and execution.
+
+- **Functions**:
+  - `_unpickle_task(name)`
+  - `_unpickle_task_v2(name, module)`  
+  → These are helper functions for deserializing/reconstructing task objects (e.g., during message deserialization), which is critical when receiving task messages from brokers.
+
+- **Class**: `TaskRegistry`
+  - Inherits from `dict`: a registry mapping task names to task objects.
+  - Methods:
+    - `__missing__(self, key)`: custom fallback for missing keys — likely raises `NotRegistered`.
+    - `register(self, task)`: registers a task object (e.g., when `@app.task` is used).
+    - `unregister(self, name)`: removes a task from registry.
+    - `regular(self)`, `periodic(self)`, `filter_types(self, type)`: filters registered tasks by type (e.g., periodic vs. regular).
+  - Contains `NotRegistered` as an attribute — matches Celery’s `NotRegistered` exception.
+
+This class is clearly responsible for **maintaining the mapping of task names to task instances**, which is essential for:
+- Task discovery (e.g., when a worker receives a task message by name),
+- Task lookup at runtime,
+- Supporting features like periodic tasks (`beat`) or task filtering.
+
+### Comparison with Candidate Modules:
+
+- **backends**: No — backends handle *results*, not task registration.
+- **bin**: CLI tools — unrelated;
+- **concurrency**: Execution pools — not about registration;
+- **contrib**: Extensions — this is core functionality, not an extension;
+- **events**: Event publishing/subscribing; not relevant;
+- **fixups**: Framework-specific startup fixes — no framework-specific logic here;
+- **loaders**: Handles configuration and *task module importing* — close, but loaders typically focus on *loading* modules (e.g., scanning for `@task` decorators), whereas this is about *maintaining a registry* after tasks are loaded.
+- **security**: Message signing/encryption; not applicable;
+- **utils**: Generic helpers — while `utils` may contain some registry-like utilities, `TaskRegistry` is a central, app-level component tied directly to the app’s task namespace.
+- **worker**: Worker runtime — but the registry is used *by* the worker (and also by the app, beat, etc.), not part of the worker’s internal consumption loop per se.
+
+However, note the import: `celery._state.get_current_app` — this implies it's part of the **app infrastructure**, and the registry is attached to the app instance (Celery apps have `.tasks` as a `TaskRegistry`).
+
+In Celery’s actual source code (for reference), `TaskRegistry` lives in `celery/app/registry.py`, and it is considered part of the **app layer**, specifically handling task registration — which is foundational to how tasks are discovered and invoked.
+
+Among the provided candidate modules, none explicitly say “app”, but the closest functional grouping is:
+
+> **loaders**: This module handles configuration and task loading, including reading Celery configuration, importing task modules, and processing lifecycle-related loading logic for worker or task startup and shutdown.
+
+While `registry.py` doesn’t *load* modules itself, it is tightly coupled with the loading process: tasks are registered *as they are imported/defined*, and the registry is queried during message deserialization (e.g., by the worker). In Celery’s architecture, the registry is often considered part of the *app loading and task discovery* subsystem.
+
+But let’s double-check: In real Celery source:
+- `celery/app/registry.py` exists.
+- It is imported by `celery/app/base.py` (the main `Celery` app class).
+- The `TaskRegistry` is used by both the app (to register tasks) and the worker (to look up tasks by name upon receipt of a message).
+
+Given the candidate list, **none** explicitly cover “app core” or “task registry” as a top-level module. However, the *purpose* of this file is to support **task discovery and registration**, which occurs during *loading* of task modules and is essential for the app to function.
+
+The `loaders` module description says:  
+> "handles configuration and task loading, including [...] importing task modules, and processing lifecycle-related loading logic"
+
+Since registering tasks is a direct consequence of importing task modules (e.g., via decorator registration), and the registry is the data structure that holds those registered tasks, it is most logically grouped under **loaders**.
+
+Alternative: Could it be **utils**?  
+- `utils` includes “imports”, “debugging", etc., but `TaskRegistry` is not a generic utility — it's a domain-specific registry central to task identity and dispatch. So less appropriate.
+
+Thus, based on functional alignment and Celery’s actual architecture, the best fit among the given candidates is:
+
+**Assigned Module**: [loaders]

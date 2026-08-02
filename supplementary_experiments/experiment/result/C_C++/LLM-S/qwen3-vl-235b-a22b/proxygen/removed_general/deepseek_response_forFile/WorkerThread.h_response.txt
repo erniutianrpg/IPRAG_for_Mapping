@@ -1,0 +1,106 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **File Summary**
+- **Language**: C/C++
+- **Includes**:
+  - `<atomic>`, `<cstdint>`, `<mutex>`, `<thread>` → standard concurrency primitives.
+  - `folly/Portability.h`, `folly/io/async/EventBase.h` → Folly’s async I/O infrastructure (especially `EventBase`, which is Folly’s event loop abstraction).
+- **Namespaces**: `folly`, `proxygen`
+- **Key Types**:
+  - `class WorkerThread`: Manages a thread that runs an `EventBase` loop.
+  - `class EventBaseManager`: Forward-declared (likely manages multiple `EventBase`s).
+  - `enum class State`: lifecycle states for the worker thread (IDLE, STARTING, RUNNING, etc.).
+- **Functions**:
+  - Lifecycle: `start()`, `stopWhenIdle()`, `forceStop()`, `wait()`, `runLoop()`.
+  - Accessors: `getEventBase()`, `getThreadId()`, `getCurrentWorkerThread()`.
+  - Hooks: `setup()`, `cleanup()` (virtual, meant for subclassing).
+  - Thread-local storage: `static thread_local WorkerThread* currentWorker_`.
+
+This is clearly a **worker thread abstraction** that wraps a `std::thread` running a Folly `EventBase` loop — typical for server-side concurrency models where each thread handles its own event loop (e.g., for accepting connections, handling requests).
+
+The presence of:
+- `EventBaseManager*` (a manager of event bases),
+- `WorkerThread` with state machine and thread-local current-worker tracking,
+- `runLoop()` as private method (implies event loop execution),
+- Use in `proxygen` namespace,
+
+strongly suggests this is part of **server-side infrastructure**, specifically managing threads that run event loops to serve HTTP (or other) traffic.
+
+Now let’s evaluate each candidate:
+
+---
+
+### **Candidate Module Analysis**
+
+#### **dns**
+- Focus: DNS resolution *before* connection establishment.
+- No relation to `EventBase`, `std::thread`, or worker lifecycle management.
+- ❌ Unlikely.
+
+#### **pools**
+- Focus: Backend server pools, load balancing, service discovery.
+- May use threads, but not responsible for defining `WorkerThread` with `EventBase` loop.
+- This file doesn’t mention backends, pools, or routing logic.
+- ❌ Unlikely.
+
+#### **sampling**
+- Lightweight sampling logic (e.g., request sampling).
+- No concurrency/threading infrastructure here; too high-level/simple.
+- ❌ Unlikely.
+
+#### **ssl**
+- SSL/TLS context, stats, handshake logic.
+- Might be used *inside* a worker thread, but this file doesn’t reference SSL APIs or certificates.
+- ❌ Unlikely.
+
+#### **http_general**
+- Core HTTP protocol layer: parsing, encoding, sessions, transactions, HTTP/2/3.
+- While it may *use* `WorkerThread`, this file defines the thread/event-loop infrastructure itself — not protocol logic.
+- `http_general` is more about message framing and state machines (e.g., `HTTPMessage`, `HTTPSession`), not thread management.
+- ⚠️ Possible indirect use, but not the primary home.
+
+#### **services**
+> *"used for connection management and server-side related code... provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration."*
+
+- ✅ Direct match:
+  - `WorkerThread` is exactly “worker threads” infrastructure.
+  - Uses `EventBaseManager` (common in server-side thread-per-event-loop models).
+  - `setup()`/`cleanup()` suggest extensibility for services (e.g., per-thread initialization like TLS contexts, stats, etc.).
+  - `getCurrentWorkerThread()` is a classic pattern for service context injection (e.g., logging, tracing, per-thread config).
+  - Lives under `proxygen::` namespace — consistent with `lib/services/`.
+- This is almost certainly part of `services`.
+
+#### **httpserver**
+> *"wraps proxygen/lib/ and provides high-level APIs for building simple C++ HTTP servers... high-level HTTP server framework."*
+
+- This is a *user-facing* API layer (e.g., `HTTPServer`, `RequestHandler`).
+- `WorkerThread` is internal infrastructure — not exposed in high-level APIs.
+- While `httpserver` may *use* `services`, the definition of `WorkerThread` belongs lower-level.
+- ❌ Less likely than `services`.
+
+#### **transport**
+> *"lower-level transport capabilities... QUIC / HTTP/3... socket, datagram, token/PSK cache."*
+
+- Involves UDP, QUIC, socket I/O — no indication here.
+- No mention of `QuicSocket`, `UDPSocket`, `DatagramTransport`, etc.
+- ❌ Unlikely.
+
+---
+
+### **Conclusion**
+
+The file defines a `WorkerThread` class that manages a thread running a Folly `EventBase` loop, with lifecycle control, thread-local context, and integration with an `EventBaseManager`. This is core **server-side infrastructure** for handling concurrent connections — precisely what the `services` module is described to provide.
+
+Thus:
+
+**The probability that this file belongs to module 'services' is 95%.**  
+(5% uncertainty due to possible overlap with `httpserver` internals, but architecture strongly favors `services`.)
+
+Other modules are significantly less likely (<10% each).
+
+---
+
+Final answer:
+"The probability that this file belongs to module 'services' is 95%."

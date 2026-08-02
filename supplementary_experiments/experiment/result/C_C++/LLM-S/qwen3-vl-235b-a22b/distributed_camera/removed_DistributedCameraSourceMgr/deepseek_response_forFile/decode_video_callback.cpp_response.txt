@@ -1,0 +1,106 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+---
+
+### **File Summary**
+- **Language**: C/C++
+- **Includes**:
+  - `decode_video_callback.h` → suggests this is a callback interface for video decoding.
+  - `distributed_hardware_log.h` → logging specific to distributed hardware (DH).
+- **Namespaces**: `OHOS::DistributedHardware` → clearly part of OpenHarmony Distributed Hardware subsystem.
+- **Functions**:
+  - `DecodeVideoCallback::OnError(...)`
+  - `DecodeVideoCallback::OnInputBufferAvailable(...)`
+  - `DecodeVideoCallback::OnOutputFormatChanged(...)`
+  - `DecodeVideoCallback::OnOutputBufferAvailable(...)`
+
+These are standard AV codec callback methods used in media decoding pipelines — specifically, they mirror Android/FFmpeg-style `MediaCodec` or OHOS `AVCodec` callbacks. The class `DecodeVideoCallback` forwards events to a `DecodeDataProcess` instance (via weak pointer `decodeVideoNode_`), indicating it's part of a *decoding data processing pipeline* on the **receiver side**, i.e., where decoded video frames are consumed (e.g., displayed or further processed).
+
+Key observations:
+- It’s not about *capturing* or *encoding* video (source side), but about *decoding* video — which happens on the **controller side** (i.e., where the user views the remote camera feed).
+- The callbacks are triggered by a decoder (likely `Media::AVCodec`) and forwarded to `DecodeDataProcess`, which likely handles post-decoding tasks: format conversion, rendering, frame rate control, etc.
+- This matches the description of **CameraDataPostProcess**, which is defined as:
+  > *"responsible for the data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution, and related properties of received image data so that the controller can use distributed camera data as if using a local Camera."*
+
+Note: The term “source side” here may be confusing — in distributed camera context:
+- **Source side** = controller side (the device initiating the request, viewing the stream)
+- **Sink side** = controlled side (device with physical camera)
+
+So *post-processing* (including decoding) happens on the **controller/source side**, after receiving encoded video from the sink.
+
+Also, `DecodeVideoCallback` is a *callback handler*, not the decoder itself — it bridges low-level codec events to higher-level data processing logic (`DecodeDataProcess`). That fits well under a *post-processing* module that orchestrates decoding + downstream handling.
+
+Now let’s evaluate each candidate:
+
+---
+
+### **Candidate Module Evaluation**
+
+1. **DistributedCameraSinkMgr**  
+   - Focus: lifecycle, access control, controller, data processing, image/video **output**, event notification, IPC — on the **sink side** (controlled side).  
+   - ❌ This file is about *decoding*, which happens on the *controller* side, not sink. Also, no IPC/session management here.  
+   → **Low probability (~5%)**
+
+2. **ChannelCommon**  
+   - Focus: SoftBus adaptation, session/channel interfaces — pure communication layer.  
+   - ❌ No network/session logic; only media codec callbacks.  
+   → **~5%**
+
+3. **ChannelSource**  
+   - Focus: controller-side channel implementation — establishes connections, sends commands, receives image info.  
+   - ❌ While this is controller-side, it deals with *channel transport*, not decoding or post-processing. This file is deeper in the data path.  
+   → **~10%**
+
+4. **ChannelSink**  
+   - Focus: controlled-side channel — receives commands, sends image data.  
+   - ❌ Opposite side (sink), and no decoding involved there.  
+   → **~0%**
+
+5. **CameraDataProcessCommon**  
+   - Focus: common data processing frameworks, codecs, color space conversion — *foundational* components for both sides.  
+   - ⚠️ Possible, but `DecodeVideoCallback` is very specific to *video decoding*, not generic framework. Also, it uses `DecodeDataProcess`, suggesting it’s part of a concrete pipeline, not shared infrastructure.  
+   → **~20%**
+
+6. **CameraDataPreProcess**  
+   - Focus: preprocessing on sink/input side — before transmission/encoding.  
+   - ❌ Preprocessing happens *before* encoding (on sink), but this is *after* transmission, during decoding.  
+   → **~0%**
+
+7. **CameraDataPostProcess** ✅  
+   - Focus: post-processing on source/output side — *decodes*, converts formats, processes frame rate/resolution — so controller can treat remote stream like local camera.  
+   - ✔️ Matches perfectly:  
+     - `DecodeVideoCallback` handles decoder events (OnError, buffer availability, format change)  
+     - Forwards to `DecodeDataProcess` (likely part of post-processing pipeline)  
+     - Uses DH logging → consistent with distributed camera subsystem  
+     - Namespace `OHOS::DistributedHardware` aligns with post-process modules in OHOS DCam  
+   → **High probability**
+
+8. **CameraServiceCommon**  
+   - Focus: shared basic services — commands, protocols, metadata, open-camera info, controller interfaces.  
+   - ❌ Not about media decoding; more service-level abstraction.  
+   → **~10%**
+
+9. **VirtualCameraHdf**  
+   - Focus: HDF/HDI layer — virtual camera devices, stream operator, metadata, IPC proxies/callbacks.  
+   - ❌ This is at application/media layer, not HDF driver layer; no HDI references.  
+   → **~0%**
+
+10. **utils**  
+    - Focus: utilities, buffers, constants, error codes, local camera callbacks.  
+    - ⚠️ Could include callback helpers, but `DecodeVideoCallback` is tightly coupled to `DecodeDataProcess`, suggesting it's part of a structured pipeline, not generic utility. Also, namespace `DistributedHardware` suggests it's domain-specific, not generic utils.  
+    → **~15%**
+
+---
+
+### **Conclusion**
+The strongest match is **CameraDataPostProcess**, as the file implements the callback interface that drives the video decoding stage of the post-processing pipeline on the controller (source) side — exactly what the module description specifies.
+
+Probability estimate:
+- Based on function semantics, namespace, inclusion dependencies, and role in data flow: **90%**
+
+Other modules are either on the wrong side (sink vs source), too low-level (HDF), or too high-level (service/common).
+
+---
+
+**Final Answer**:  
+"The probability that this file belongs to module 'CameraDataPostProcess' is 90%."

@@ -1,0 +1,80 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **File name**: `ProxyHandler.h` (implied from `#include "ProxyHandler.h"` and class definition)
+- **Language**: C/C++
+- **Key includes**:
+  - `"ProxyHandler.h"` — self
+  - `"ProxyStats.h"` — custom stats for proxy
+  - `folly/io/SocketOptionMap.h`, `folly/io/async/EventBaseManager.h`, `folly/portability/GFlags.h`
+  - `proxygen/httpserver/RequestHandler.h`, `ResponseBuilder.h`
+  - `proxygen/lib/http/session/HTTPUpstreamSession.h`
+  - `proxygen/lib/utils/URL.h`
+
+- **Namespaces used**: `ProxyService`, `proxygen`
+- **Core class**: `ProxyHandler`, which inherits from or implements `RequestHandler` (from `proxygen/httpserver/RequestHandler.h`)
+- **Behavior**:
+  - Implements an HTTP proxy: receives client request (`onRequest`), parses URL, connects to upstream server (via `AsyncSocket` or `connector_`), forwards body/EOM.
+  - Uses `HTTPUpstreamSession`, `ResponseBuilder`, `URL`, `folly::AsyncSocket`, `EventBase`.
+  - Handles CONNECT method (tunneling) and non-CONNECT (forward proxy).
+  - Tracks stats via `ProxyStats`.
+
+This is clearly a **proxy server handler**, not a generic utility, nor a transport layer or SSL module.
+
+---
+
+### **2. Module Comparison**
+
+#### ✅ **httpserver**
+- Corresponds to `proxygen/httpserver/`
+- Includes `RequestHandler.h`, `ResponseBuilder.h` — both directly used here.
+- `ProxyHandler` implements `RequestHandler`, which is the core interface for handling incoming HTTP requests in the high-level server framework.
+- The logic (parsing headers, building responses, forwarding) is exactly what `httpserver` is designed for: *high-level HTTP server logic*.
+- This is not low-level session/transport code — it's built on top of `lib/http/` abstractions but sits in the `httpserver` layer.
+
+#### ❌ **services**
+- `proxygen/lib/services/`: handles connection acceptance, worker threads, service execution — typically higher-level than request handling.
+- This file doesn’t manage connections at the acceptor level; it’s per-request/per-connection handler logic — so *not* services.
+
+#### ❌ **http_general**
+- `proxygen/lib/http/`: deals with protocol parsing, session management, transaction (`HTTPTransaction`), `HTTPSession`, etc.
+- While `HTTPUpstreamSession` is from `lib/http/session/`, this file does *not* implement protocol parsing or session lifecycle management — it uses those abstractions.
+- It’s a consumer of `http_general`, not part of it.
+
+#### ❌ **general**
+- `proxygen/lib/utils/`: utilities like `URL.h`, ` folly::SocketAddress`, etc.
+- Though `URL.h` is included, the file is not a utility — it’s application logic using utilities.
+- Not a match; too generic.
+
+#### ❌ **pools**, **sampling**, **ssl**, **transport**
+- No evidence of pool configuration, sampling logic, SSL/TLS context setup, or QUIC/transport-layer code.
+- `AsyncSocket` is used, but that’s standard TCP — not QUIC or transport abstraction layer.
+- No `SSLContext`, `TLSSession`, `QUIC`, `DatagramTransport`, etc.
+
+---
+
+### **3. Key Evidence**
+- `#include <proxygen/httpserver/RequestHandler.h>` → strongly indicates this belongs to the `httpserver` module.
+- `class ProxyHandler : public RequestHandler` (implied by usage of `onRequest`, `onBody`, `onEOM` — standard `RequestHandler` virtual methods).
+- `ResponseBuilder(downstream_)` → `ResponseBuilder` is part of `httpserver`.
+- The entire logic is about handling an HTTP request and acting as a proxy — exactly the use case for `httpserver`-level handlers.
+
+---
+
+### **Conclusion**
+
+The file implements a custom `RequestHandler` for a proxy, using high-level APIs from `proxygen/httpserver/`. It is not part of core protocol (`http_general`), transport, or utility layers.
+
+> The probability that this file belongs to module **httpserver** is **95%**.
+
+Other modules are implausible:
+- `services`: ~5% (if misclassified as connection manager, but no acceptor/worker logic)
+- `http_general`: ~3% (uses some types from it, but not implementing them)
+- Others: <1%
+
+---
+
+**Final Answer**:
+"The probability that this file belongs to module 'httpserver' is 95%."

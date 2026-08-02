@@ -1,0 +1,56 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- **Header-only** (`#pragma once`)
+- **Includes**:
+  - `<chrono>`, `<string>`, `<list>` — standard C++ utilities
+  - `<fcntl.h>`, `<sys/stat.h>`, `<sys/types.h>` — low-level Unix system headers (used for socket/file config)
+  - `<folly/String.h>`, `<folly/io/async/AsyncSocket.h>` — Folly async I/O and string utilities
+  - `<proxygen/lib/http/codec/HTTPSettings.h>` — HTTP protocol settings (specifically HTTP/2 settings, e.g., `SettingsList`)
+  - `<wangle/acceptor/ServerSocketConfig.h>` — Wangle (Facebook’s networking library) server socket configuration base class
+  - `<zlib.h>` — compression (used in HTTP for gzip/deflate)
+- **Namespace**: `proxygen`
+- **Types defined**:
+  - `class HeaderIndexingStrategy` (forward-declared only; likely used for HPACK header indexing in HTTP/2)
+  - `struct AcceptorConfiguration : public wangle::ServerSocketConfig` — a configuration struct inheriting from Wangle’s server socket config, with many HTTP/2 and connection-related fields:
+    - `HTTP2PrioritiesEnabled`, `maxConcurrentIncomingStreams`, `initialReceiveWindow`, etc.
+    - `transactionIdleTimeout`, `writeBufferLimit`, `readBufNewAllocSize`
+    - `headerIndexingStrategy` (pointer to HPACK indexing strategy)
+    - `plaintextProtocol`, `forceHTTP1_0_to_1_1`, `serverEarlyResponseEnabled`, `HTTP2PingEnabled`
+
+This is clearly a **server-side configuration structure** that extends Wangle’s acceptor config and adds HTTP-specific knobs — especially for HTTP/2 behavior, stream/window management, timeouts, and header compression/indexing.
+
+### 2. **Module Mapping Analysis**
+
+#### ✅ **services**
+- Candidate description: *“corresponds to proxygen/lib/services/ and is used for connection management and server-side related code. On top of the low-level HTTP abstractions, it provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration.”*
+- Evidence:
+  - Inherits from `wangle::ServerSocketConfig` → directly tied to **connection acceptance** (Wangle’s acceptor layer).
+  - Contains fields like `detachOnConnectionAgeTimeout`, `readBufNewAllocSize`, `writeBufferLimit`, `transactionIdleTimeout` — all about **server-side connection/session lifecycle and resource management**.
+  - Fields like `HTTP2PrioritiesEnabled`, `maxConcurrentIncomingStreams`, `headerIndexingStrategy` are **server-side HTTP/2 tuning knobs**, not part of core codec (which would be in `http_general`) but rather how the server *uses* those features.
+  - The struct name `AcceptorConfiguration` strongly implies it's used by an acceptor (i.e., `wangle::Acceptor`) to configure how connections are accepted and handled — squarely in `services`.
+
+#### ❌ **http_general**
+- This module handles core HTTP parsing/encoding (e.g., `HTTPMessage`, `Codec`, `Transport`, `Session`, `Transaction`). While `HTTPSettings.h` is included, this file does **not define any codec logic**, nor does it deal with message parsing or framing. It only *consumes* settings and configures behavior — so it’s higher-level than `http_general`.
+
+#### ❌ **httpserver**
+- This is the *high-level wrapper* (e.g., `HTTPServer`, `RequestHandler`, `Service`). This file is not part of that API layer — it’s a low-level config struct, not a user-facing server builder.
+
+#### ❌ **general**
+- `general` is for utils (e.g., `TimerQueue`, `URL`, `Exception`, `ByteRange`). This file is not generic utility; it’s tightly coupled to server acceptance and HTTP/2 configuration.
+
+#### ❌ **transport**
+- Transport is QUIC/HTTP3-focused. No QUIC-related types or includes here (`quic/`, `udp/`, `datagram`, etc.). Includes are HTTP/2 + TCP socket oriented.
+
+#### ❌ **dns**, **sampling**, **ssl**
+- No DNS resolution logic, no sampling logic, no SSL/TLS context or cert handling. Includes like `zlib.h` and `HTTPSettings.h` are for HTTP semantics, not crypto or sampling.
+
+### 3. **Conclusion**
+The file defines `AcceptorConfiguration`, a server-side configuration struct that extends Wangle’s socket config and adds HTTP/2 and transaction-level tuning parameters — exactly the kind of infrastructure found in `proxygen/lib/services/`.
+
+This matches the **services** module definition precisely: server-side infrastructure, connection acceptance, configuration, and integration with Wangle.
+
+---
+
+**The probability that this file belongs to module 'services' is 95%.**  
+(The remaining 5% accounts for possibility of being in a subdirectory like `proxygen/lib/server/` — but among the given candidates, `services` is the best fit.)

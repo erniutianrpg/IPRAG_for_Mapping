@@ -1,0 +1,76 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+---
+
+### **1. File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `dcamera_video_surface_listener.h` → suggests a listener for video surface buffer events.
+  - `securec.h` → secure memory operations (common utility).
+  - `data_buffer.h` → data buffer abstraction (used for transferring raw frame data).
+  - `distributed_camera_errno.h` → error codes specific to distributed camera.
+  - `distributed_hardware_log.h` → logging for distributed hardware.
+- **Namespaces**: `OHOS::DistributedHardware`
+- **Function**: `DCameraVideoSurfaceListener::OnBufferAvailable()`
+  - This is a callback triggered when a new buffer is available from a `Surface`.
+  - It acquires a `SurfaceBuffer`, copies its virtual address (`GetVirAddr()`) into a `DataBuffer`, then invokes a `ResultCallback::OnVideoResult(dataBuffer)`.
+  - The `surface_` is an `sptr<Surface>` — likely from OHOS's native Surface framework (used for rendering/video output).
+  - Uses `DHLOGI/E` for logging — consistent with Distributed Hardware logging macros.
+
+---
+
+### **2. Key Observations**
+- The class `DCameraVideoSurfaceListener` is listening to buffer availability from a **Surface**, which is typically used on the **sink side** (controlled device) to receive frames from the camera HAL or preview pipeline.
+- It copies raw pixel data (`width * height * 4`, i.e., RGBA/ARGB format) into a `DataBuffer`, then passes it via a callback (`OnVideoResult`) — this is **preparing data for transmission** (e.g., to the controller via SoftBus).
+- The presence of `Surface`, `SurfaceBuffer`, and direct buffer acquisition/release strongly indicates interaction with the **camera preview/output pipeline on the controlled (sink) side**, where camera frames are rendered to a Surface (e.g., for local preview or capture), and this listener extracts them for remote transmission.
+- No IPC, SoftBus, or channel logic is present here — this is purely **local buffer handling and data extraction**.
+- It does **not** handle decoding, format conversion, or post-processing (like resolution scaling, color space conversion) — that would be in `CameraDataPostProcess`.
+- It does **not** manage lifecycle, state machine, or controller logic — rules out `DistributedCameraSourceMgr` / `SinkMgr`.
+- It does **not** implement HDF/HDI device interfaces — rules out `VirtualCameraHdf`.
+- It does **not** define protocols, commands, or metadata — rules out `CameraServiceCommon`.
+- It does **not** establish connections — rules out `ChannelSource` / `ChannelSink`.
+
+---
+
+### **3. Module Matching**
+Let’s evaluate each candidate:
+
+| Module | Match Reasoning | Likelihood |
+|--------|------------------|------------|
+| **DistributedCameraSourceMgr** | Source side = controller side; this code runs on sink side (acquiring from Surface). ❌ | Low (~5%) |
+| **DistributedCameraSinkMgr** | Sink side manager — but this is not lifecycle/controller logic; it's a low-level listener. Too high-level. ❌ | Medium-low (~20%) |
+| **ChannelSource** | Controller-side channel — no SoftBus or IPC here. ❌ | Very low (<5%) |
+| **ChannelSink** | Controlled-side channel — still, no channel logic (no SoftBus send/receive). ❌ | Low (~10%) |
+| **CameraDataProcessCommon** | Provides *framework* and *interfaces*, not concrete buffer extraction logic; this is implementation-specific. Partial overlap (uses `DataBuffer`), but too generic. ⚠️ | Medium (~30%) |
+| **CameraDataPreProcess** | ✅ **Best fit**: Preprocessing on sink/input side — this code extracts raw frames from Surface and packages them into `DataBuffer` before transmission. Exactly what preprocessing pipeline would do: acquire, validate, copy, forward. This is the first step before encoding/transmission. | **High (~85%)** |
+| **CameraDataPostProcess** | Post-processing happens on source/controller side after receiving data — this is sink-side extraction. ❌ | Low (~5%) |
+| **CameraServiceCommon** | Shared basic services (commands, metadata, etc.) — not applicable. ❌ | Very low (<5%) |
+| **VirtualCameraHdf** | HDF/HDI layer — this is user-space C++ using `Surface`, not HDF device drivers. ❌ | Very low (<5%) |
+| **utils** | Contains `data_buffer.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` — these are indeed utilities. But `DCameraVideoSurfaceListener` is a *functional component*, not just a helper. However, the class is small and could be considered part of utils if utils includes callback handlers. Still, the *purpose* is data extraction for transmission, which aligns more with preprocessing than generic utils. | Medium (~40%) |
+
+But note: the `utils` module description says:  
+> *"including local camera query, open, close, stream acquisition, and preview/photo/video callback handling."*  
+→ **"preview/photo/video callback handling"** matches `OnBufferAvailable()` exactly.
+
+However, the key differentiator:
+- If `utils` is meant for *generic* helpers (e.g., `DataBuffer`, error codes, log macros), then `DCameraVideoSurfaceListener` is a *consumer* of those utils — not part of utils itself.
+- In OHOS architecture, such listeners are typically grouped under **data preprocessing pipelines**, especially since it’s preparing data *before* sending over channel.
+
+Also, the class name `DCameraVideoSurfaceListener` and its behavior (acquire → copy → callback) is classic **preprocessing stage**: extracting raw frames from native Surface pipeline to feed into encoder/transmission stack.
+
+The fact that it uses `ResultCallback::OnVideoResult(dataBuffer)` suggests it’s feeding into a pipeline that expects `DataBuffer` — which is likely consumed by `ChannelSink` or encoder — reinforcing that this is **pre-transmission processing**.
+
+---
+
+### **Conclusion**
+The strongest match is:
+- **CameraDataPreProcess**: because it handles sink-side input data extraction and preparation (buffer acquisition, validation, copying into standardized `DataBuffer`) — exactly what this file does.
+
+Secondarily, `utils` is plausible due to callback handling, but given the architectural separation (utils = infrastructure, CameraDataPreProcess = pipeline stage), the former is more precise.
+
+---
+
+**Final Answer**:
+The probability that this file belongs to module 'CameraDataPreProcess' is 85%.  
+The probability that this file belongs to module 'utils' is 40%.  
+All other modules are below 30%.

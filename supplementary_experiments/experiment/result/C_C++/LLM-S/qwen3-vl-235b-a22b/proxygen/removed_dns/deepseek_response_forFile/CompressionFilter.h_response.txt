@@ -1,0 +1,60 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Location & Includes**
+- The file includes:
+  - `proxygen/httpserver/Filters.h`
+  - `proxygen/httpserver/RequestHandlerFactory.h`
+  - `proxygen/lib/utils/CompressionFilterUtils.h`
+
+This tells us:
+- It directly depends on **`httpserver`** (high-level server framework) for `Filters.h` and `RequestHandlerFactory.h`.
+- It also uses a utility from **`general`** (`proxygen/lib/utils/`) — specifically `CompressionFilterUtils.h`.
+
+But note: the *file itself* is not in `lib/utils/`, nor in `lib/http/`, but its usage pattern strongly suggests it's part of the **HTTP server layer**, because:
+- It defines a `CompressionFilter` that inherits from `Filter` (from `Filters.h`, which is part of `httpserver`).
+- It implements HTTP message handling (`sendHeaders`, `sendBody`, `sendEOM`) in the context of an HTTP request/response flow.
+- It integrates with `RequestHandler` and uses `HTTPMessage`, which are core abstractions in `httpserver`.
+
+### 2. **Namespace & Types**
+- Namespace: `proxygen`
+- Classes: `CompressionFilter`, `CompressionFilterFactory`
+  - These are concrete implementations of filters used in the HTTP server pipeline.
+  - Filters in Proxygen are a key concept in `httpserver`, where request/response processing is done via filter chains (similar to middleware).
+
+### 3. **Functionality**
+- Implements compression logic (gzip/deflate/etc.) for HTTP responses.
+- Uses `CompressionFilterUtils::shouldCompress`, `compressorFactory`, etc. — utility logic lives in `general`, but the *filter implementation* is server-side middleware.
+- Interacts with `HTTPMessage`, `Filter`, `RequestHandler`, `folly::IOBuf` — all part of the `httpserver` API surface.
+
+### 4. **Module Mapping**
+Let’s evaluate each candidate:
+
+- **pools**: ❌ No relation to backend pools or service discovery. Not relevant.
+
+- **sampling**: ❌ No sampling logic (e.g., rate limiting, probabilistic tracing). Not relevant.
+
+- **ssl**: ❌ No SSL/TLS context, certificates, handshake logic. Compression is application-layer, not transport-layer encryption.
+
+- **general**: ⚠️ Partial match — it uses `CompressionFilterUtils.h` from `lib/utils/`, which is under `general`. However, the *file itself* is not a utility; it’s a concrete filter implementation tightly coupled to `httpserver`'s filter interface. `general` is for *generic utilities*, not server-specific filter classes.
+
+- **http_general**: ❌ This module covers core HTTP protocol logic (parsing, encoding, session/transaction management), typically in `lib/http/`. But this file doesn’t handle parsing, headers decoding, or HTTP/2 framing — it operates *after* the HTTP message is constructed, as part of the response pipeline. So not core protocol.
+
+- **services**: ❌ `services` is about connection management, workers, service execution — not per-request filtering. This is more fine-grained middleware.
+
+- **httpserver**: ✅ Strong match. The `httpserver` module provides:
+  - `Filters.h` (base `Filter` class),
+  - `RequestHandlerFactory.h`,
+  - High-level server APIs where filters like `CompressionFilter` are plugged in.
+  - Real-world Proxygen code shows that compression filters live under `proxygen/httpserver/` (e.g., `CompressionFilter.cpp/h` are in `httpserver/` in FB’s open-source Proxygen).
+
+- **transport**: ❌ No QUIC, no socket, no transport-layer concerns. Pure HTTP-level filtering.
+
+### 5. **Conclusion**
+The file implements a concrete `Filter` subclass used in the `httpserver` pipeline. While it uses a utility from `general`, its *role*, *dependencies*, and *placement in architecture* align squarely with the **`httpserver`** module — which is designed to host such high-level request/response transformation filters.
+
+> In Facebook’s open-source Proxygen, `CompressionFilter` is indeed located in `proxygen/httpserver/`, confirming this mapping.
+
+---
+
+**The probability that this file belongs to module 'httpserver' is 95%.**  
+(The remaining 5% reflects possible ambiguity due to use of `lib/utils/`, but the primary ownership is clearly `httpserver`.)

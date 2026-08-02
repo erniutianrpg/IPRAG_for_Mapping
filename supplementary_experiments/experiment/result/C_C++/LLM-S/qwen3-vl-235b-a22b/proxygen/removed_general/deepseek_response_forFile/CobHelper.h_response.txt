@@ -1,0 +1,69 @@
+Let’s analyze the file content step by step and compare it against each candidate module.
+
+### File Summary:
+- **Language**: C/C++
+- **Includes**:
+  - `<atomic>` → concurrency/synchronization (e.g., reference counting, coordination)
+  - `<functional>` → `std::function` for callbacks
+  - `<glog/logging.h>` → logging (Google’s glog), used for debugging/asserts (`CHECK`)
+- **Namespace**: `proxygen`
+- **Class**: `CobHelper`
+  - Constructor takes:
+    - `itemsLeft`: count of pending items/workers
+    - `cob`: completion callback (on success)
+    - `ecob`: error callback (on failure)
+  - Methods:
+    - `setError()`: sets an error message (used to signal failure)
+    - `workerDone()`: decrements counter atomically; when count reaches 1 (i.e., last worker), triggers `allDone()`
+    - `allDone()`: invokes either `ecob_` (if error) or `cob_` (if success), then deletes `this`
+- **Key pattern**: Reference-counted coordination of asynchronous work with callbacks — a *completion-on-barrier* helper, likely used in multi-worker or async task aggregation contexts.
+- **Memory management**: `delete this` indicates it's heap-allocated and self-deleting upon completion — common in callback-based async patterns where lifetime is tied to task completion.
+
+This is clearly a **utility helper for coordinating multiple asynchronous workers**, ensuring that a final callback is invoked only after all workers have finished (or one signals error). It does *not* handle:
+- DNS resolution
+- SSL/TLS
+- HTTP parsing/encoding
+- Transport (QUIC/socket)
+- Server setup or service registration
+
+Now evaluate modules:
+
+---
+
+#### ✅ **services**
+> *"used for connection management and server-side related code... provides server-side infrastructure such as service execution, connection acceptance, worker threads, and service configuration."*
+
+- The `CobHelper` fits well here: it coordinates worker tasks (e.g., multiple async operations like backend requests, request processing in parallel) and triggers a final callback — exactly the kind of utility used in server-side service execution (e.g., fan-out/fan-in patterns in request handling).
+- Self-deletion + callback pattern is common in Proxygen’s `services` layer (e.g., `RequestHandler`, `Service`, or internal helpers like `Future`-like coordination without full `folly::Future`).
+- Uses `glog`, which is heavily used in server-side logic for diagnostics.
+- Not part of core HTTP protocol (`http_general`) — no HTTP messages, headers, streams, etc.
+- Not transport-level — no sockets, QUIC, buffers, etc.
+
+#### ❌ **dns**, **pools**, **sampling**, **ssl**, **transport**
+- No DNS queries, no pool configuration, no sampling logic, no SSL context, no transport primitives (sockets, QUIC, datagrams).
+- All these are domain-specific and would include relevant headers (e.g., `openssl/`, `quic/`, `dns/`, `pool/`, `sampling/`), which are absent.
+
+#### ❌ **http_general**
+- Core HTTP protocol layer deals with `HTTPMessage`, `HTTPCodec`, `Transaction`, `Session`, etc.
+- This class has *no* HTTP semantics — just generic coordination.
+- While `http_general` may *use* such helpers, the helper itself is not part of the protocol core; it's more infrastructural.
+
+#### ❌ **httpserver**
+- High-level server framework (e.g., `HTTPServer`, `RequestHandlerFactory`).
+- This is a low-level coordination helper, not a server API wrapper.
+- `httpserver` typically builds on top of `services`, not the other way around.
+
+---
+
+### Conclusion:
+The `CobHelper` is a lightweight, self-managed coordination primitive used to aggregate results from multiple asynchronous workers — precisely the kind of utility found in the **services** module, where server-side execution orchestration (e.g., fan-out requests, batch processing, multi-backend calls) occurs.
+
+It’s highly unlikely to belong elsewhere.
+
+**Probability estimate**:
+- **services**: 95%
+- All others: ≤5% combined (each ~1–2%)
+
+Final answer:
+
+"The probability that this file belongs to module 'services' is 95%."

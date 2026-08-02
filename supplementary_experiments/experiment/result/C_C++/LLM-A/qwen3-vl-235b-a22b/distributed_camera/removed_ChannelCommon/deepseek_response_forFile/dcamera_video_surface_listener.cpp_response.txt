@@ -1,0 +1,64 @@
+Let’s analyze the file content step by step and map it to the candidate modules.
+
+### 1. **File Overview**
+- Language: C/C++
+- Includes:
+  - `dcamera_video_surface_listener.h` → suggests this is a listener for video surface events (i.e., buffer availability from a Surface).
+  - `securec.h` → secure memory operations (e.g., `memcpy_s`)
+  - `data_buffer.h` → uses `DataBuffer` class for holding image data
+  - `distributed_camera_errno.h` → error codes specific to distributed camera
+  - `distributed_hardware_log.h` → logging macros like `DHLOGI`, `DHLOGE`
+- Namespace: `OHOS::DistributedHardware`
+- Function: `DCameraVideoSurfaceListener::OnBufferAvailable()`
+  - Called when a new buffer becomes available on a `Surface`.
+  - Acquires a `SurfaceBuffer`, copies its pixel data into a `DataBuffer`, then invokes a callback (`callback_->OnVideoResult(dataBuffer)`).
+  - Uses `surface_->AcquireBuffer()` / `ReleaseBuffer()` — standard Surface buffer management.
+  - Performs basic validation (width/height/size > 0), computes valid image size assuming YUV420 (3 bytes per pixel, y2uv ratio = 2), copies data.
+
+### 2. **Key Responsibilities of This Class**
+- Listens to buffer availability on a video surface (likely from a local camera preview stream or encoder output).
+- Extracts raw pixel data from the `SurfaceBuffer`.
+- Packs it into a `DataBuffer` (a generic container for raw data).
+- Delivers it via a `ResultCallback::OnVideoResult()` — implying this is feeding processed frame data to an upstream consumer (e.g., network transmission or encoding pipeline).
+
+This is clearly **on the sink side** (controlled device), because:
+- It’s consuming frames from a local `Surface` (e.g., camera preview surface or encoder output surface).
+- It’s preparing the frame data for further processing/transmission — i.e., *before* sending over SoftBus.
+- The `ResultCallback` likely forwards the frame to the channel or encoding module.
+
+### 3. **Compare with Candidate Modules**
+
+| Module | Relevance |
+|--------|-----------|
+| **DistributedCameraSourceMgr** | ❌ Source-side manager (controller). This is sink-side buffer handling. |
+| **DistributedCameraSinkMgr** | ⚠️ Possibly — it handles lifecycle, data processing, and event notification on sink side. But this file is a *listener*, not the full manager. However, `SinkMgr` may own or use such listeners. Need deeper check. |
+| **ChannelSource / ChannelSink** | ❌ These handle SoftBus communication (network layer), not surface buffer acquisition. This code has no network/Sofbus logic. |
+| **CameraDataProcessCommon** | ⚠️ Provides common data processing frameworks/pipelines. This does simple copy + format assumption (YUV420), but it's not a generic framework — it's tightly coupled to `SurfaceBuffer` and `ResultCallback`. Not clearly part of shared infrastructure. |
+| **CameraDataPreProcess** | ✅ Strong candidate. Description: *"responsible for the data preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow."*<br>→ This class does exactly that: takes raw `SurfaceBuffer` (from camera framework), validates, copies into `DataBuffer`, and passes to callback — i.e., preprocessing before transmission/encoding. |
+| **CameraDataPostProcess** | ❌ Post-processing is on source side (controller), after receiving data. This is sink-side. |
+| **CameraServiceCommon** | ❌ Shared basic services (protocols, metadata, etc.). This is concrete data extraction, not protocol or service abstraction. |
+| **VirtualCameraHdf** | ❌ HDF/HDI layer implementation — this is higher-level (uses `Surface`, not HDF interfaces). |
+| **utils** | ⚠️ Contains `data_buffer.h`, `distributed_camera_errno.h`, `distributed_hardware_log.h` — so those are utils. But the *class* `DCameraVideoSurfaceListener` is not just a utility; it's a functional component in the data path. However, sometimes listeners like this are placed in `utils` if they’re lightweight helpers. Let’s evaluate: the class is stateful (holds `surface_`, `callback_`), implements a specific callback interface, and performs domain-specific logic (YUV420 assumptions). That goes beyond generic utilities. |
+
+### 4. **Critical Clue: Naming & Role**
+- `DCameraVideoSurfaceListener` → implies it’s listening to video surface events.
+- Used on the **sink side** to pull frames from a local surface (e.g., camera preview surface created by the sink app/service).
+- Its job is to convert `SurfaceBuffer` → `DataBuffer` → deliver to callback.
+- This fits **preprocessing**: raw frame ingestion → normalization → handoff to next stage (e.g., encoder or channel).
+
+The `CameraDataPreProcess` module is explicitly defined as:
+> *"responsible for the data preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow."*
+
+✅ This matches perfectly:
+
+- Sink side ✔️  
+- Input side (local camera data) ✔️  
+- Before transmission/encoding ✔️  
+- Processing: copying, validating, formatting (YUV420 assumption) ✔️  
+
+### 5. **Conclusion**
+The file implements a sink-side video frame extractor/preprocessor that bridges `SurfaceBuffer` (from camera framework) to `DataBuffer` for downstream use — precisely the role of **CameraDataPreProcess**.
+
+---
+
+**Assigned Module**: [CameraDataPreProcess]

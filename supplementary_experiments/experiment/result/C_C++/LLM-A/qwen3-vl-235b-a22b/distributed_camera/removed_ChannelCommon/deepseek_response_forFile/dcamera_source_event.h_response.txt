@@ -1,0 +1,61 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- **Header name**: `OHOS_DCAMERA_SOURCE_EVENT_H`
+- **Includes**:
+  - `<variant>` (C++ standard library for type-safe unions)
+  - `"event.h"` — suggests base event framework
+  - `"types.h"`, `"dcamera_event_cmd.h"`, `"dcamera_index.h"` — domain-specific types, commands, indices
+- **Namespaces**: `OHOS::DistributedHardware` — confirms this is part of the distributed hardware subsystem.
+- **Key Types**:
+  - `DCameraRegistParam`: A simple struct-like class holding registration parameters (`devId`, `dhId`, `reqId`, `param`)
+  - `DCameraSourceEvent`: Inherits from `Event`, with multiple constructors that accept different payloads (index, regist param, stream infos, capture infos, settings, stream IDs, camera events), and a variant-based `eventParam_` (implied by use of `std::variant` and multiple constructor overloads).
+- **Enum**: `DCAMERA_EVENT` — defines event types like `REGIST`, `UNREGIST`, `OPEN`, `CLOSE`, `CONFIG_STREAMS`, etc., all *source-side* control events.
+- **Functions**:
+  - Getters to extract payload from the event: `GetDCameraIndex`, `GetDCameraRegistParam`, `GetStreamInfos`, etc.
+  - These are used to safely retrieve the typed payload stored in the event (likely via `std::variant`).
+
+### 2. **What does this file do?**
+This header defines:
+- An **event type** (`DCameraSourceEvent`) used on the **source side** (i.e., controller side) to represent events *sent from source to sink*, or possibly *internal source-side events* triggered by user actions (e.g., register, open, config streams).
+- The event carries various payloads depending on the event type — e.g. registration params, stream configs, capture configs, settings, etc.
+- It is clearly part of the **eventing mechanism** for distributed camera operations, specifically for the **source side**, as indicated by:
+  - Header name: `SOURCE_EVENT_H`
+  - Event types like `DCAMERA_EVENT_REGIST`, `OPEN`, `CONFIG_STREAMS`, `START_CAPTURE` — these are commands/actions initiated by the controller (source).
+  - Payloads correspond to data needed to perform those actions (e.g., `DCameraRegistParam`, `DCStreamInfo`, etc.)
+
+### 3. **Compare with Candidate Modules**
+
+| Module | Relevance |
+|--------|-----------|
+| **DistributedCameraSourceMgr** | Handles lifecycle, state machine, controller, input stream, IPC service, callbacks on the *source side* (controller). Events like `REGIST`, `OPEN`, `CONFIG_STREAMS` are central to its operation. This module would likely *emit* or *process* such events. However, this file is just the *definition* of the event structure, not the manager logic itself. Still, event definitions are typically co-located with or owned by the module that uses them most directly. |
+| **DistributedCameraSinkMgr** | Operates on the *sink* (controlled) side. While it *receives* these events, the event definition itself is source-centric (e.g., `DCameraSourceEvent`). Unlikely to own this header. |
+| **ChannelSource / ChannelSink** | Deal with transport (SoftBus), not event semantics. They may serialize/deserialize these events, but the event structure itself is higher-level than channel layer. |
+| **CameraDataProcessCommon / Pre/PostProcess** | Focus on image/video data pipelines — unrelated to control events. |
+| **CameraServiceCommon** | Described as providing “shared basic service capabilities … including basic commands, protocols, camera information, channel information, **events**, Metadata settings…” — explicitly mentions **events**. Also says it serves *both source and sink sides*. This is a strong candidate. |
+| **VirtualCameraHdf** | HDF/HDI layer — too low-level; this is C++ event abstraction, not device driver or HDI. |
+| **utils** | Provides “common utilities, data buffers, indexes, constants, error codes…”, and mentions “event” only indirectly. But note: `dcamera_index.h`, `types.h`, `event.h` are likely in utils, and this file includes them. However, this file defines a *domain-specific event class*, not generic utility. |
+
+### 4. **Critical Clue: `DCameraSourceEvent` inherits from `Event`**
+- Base `Event` class likely comes from a common event framework (possibly in `utils` or `CameraServiceCommon`).
+- But the *specialization* for distributed camera source events — with enum, payload variants, and getters — is tightly coupled to the **source-side control flow**.
+- The module that owns the *source-side control logic* (i.e., `DistributedCameraSourceMgr`) would need to define or depend on these events heavily.
+- However, per the description of **CameraServiceCommon**, it explicitly includes “**events**” as part of shared basic services. Since `DCameraSourceEvent` is a structured, reusable event type (not tied to internal state machine implementation), it fits better as a *shared service definition* rather than being embedded inside a manager.
+
+Also note:
+- The enum `DCAMERA_EVENT` is a protocol-level definition — same across source/sink for interpretation.
+- The class `DCameraSourceEvent` is named *SourceEvent*, but the *event type* (e.g., `REGIST`) is sent from source to sink — so both sides need to understand it. Hence, it's likely shared.
+
+Looking at the reference examples (implied by instruction), we should favor modules that explicitly claim ownership of *events*.
+
+The **CameraServiceCommon** module description says:
+> “…including basic commands, protocols, camera information, channel information, **events**, Metadata settings…”
+
+That matches exactly: this file defines an event type + related payload structs + event enum — all foundational for communication protocol.
+
+Whereas `DistributedCameraSourceMgr` is about *managing* the source side, not defining the shared event schema.
+
+### ✅ Conclusion:
+The file defines a shared event structure used across the distributed camera system, especially for source-initiated control events, and belongs to the **common service layer**, not a specific manager or channel.
+
+**Assigned Module**: [CameraServiceCommon]

@@ -1,0 +1,78 @@
+Let’s analyze the file content step by step and compare it against the candidate modules.
+
+### 1. **File Overview**
+- **Language**: C/C++
+- **Includes**:
+  - `abstract_data_process.h` → suggests this is part of a data processing pipeline.
+  - `dcamera_pipeline_source.h` → implies connection to pipeline source (i.e., source-side processing).
+  - Standard headers: `<cstdint>`, `<vector>` — generic.
+- **Macro**: `OHOS_FPS_CONTROLLER_PROCESS_H` → clearly indicates this is an FPS (frames-per-second) controller component.
+- **Namespaces**: `OHOS::DistributedHardware` — consistent with distributed camera subsystem.
+- **Types**:
+  - `class DCameraPipelineSource` (forward-declared)
+  - `class FpsControllerProcess : public AbstractDataProcess` → key: inherits from `AbstractDataProcess`, meaning it's a *data processing node* in a pipeline.
+- **Functions**:
+  - Core pipeline interface: `InitNode()`, `ProcessData()`, `ReleaseProcessNode()` → standard for data processors.
+  - FPS-specific logic:
+    - `UpdateFPSControllerInfo`, `CalculateFrameRate`, `IsDropFrame`, `ReduceFrameRateByUniformStrategy`, `FpsControllerDone`
+  - Uses frame timing history, correction factors, drop strategies — all about **frame rate control**.
+
+### 2. **Key Observations**
+- The class `FpsControllerProcess` is a **data processor** that implements frame-rate limiting/dropping logic.
+- It operates on input buffers (`std::vector<std::shared_ptr<DataBuffer>>`) and produces output buffers — typical of a *post-processing* or *transmission-prep* stage.
+- It receives data (likely video frames), analyzes incoming frame rate, and decides whether to drop frames or adjust output rate to match target (e.g., `MAX_TARGET_FRAME_RATE = 30`).
+- It holds references to `DCameraPipelineSource`, suggesting it runs on the **source side** (controller side), where output is prepared for transmission to sink.
+- Its purpose is **frame rate control**, not encoding/decoding, color conversion, or channel transport.
+
+### 3. **Candidate Module Matching**
+
+Let’s evaluate each candidate:
+
+- **DistributedCameraSourceMgr**  
+  → Manages lifecycle, state machine, IPC, callbacks, *input stream*, **data processing** on source side.  
+  ✅ Includes "data processing" as part of its scope. But this is a *high-level manager*, not a specific processor node. This file is a concrete processor, not a manager.
+
+- **DistributedCameraSinkMgr**  
+  → Sink-side; this class is tied to `DCameraPipelineSource`, which is source-side. ❌
+
+- **ChannelSource / ChannelSink**  
+  → Focus on SoftBus communication, command sending/receiving. This class does *no network/IPC* — only local buffer processing. ❌
+
+- **CameraDataProcessCommon**  
+  > *"provides common data processing frameworks, data processing pipeline interfaces, codecs, color space conversion, **frame-rate control**, image types..."*  
+  ✅ Explicitly lists **frame-rate control** as part of its responsibility. Also provides foundational components for data processing flows on *both sides*.  
+  This class is a concrete implementation of frame-rate control, inheriting from `AbstractDataProcess`, likely part of a shared framework.
+
+- **CameraDataPreProcess**  
+  > *"data preprocessing pipeline on the sink side or input side"* — i.e., before transmission/encoding.  
+  But this class appears to be used *after* capture, possibly before sending over channel — still on source side. However, “preprocess” usually means *before* encoding (e.g., de-noise, crop), not frame-rate throttling for bandwidth control. Less precise fit.
+
+- **CameraDataPostProcess**  
+  > *"post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution..."*  
+  ✅ Says "processes frame rate" on source side. This is promising. But note: post-process typically happens *after* decoding (on sink side), but description says “source side or output side”, and explicitly includes frame rate processing. Since this class runs on source side and controls output frame rate before transmission, this could fit.
+
+However, let’s distinguish:
+- **PreProcess**: raw sensor → encoded (sink side: before encoding; source side: maybe after local capture, before encoding? unclear).
+- **PostProcess**: after decoding (sink) or after receiving (source)? The description says “on the source side or output side” — ambiguous.
+
+But crucially:  
+The class is named `FpsControllerProcess`, inherits `AbstractDataProcess`, and is included via `dcamera_pipeline_source.h`. That strongly suggests it's part of the **source-side pipeline**, inserted to regulate output frame rate before sending over channel — i.e., to avoid overwhelming the network or sink.
+
+Now compare:
+- `CameraDataProcessCommon` emphasizes *common frameworks* and *foundational components*, including frame-rate control as a generic capability.
+- `CameraDataPostProcess` emphasizes *specific post-processing steps* like format conversion, frame rate adjustment — more operational.
+
+Given that:
+- The class is a **standalone processor node** (not a manager, not a codec),
+- It implements **generic FPS control logic** (with configurable thresholds, history windows, strategies),
+- It’s likely reused across pipelines (e.g., preview vs video),
+- And the module description of `CameraDataProcessCommon` explicitly lists "**frame-rate control**" as one of its responsibilities,
+
+→ This fits **CameraDataProcessCommon** best.
+
+Also, note: `AbstractDataProcess` is likely defined in `CameraDataProcessCommon`, as it's the base for data processors. The inclusion of `abstract_data_process.h` supports this.
+
+### 4. **Conclusion**
+The file implements a reusable FPS control data processor, part of the common data processing infrastructure, not tied to a specific side’s high-level management or channel logic.
+
+**Assigned Module**: [CameraDataProcessCommon]

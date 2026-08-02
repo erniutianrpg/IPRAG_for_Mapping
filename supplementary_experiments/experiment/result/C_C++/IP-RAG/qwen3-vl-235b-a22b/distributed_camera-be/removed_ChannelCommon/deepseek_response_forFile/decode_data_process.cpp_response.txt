@@ -1,0 +1,62 @@
+Let’s analyze the file systematically:
+
+### 1. **File Path**
+```
+services\data_process\src\pipeline_node\multimedia_codec\decode_data_process.cpp
+```
+- Located under `data_process/src/pipeline_node/multimedia_codec/` — strongly suggests this is part of a **data processing pipeline**, specifically handling **multimedia decoding**.
+- The term *pipeline_node* implies it's a node in a modular data processing pipeline (e.g., input → decode → convert → output).
+- The module `multimedia_codec` indicates codec-related logic — here, specifically **decoding**.
+
+### 2. **File Content Highlights**
+Key observations from the code and function list:
+- Class: `DecodeDataProcess` — clearly a decoder node in a pipeline.
+- Functions include:
+  - `InitDecoder()`, `FeedDecoderInputBuffer()`, `OnOutputBufferAvailable()`, `OnInputBufferAvailable()` — standard media decoder callbacks (similar to Android MediaCodec or OHOS AVCodec APIs).
+  - `CopyDecodedImage()`, `CopyYUVPlaneByRow()`, `CheckCopyImageInfo()` - image buffer copying and format handling (YUV plane manipulation).
+  - `IsConvertible()`, `IsInDecoderRange()` — config validation for video codec type, resolution, frame rate.
+  - Uses `sptr<Surface>`, `SurfaceBuffer`, `Media::Format`, `Media::AVCodecBufferInfo` — OHOS multimedia framework interfaces.
+  - Includes `"convert_nv12_to_nv21.h"` — color space/format conversion (common post-decode step).
+  - Uses `DCameraCodecEvent`, `EventBus`, and integrates with pipeline event bus — shows it's a node in a distributed camera pipeline.
+  - `DecodeSurfaceListener` handles surface buffer availability — typical for rendering/processing decoded frames.
+  - Called from pipeline: `ProcessData(std::vector<std::shared_ptr<DataBuffer>>& inputBuffers)` — takes raw encoded data, outputs decoded frames.
+
+This is **not** about:
+- Lifecycle/state management of the camera device (rules out `DistributedCameraSourceMgr`, `DistributedCameraSinkMgr`)
+- Channel communication over SoftBus (rules out `ChannelSource`, `ChannelSink`)
+- Virtual device/HDF implementation (rules out `VirtualCameraHdf`)
+- General utilities (rules out `utils`)
+- Preprocessing before encoding (e.g., raw sensor data → encoded) — this is *after* transmission, i.e., decoding received encoded stream.
+
+### 3. **Candidate Module Matching**
+
+Let’s evaluate each candidate:
+
+- **DistributedCameraSourceMgr**: Manages controller-side lifecycle, IPC, callbacks — but this file is a *pipeline node*, not a manager. ❌  
+- **DistributedCameraSinkMgr**: Manages controlled side lifecycle, output — but this is *decoding* incoming data, which happens on the **source side** (controller) after receiving encoded stream from sink. However, the sink does *encoding*, source does *decoding*. So decoding is part of **source-side post-processing**. Still, SinkMgr is more about high-level control, not low-level decode node. ❌  
+- **ChannelSource / ChannelSink**: Pure transport layer — no codec logic here. ❌  
+- **CameraDataProcessCommon**: Provides *common frameworks*, codecs, color conversion, etc. This file implements a concrete decode node using those frameworks — but is it *common*? It’s specific to video decoding in DCamera pipeline, not generic. Possibly close, but let’s compare with others. ⚠️
+- **CameraDataPreProcess**: Defined as *"data preprocessing pipeline on the sink side or input side, processing image data returned by the camera framework or collected locally before it enters the transmission/encoding flow."*  
+  → This is **pre-encode** processing (e.g., crop, scale, format adjust before sending). Our file is **post-receive, pre-display** — it decodes *received* encoded stream. So not pre-process. ❌  
+- **CameraDataPostProcess**: Defined as *"data post-processing pipeline on the source side or output side. It decodes, converts formats, and processes frame rate, resolution, and related properties of received image data so that the controller can use distributed camera data as if using a local Camera."*  
+  ✅ This matches **exactly**:
+    - Runs on **source side** (controller)
+    - Performs **decoding**
+    - Handles format conversion (`NV12→NV21`)
+    - Adjusts resolution/frame rate via config validation
+    - Outputs usable buffers for local consumption (e.g., preview)
+
+- **CameraServiceCommon**: Shared basic services (commands, protocols, metadata) — not codec/data transformation logic. ❌  
+- **utils**: Generic helpers — this is domain-specific pipeline node logic. ❌
+
+### 4. **Cross-check with Reference Examples**
+Although no explicit reference examples were provided in the prompt, the definitions themselves are precise. The description of `CameraDataPostProcess` explicitly includes “**it decodes**”, which is the core responsibility of this file.
+
+Also note:
+- The class `DecodeDataProcess` is clearly a *post-processing node**: it receives encoded data (`inputBuffers`), decodes it, and emits decoded frames (`outputBuffers`) — exactly what post-processing does.
+- In distributed camera architecture, the **source side** receives encoded video from sink, then *decodes* it to render locally — this is post-processing.
+
+---
+
+### ✅ Final Decision:
+**Assigned Module**: [CameraDataPostProcess]

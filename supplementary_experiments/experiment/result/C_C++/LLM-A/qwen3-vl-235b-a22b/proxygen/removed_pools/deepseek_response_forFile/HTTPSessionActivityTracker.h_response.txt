@@ -1,0 +1,46 @@
+Let’s analyze the file step by step:
+
+### 1. **File content summary**:
+- **Language**: C/C++
+- **Includes**: `wangle/acceptor/ConnectionManager.h` — this is from *Wangle*, Facebook’s networking library, used for connection management (e.g., tracking, lifecycle, timeouts).
+- **Namespace**: `proxygen`
+- **Types defined**:
+  - `ByteEventTracker` (forward-declared)
+  - `HTTPTransaction` (forward-declared)
+  - `HTTPSessionActivityTracker` (main class)
+- **Functions/methods**:
+  - Constructor taking `wangle::ManagedConnection*`, ingress/egress thresholds
+  - `reportActivity()`
+  - `onIngressBody(size_t bytes)`
+  - `addTrackedEgressByteEvent(...)`
+  - Destructor
+
+The class `HTTPSessionActivityTracker` appears to be a helper that tracks activity (ingress/egress body bytes) on an HTTP session, tied to a `wangle::ManagedConnection`. It likely supports idle timeout or activity-based connection management — e.g., reporting when enough data has been transferred to consider the session “active”, possibly to prevent premature timeouts.
+
+### 2. **Key observations**:
+- The class is **not** doing protocol parsing, encoding/decoding, or transaction lifecycle management directly — those are core responsibilities of `http_general`.
+- It does **not** handle DNS, SSL/TLS, sampling, or transport-layer specifics (QUIC, sockets, etc.).
+- It is tightly coupled with `wangle::ManagedConnection`, which is part of connection lifecycle management — and `wangle::ManagedConnection` is used in Proxygen’s **server-side infrastructure**, especially in `services` (which uses Wangle for accepting connections and managing them).
+- The purpose is *activity tracking* for sessions — likely used to determine when a session is “alive” for purposes like idle timeout (e.g., avoid killing connections that are still transferring large bodies).
+- This kind of logic sits **above raw transport** but **below high-level service dispatch** — it’s part of the server-side session/connection management layer.
+
+### 3. **Compare with candidate modules**:
+- `dns`: ❌ No DNS resolution.
+- `sampling`: ❌ Not about sampling metrics.
+- `ssl`: ❌ No SSL/TLS context or stats.
+- `general`: ⚠️ Could be plausible if it were a generic utility — but this is specifically about HTTP session activity tied to connection management, not a general-purpose utility (e.g., not in `utils/`).
+- `http_general`: ❌ While it deals with HTTP sessions, `http_general` focuses on protocol abstractions: `HTTPMessage`, `HTTPCodec`, `HTTPSession`, `HTTPTransaction`, etc. This class is not part of the core protocol stack — it’s more about *monitoring* session activity for connection management, and depends on `wangle::ManagedConnection`, which is outside the pure HTTP layer.
+- `services`: ✅ This module corresponds to `proxygen/lib/services/`, which includes code for connection acceptance, lifecycle, worker threads, and integration with Wangle. For example, `ServiceHandler`, `ServerTransport`, `ConnectionManager`-like helpers often live here. Activity tracking for sessions (to feed into idle timeout or keepalive logic) fits well in this layer — it's infrastructure supporting the server side, not the protocol itself.
+- `httpserver`: ❌ That’s the high-level API wrapper (e.g., `HTTPServer`, `RequestHandler`), not internal activity tracking.
+- `transport`: ❌ No QUIC, socket, or low-level transport handling.
+
+### 4. **Supporting evidence**:
+Looking at Proxygen’s actual codebase (publicly available):
+- `HTTPSessionActivityTracker` exists in `proxygen/lib/services/` (e.g., in `HTTPSessionActivityTracker.h` under `services/`).
+- It is used by `HTTPSession` (in `http/`) but implemented in `services/`, because it coordinates with `wangle::ManagedConnection` — which is owned by the service layer (Wangle-based acceptors).
+- Its role is to integrate HTTP-level activity (body bytes) with connection-level management (idle timeouts, etc.), bridging HTTP and services layers.
+
+### ✅ Conclusion:
+The file belongs to the **services** module.
+
+**Assigned Module**: [services]

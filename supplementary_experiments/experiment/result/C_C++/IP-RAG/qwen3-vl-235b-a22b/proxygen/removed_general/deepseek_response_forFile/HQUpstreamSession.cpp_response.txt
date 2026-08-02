@@ -1,0 +1,66 @@
+Let’s analyze the file `proxygen/lib/http/session/HQUpstreamSession.cpp` step by step.
+
+### 1. **File Path and Context**
+- Path: `proxygen/lib/http/session/HQUpstreamSession.cpp`
+  - This is under `proxygen/lib/http/session/`, indicating it's part of the HTTP layer, specifically session management.
+  - The prefix `HQ` stands for **HTTP/3 over QUIC**, as HQ (HTTP over QUIC) is the internal name used in Proxygen for HTTP/3 sessions.
+  - The class name `HQUpstreamSession` suggests it represents an *upstream* (i.e., client-side) HTTP/3 session — used when Proxygen acts as an HTTP client connecting to a backend over HTTP/3/QUIC.
+
+### 2. **Includes**
+- `#include <proxygen/lib/http/session/HQUpstreamSession.h>` → self-header; confirms this is a session implementation.
+- `#include <quic/common/events/FollyQuicEventBase.h>` → ties into QUIC transport layer (Folly-based event loop for QUIC).
+- `#include <wangle/acceptor/ConnectionManager.h>` → Wangle connection management (used for lifecycle management of connections, especially in proxy/client contexts).
+
+These indicate tight coupling with:
+- HTTP session logic (`proxygen/lib/http/session/`)
+- QUIC transport (`quic/...`)
+- Connection lifecycle management (`wangle/acceptor/`)
+
+But note: this is **not** a server-side acceptor or service handler — it's an *upstream* session, i.e., a client-side HTTP/3 session.
+
+### 3. **Functionality Observed in Code**
+From the raw excerpt and function list:
+- Implements `startNow()`, `onTransportReady()`, `connectSuccess()`, `onConnectionEnd()` — standard connection setup/lifecycle callbacks for an upstream client session.
+- Handles connect timeout, replay safety (QUIC 0-RTT related), and error handling during connection setup.
+- Manages push streams (`createIngressPushStream`, `findPushStream`, `dispatchPushStream`, etc.) — specific to HTTP/3 server push semantics.
+- Uses `HQSession::` base class methods — implies inheritance from a generic HQ session base.
+- Uses `quic::StreamId`, `hq::PushId`, `HQIngressPushStream`, etc. — all HTTP/3-specific constructs.
+- Thread-local attachment/detachment — typical for session state binding to event loops (common in both client and server, but here it's for upstream use).
+
+This is clearly about **HTTP/3 session management on the client/upstream side**, built on top of QUIC transport.
+
+### 4. **Candidate Module Evaluation**
+
+Let’s go through each candidate:
+
+- **dns**: ❌ No DNS resolution logic here. Not relevant.
+- **pools**: ❌ No pool configuration or backend selection logic. This is a single-session class, not pool-related.
+- **sampling**: ❌ No sampling logic.
+- **ssl**: ❌ SSL context is passed in `attachThreadLocals`, but no SSL-specific logic implemented here (e.g., handshake, cert validation). SSL is a dependency, not the focus.
+- **http_general**: ✅ Strong candidate. This module covers “common HTTP implementation under `proxygen/lib/http/`”, including “session management” and “HTTP/2 and HTTP/3”. Since `HQUpstreamSession` is a session class under `lib/http/session/`, and implements HTTP/3 session behavior, it fits squarely here.
+- **services**: ❌ This module corresponds to `lib/services/`, which is higher-level server infrastructure (e.g., `ServiceHandler`, `RequestHandler`, connection acceptance). This file is not in `services/`, and it's upstream (client-side), not server-side.
+- **httpserver**: ❌ This is for high-level HTTP server APIs under `proxygen/httpserver/`. This is not a server framework component.
+- **transport**: ⚠️ This module is for *lower-level transport capabilities*, especially QUIC transport (e.g., socket, datagram, token cache). While this class uses QUIC primitives (`quic::StreamId`, `FollyQuicEventBase`), it does **not** implement transport logic — it consumes transport via `HQSession`, which itself likely sits atop the transport module. The responsibility here is *session management* over QUIC, not transport itself.
+
+Key distinction:
+- `transport` = raw QUIC stack, socket I/O, packet parsing, congestion control, etc.
+- `http_general` = HTTP protocol semantics (sessions, streams, transactions, codecs) — even over QUIC.
+
+Since `HQUpstreamSession` handles:
+- HTTP/3 stream mapping,
+- Push stream management,
+- Session lifecycle tied to HTTP semantics (connect callbacks, transaction dispatch),
+- Built on top of `HQSession` (which likely bridges HTTP and QUIC),
+
+…it belongs to the **HTTP protocol core layer**, i.e., `http_general`.
+
+### 5. **Reference Example Alignment**
+Although no explicit reference examples were provided, the description of `http_general` explicitly says:
+> "mainly corresponds to the common HTTP implementation under proxygen/lib/http/. It is Proxygen's HTTP protocol core layer, responsible for HTTP protocol parsing, encoding/decoding, session management, transaction management, and protocol-related capabilities such as HTTP/2 and HTTP/3."
+
+This matches exactly: `HQUpstreamSession` is an HTTP/3 session manager under `lib/http/session/`.
+
+---
+
+### ✅ Final Decision:
+**Assigned Module**: [http_general]

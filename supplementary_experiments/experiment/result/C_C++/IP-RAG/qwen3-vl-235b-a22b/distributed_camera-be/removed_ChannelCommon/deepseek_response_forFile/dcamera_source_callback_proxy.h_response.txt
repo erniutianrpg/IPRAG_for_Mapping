@@ -1,0 +1,82 @@
+Let’s analyze the file step by step:
+
+### 1. **File Path**
+```
+services\cameraservice\sourceservice\include\distributedcamera\dcamera_source_callback_proxy.h
+```
+- Located under `sourceservice` → indicates **source side** (i.e., controller side).
+- Name: `dcamera_source_callback_proxy.h` → clearly a **callback proxy** for the **source** side.
+
+### 2. **Content Analysis**
+- Includes:
+  - `iremote_proxy.h`, `iremote_broker.h`: standard OHOS IPC proxy infrastructure.
+  - `idcamera_source_callback.h`: interface definition for the callback (likely abstract base class).
+  - Inherits from `IRemoteProxy<IDCameraSourceCallback>` → this is a **proxy class** implementing the client-side stub for remote callbacks (i.e., used by the source side to send callback requests *to* the sink side, or more precisely: to invoke methods on the remote callback object — but note: in OHOS IPC, a *callback proxy* is typically used when the *server* (sink) wants to notify the *client* (source), so the source holds a proxy to the sink’s callback interface).
+
+- Class: `DCameraSourceCallbackProxy`
+  - Implements two methods:
+    - `OnNotifyRegResult(...)`
+    - `OnNotifyUnregResult(...)`
+  - These are **notification callbacks** from the sink side (e.g., after registration/unregistration of a camera session), sent *to* the source side.
+
+> In distributed systems, when the source (controller) registers with the sink (controlled device), the sink may later call back to the source to report success/failure — hence the source must expose a callback interface, and the sink uses a *proxy* to invoke it. But here, `DCameraSourceCallbackProxy` is the **source-side proxy** that the *source* uses to *send* (or rather, the source holds this to receive calls from sink via IPC). Wait — correction:
+
+In OHOS IPC:
+- `IRemoteProxy<T>` is the **client-side stub**: it represents a remote object (on another process/device) that the local side can call.
+- So if `DCameraSourceCallbackProxy` inherits `IRemoteProxy<IDCameraSourceCallback>`, then it is the **source-side proxy to a remote callback object implemented by the sink**? That seems odd.
+
+But looking at naming convention:
+- `IDCameraSourceCallback` is likely the interface the **sink implements**, and the **source holds a proxy to it** to allow the sink to notify the source (e.g., registration result).
+- However, the method names (`OnNotifyRegResult`, `OnNotifyUnregResult`) suggest these are *notifications sent from sink to source*, meaning the **source must implement a callback interface**, and the sink calls it — so the *source* should have a **stub** (i.e., `IRemoteStub`), and the *sink* holds the proxy.
+
+But here we have a **proxy**, not a stub.
+
+Let’s resolve this via naming and context:
+- The file is in `sourceservice/include/...`, and named `*_callback_proxy.h`.
+- In OHOS distributed hardware, the pattern is:
+  - Source side (controller) registers a callback with the sink.
+  - The sink holds a proxy to that callback (so it can call back).
+  - Therefore, the *source* must provide an `IRemoteStub` implementation (e.g., `DCameraSourceCallbackStub`), and the *sink* gets a proxy to it.
+  - Conversely, if the *source* needs to receive notifications *from* the sink (e.g., about registration results), then the *sink* implements a callback interface (e.g., `IDCameraSinkCallback`), and the *source* holds a proxy to it.
+
+Given the interface name: `IDCameraSourceCallback`, it suggests this is a callback **from the sink to the source**, i.e., the sink calls methods on `IDCameraSourceCallback`, and the source implements it — but again, the proxy is on the source side, which matches: the source holds a proxy to the sink’s *callback implementation*? No — that doesn’t align.
+
+Wait — re-examining:
+The class is `DCameraSourceCallbackProxy`, derived from `IRemoteProxy<IDCameraSourceCallback>`. This means:
+- It is used by code on the **source side** to make IPC calls to a remote object that implements `IDCameraSourceCallback`.
+- So the *remote object* (on the sink side) implements `IDCameraSourceCallback`, and the source calls its methods — but why would the source call the sink’s `OnNotifyRegResult`? That sounds like the sink should be calling the source.
+
+This suggests a possible misnomer, or more likely:  
+In this architecture, the **source side registers itself as a callback recipient**, and the **sink side invokes the callback** — thus, the sink needs a proxy to the source’s callback interface. So the *source* should provide a **stub**, not a proxy.
+
+However, the file is clearly a **proxy**, and placed in `sourceservice/include/`. This strongly implies that this proxy is used by the **source side to send requests to the sink**, but the method names are “OnNotify…”, which are *event notifications*, not commands.
+
+Let’s look at the **candidate modules** for clues:
+
+- `DistributedCameraSourceMgr`: responsible for **callback management on the source side** — explicitly says: *"callback management on the source side"*.
+- `ChannelSource`: handles controller-side channel, sends commands, receives image info — but not specifically callbacks.
+- `CameraServiceCommon`: shared capabilities, including "events", "controller interfaces".
+
+The key phrase in `DistributedCameraSourceMgr`:  
+> *"lifecycle, state machine, controller, input stream, data processing, IPC service, and **callback management** on the source side"*
+
+Since this file is:
+- A callback-related proxy,
+- On the source side,
+- Part of IPC infrastructure for notifying registration/unregistration results (which are control-plane events),
+- And is tightly coupled with the source service,
+
+It fits best under **DistributedCameraSourceMgr**, which explicitly includes *callback management* on the source side.
+
+Also, note that `DCameraSourceCallbackProxy` is likely used by the `SourceMgr` to communicate with the sink’s callback interface (e.g., the sink exposes a callback interface for the source to monitor registration status — though unusual, it's plausible in a symmetric or negotiation-based protocol).
+
+Alternatively, could it be `CameraServiceCommon`? That module provides *shared* capabilities, but this file is specifically for source-side callback proxy — not generic/common. The namespace `DistributedHardware` and path `sourceservice` indicate it's part of the source manager’s internal IPC layer.
+
+### Conclusion:
+The file implements a source-side IPC proxy for handling callback notifications related to camera registration/unregistration — directly supporting the **callback management** responsibility of `DistributedCameraSourceMgr`.
+
+- Not `ChannelSource`: that deals with data/control channel over SoftBus, not callback proxies.
+- Not `DistributedCameraSinkMgr`: this is sink-side, but file is in `sourceservice`.
+- Not `CameraServiceCommon`: this is specific to source-side callback logic, not shared.
+
+✅ **Assigned Module**: [DistributedCameraSourceMgr]
