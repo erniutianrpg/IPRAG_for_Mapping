@@ -1,4 +1,4 @@
-# REMAP: Retrieval-Augmented and Expert-Guided Mapping
+# REMAP: A Code-to-Architecture Mapping Approach for Undocumented Module Identification and Documentation Completion
 
 This repository contains the implementation, dataset, experimental outputs, and supplementary experiments for REMAP, an end-to-end framework for updating incomplete architectural documentation through code-to-architecture mapping.
 
